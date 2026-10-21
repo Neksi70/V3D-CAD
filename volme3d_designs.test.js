@@ -270,47 +270,31 @@ test('7 · Auto-Save alle 30s — Timer ist aktiv', async ({ page }) => {
 // Neue Feature-Tests: Zufallsnamen · Ctrl+S · Firestore-Integration
 // ═══════════════════════════════════════════════════════════════════════════
 
-test('8 · _randomDesignName() gibt "Adjektiv Name" zurück', async ({ page }) => {
+test('8 · _newDesignName() zählt „Neues Projekt", „Neues Projekt 2" …', async ({ page }) => {
   await setupPage(page);
-
-  const samples = await page.evaluate(() =>
-    Array.from({ length: 30 }, () => window._randomDesignName())
-  );
-
-  for (const name of samples) {
-    const parts = name.split(' ');
-    expect(parts.length).toBe(2);
-    expect(parts[0]).toMatch(/^[A-Z]/);
-    expect(parts[1]).toMatch(/^[A-Z]/);
-  }
-
-  const unique = new Set(samples);
-  expect(unique.size).toBeGreaterThan(3); // keine feste Wiederholung
-  console.log(`✓ Beispiele: ${[...unique].slice(0, 4).join(' · ')}`);
+  const r = await page.evaluate(() => {
+    localStorage.setItem('volme3d_designs', '[]');
+    const a = window._newDesignName();
+    localStorage.setItem('volme3d_designs', JSON.stringify([{ id: 'x1', name: 'Neues Projekt' }, { id: 'x3', name: 'Neues Projekt 3' }]));
+    return [a, window._newDesignName()];
+  });
+  expect(r).toEqual(['Neues Projekt', 'Neues Projekt 2']);
 });
 
-test('9 · Neues Design bekommt englischen Zufallsnamen (kein Datum)', async ({ page }) => {
+test('9 · Neues Design heißt „Neues Projekt …" (kein Fantasiename, kein Datum)', async ({ page }) => {
   await setupPage(page);
+  page.on('dialog', d => d.accept());   // Namensabfrage mit Vorschlag bestätigen
 
   await page.evaluate(() => { window.addShape('box'); window._doAutoSave(); });
   await page.waitForTimeout(200);
-
   const name = await page.evaluate(() => window.dsGetMeta(window.currentDesignId)?.name || '');
-  const parts = name.split(' ');
-  expect(parts.length).toBe(2);
-  expect(parts[0]).toMatch(/^[A-Z]/);
-  expect(parts[1]).toMatch(/^[A-Z]/);
-  expect(name).not.toMatch(/\d{1,2}\.\d{1,2}\.\d{4}/); // kein Datums-Format
-  console.log(`✓ Auto-Save-Name: "${name}"`);
+  expect(name).toMatch(/^Neues Projekt( \d+)?$/);
 
-  // Auch "Neues Design" aus der Galerie bekommt Zufallsnamen
   await page.evaluate(() => window.newDesignFromGallery());
   await page.waitForTimeout(200);
   const name2 = await page.evaluate(() => window.dsGetMeta(window.currentDesignId)?.name || '');
-  const parts2 = name2.split(' ');
-  expect(parts2.length).toBe(2);
-  expect(name2).not.toMatch(/\d{1,2}\.\d{1,2}\.\d{4}/);
-  console.log(`✓ newDesignFromGallery-Name: "${name2}"`);
+  expect(name2).toMatch(/^Neues Projekt( \d+)?$/);
+  expect(name2).not.toBe(name);
 });
 
 test('10 · Ctrl+S speichert sofort und zeigt "Gespeichert ✓"', async ({ page }) => {

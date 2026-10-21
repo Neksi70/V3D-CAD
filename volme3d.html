@@ -35749,7 +35749,7 @@ function redo() {
 }
 
 function newScene() {
-  if (objects.length === 0) { _newCreate(false); return; }
+  if (objects.length === 0) { _newCreate(false, true); return; }
   document.getElementById('new-modal').classList.add('show');
 }
 
@@ -35759,15 +35759,15 @@ function _newCancel() {
 
 function _newSave() {
   document.getElementById('new-modal').classList.remove('show');
-  _newCreate(true);
+  _newCreate(true, true);
 }
 
 function _newDiscard() {
   document.getElementById('new-modal').classList.remove('show');
-  _newCreate(false);
+  _newCreate(false, true);
 }
 
-function _newCreate(save) {
+function _newCreate(save, ask) {
   if (save) _doAutoSave();
   _localDetachFile();   // neue Szene darf nicht die alte Datei überschreiben
   currentDesignId = dsNewId();
@@ -35779,10 +35779,11 @@ function _newCreate(save) {
   orbitTarget.set(0, 0, 0); sph2cam();
   if (document.getElementById('vars-panel').classList.contains('show')) _varsRender();
   updateUndoRedoButtons(); updateTree();
-  const name = _randomDesignName();
+  const name = _newDesignName();
   dsSaveDesign(currentDesignId, _sceneSnapshot(), '', name);
   _updateDesignLabel(name);
   notify('Neue Szene', 'ok');
+  if (ask) _askNewDesignName();
 }
 
 // ═══ EDIT MODES ════════════════════════════════════════════════════════
@@ -40980,18 +40981,31 @@ let currentDesignId = null;
 let _autoSaveTimer  = null;
 let _autoSaveBusy   = false;
 
-// ── Zufallsnamen (Tinkercad-Style) ─────────────────────────────────────────
-function _randomDesignName() {
-  const adj   = ['Amazing','Awesome','Bold','Brave','Bright','Cool','Crazy','Dazzling','Epic','Fancy',
-                  'Fast','Funky','Groovy','Happy','Jolly','Keen','Lively','Lucky','Magic','Mighty',
-                  'Neat','Noble','Quick','Rapid','Sharp','Shiny','Slick','Smart','Snappy','Super',
-                  'Swift','Vivid','Wild','Witty','Wondrous','Zesty'];
-  const names = ['Aalto','Babbage','Bardeen','Bohr','Brahe','Brattain','Cantor','Curie','Darwin',
-                  'Edison','Einstein','Euler','Faraday','Fermat','Fermi','Fleming','Franklin','Galileo',
-                  'Gauss','Hawking','Heisenberg','Hopper','Hubble','Huygens','Jaagub','Jobs','Joule',
-                  'Kelvin','Kepler','Lovelace','Meitner','Mendel','Newton','Noether','Ohm','Pascal',
-                  'Pasteur','Planck','Tesla','Turing','Volta','Watt','Wiener','Wozniak'];
-  return adj[Math.floor(Math.random() * adj.length)] + ' ' + names[Math.floor(Math.random() * names.length)];
+// ── Name für neue Entwürfe ─────────────────────────────────────────────────
+// Früher Tinkercad-Fantasienamen („Zesty Hopper") — Volker 21.10.: lieber schlicht
+// „Neues Projekt", weitere dann „Neues Projekt 2", „… 3". Kleinste freie Nummer,
+// damit nach dem Umbenennen/Löschen nicht ewig weitergezählt wird.
+function _newDesignName() {
+  const used = new Set();
+  for (const d of _dsIdx()) {
+    const m = /^Neues Projekt(?: (\d+))?$/.exec((d.name || '').trim());
+    if (m) used.add(m[1] ? +m[1] : 1);
+  }
+  let n = 1; while (used.has(n)) n++;
+  return n === 1 ? 'Neues Projekt' : 'Neues Projekt ' + n;
+}
+
+// Gleich beim Anlegen nach dem Namen fragen (nur bei Klicks des Nutzers, nicht
+// beim Schließen des letzten Tabs oder per Agent-API). Abbrechen/leer = Vorschlag bleibt.
+function _askNewDesignName() {
+  if (!currentDesignId) return;
+  const def = dsGetMeta(currentDesignId)?.name || _newDesignName();
+  const ans = prompt('Wie soll das neue Projekt heißen?', def);
+  const nm = (ans || '').trim();
+  if (!nm || nm === def) return;
+  dsRenameDesign(currentDesignId, nm);
+  _updateDesignLabel(nm);
+  try { _tabsSync(); } catch (e) {}
 }
 
 // ── localStorage-Helfer ────────────────────────────────────────────────────
@@ -41424,7 +41438,7 @@ function _tabActivate(id) {
   _updateDesignLabel(dsGetMeta(id)?.name);
 }
 
-function _tabNew() { _newCreate(true); }   // sichert die alte Szene und startet leer im neuen Tab
+function _tabNew() { _newCreate(true, true); }   // sichert die alte Szene, startet leer im neuen Tab und fragt nach dem Namen
 
 function _tabRemove(id) {
   const ids = _tabsList();
@@ -41632,7 +41646,7 @@ function _doAutoSave() {
       localStorage.setItem('volme3d_cur', currentDesignId);
     }
     const meta = dsGetMeta(currentDesignId);
-    const name = meta?.name || _randomDesignName();
+    const name = meta?.name || _newDesignName();
     const snap = _sceneSnapshot();
     const thumb = captureThumbnail();
     // still (kein Nag-Popup); gzip im Worker — nur beim Verlassen des Tabs synchron, sonst ginge es verloren
@@ -41737,11 +41751,12 @@ function newDesignFromGallery() {
   objects.forEach(o => scene.remove(o)); objects = [];
   deselect(); undoStack = []; redoStack = [];
   updateUndoRedoButtons(); updateTree();
-  const name = _randomDesignName();
+  const name = _newDesignName();
   dsSaveDesign(currentDesignId, _sceneSnapshot(), '', name);
   _updateDesignLabel(name);
   hideDesigns();
   notify('Neues Design erstellt', 'ok');
+  _askNewDesignName();
 }
 
 function loadDesign(id) {
@@ -69438,8 +69453,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.229';
+const VOLME3D_VERSION = '1.18.230';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.230', date:'2026-10-21', changes:[
+    ['📝','<b>Neue Projekte heißen „Neues Projekt“ statt Fantasienamen.</b> Kein „Zesty Hopper“ oder „Mighty Tesla“ mehr: ein neues Projekt heißt <b>Neues Projekt</b>, weitere <b>Neues Projekt 2</b>, <b>3</b> … Beim Öffnen eines neuen Tabs (＋) bzw. bei <b>Neu</b> fragt V3D CAD gleich nach dem Namen – einfach eintippen oder mit Enter den Vorschlag übernehmen. Umbenennen geht weiter per Doppelklick auf den Tab.'],
+  ]},
   { version:'1.18.229', date:'2026-10-21', changes:[
     ['💾','<b>Gespeicherter Name gilt auch für den Export.</b> Wer über <b>Menü → Speichern</b> einen Namen vergibt (z. B. „Schriftplatte xy“), bekommt ihn jetzt auch als Namen des Entwurfs: im Reiter oben und bei den Exportdateien (STL, 3MF …). Bisher hießen die Exporte weiter wie der zufällige Fantasiename (danke Burkhard).'],
   ]},
