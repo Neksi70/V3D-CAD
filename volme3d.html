@@ -20928,6 +20928,7 @@ function clearSelLines() { selLines = []; }
 function rebuildSelLine(o) { /* selection shown via SVG overlay */ }
 
 function selectObjs(objs) {
+  try { if (objs && objs.length) { let t = 0; objs.forEach(o => o.traverse && o.traverse(c => { if (c.isMesh) t += _geoTriCount(c.geometry); })); if (t > BIGMESH_TRIS) { _fr('auswahl', { dreiecke: Math.round(t) }); requestAnimationFrame(() => _fr('auswahl-gezeichnet')); } } } catch (e) {}
   // Kanten-Modus gehört zu genau einem gewählten Körper — wechselt die Auswahl,
   // endet er (sonst blieb der orange Kanten-Griff stehen, Ralf 11.10.)
   if (_edgeMode && !(objs.length === 1 && objs[0] === _edgeObj)) exitEdgeMode();
@@ -39242,6 +39243,55 @@ async function _importStepFile(file) {
 }
 
 // Gemeinsamer STL-Import (Datei-Dialog + STL-Bibliothek). showDialog=true → Größendialog.
+// ═══ ABSTURZ-PROTOKOLL (Flugschreiber, _fr*) ═══════════════════════════════
+// Volker 21.10.: „Teil wird geladen, danach friert alles ein und stürzt ab" — auf dem
+// Server nicht nachstellbar (40 GB RAM, Intel Iris Xe). Der Tab schreibt deshalb still mit
+// (Schritte bei großen Modellen, Speicher, Grafikchip, Hänger, Fehler, Grafik-Verlust,
+// alle 2 s ein Lebenszeichen) nach localStorage. Wird die Sitzung nicht sauber beendet
+// (kein pagehide → Absturz/abgeschossen) und kamen große Modelle o. Ä. vor, geht das
+// Protokoll beim nächsten Start an /api/absturz (Server legt es unter
+// ~/.config/volme3d/absturz/ ab).
+const _FR_KEY = 'v3d_fr', _FR_MAX = 300;
+let _frLog = null;
+function _frMem() { const m = performance.memory; return m ? Math.round(m.usedJSHeapSize / 1048576) : undefined; }
+function _frSave() { if (!_frLog) return; try { _frLog.hb = Date.now(); localStorage.setItem(_FR_KEY, JSON.stringify(_frLog)); } catch (e) {} }
+function _fr(k, d) {
+  if (!_frLog) return;
+  const e = { t: Math.round(performance.now()), k }; if (d !== undefined) e.d = d;
+  const m = _frMem(); if (m) e.m = m;
+  _frLog.ev.push(e); if (_frLog.ev.length > _FR_MAX) _frLog.ev.splice(0, _frLog.ev.length - _FR_MAX);
+  _frSave();
+}
+function _frGpu() {
+  try { const gl = renderer.getContext(), x = gl.getExtension('WEBGL_debug_renderer_info');
+    return x ? gl.getParameter(x.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER); } catch (e) { return '?'; }
+}
+function _frSceneTris() { let n = 0; try { objects.forEach(o => o.traverse(c => { if (c.isMesh && !c.userData.isEdgeLines) n += _geoTriCount(c.geometry); })); } catch (e) {} return Math.round(n); }
+function _frStart() {
+  let alt = null; try { alt = JSON.parse(localStorage.getItem(_FR_KEY) || 'null'); } catch (e) {}
+  if (alt && !alt.sauber && Array.isArray(alt.ev) && alt.ev.some(e => /^(import|gross|haenger|grafik|fehler|bib|auswahl|speichern|bild)/.test(e.k))) {
+    try { fetch('/api/absturz', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(alt), keepalive: true }).catch(() => {}); } catch (e) {}
+  }
+  _frLog = { sid: Math.random().toString(36).slice(2, 10), start: new Date().toISOString(), ver: typeof VOLME3D_VERSION !== 'undefined' ? VOLME3D_VERSION : '?',
+    gpu: _frGpu(), kerne: navigator.hardwareConcurrency, ramGB: navigator.deviceMemory, heapMax: performance.memory ? Math.round(performance.memory.jsHeapSizeLimit / 1048576) : undefined,
+    fenster: innerWidth + 'x' + innerHeight + '@' + devicePixelRatio, sauber: false, ev: [] };
+  _fr('start');
+  addEventListener('pagehide', () => { if (_frLog) { _frLog.sauber = true; _frSave(); } });
+  addEventListener('pageshow', e => { if (e.persisted && _frLog) { _frLog.sauber = false; _fr('zurueck'); } });
+  document.addEventListener('visibilitychange', () => _fr(document.hidden ? 'versteckt' : 'sichtbar'));
+  addEventListener('error', e => _fr('fehler', String(e.message || e.error || '').slice(0, 200)));
+  addEventListener('unhandledrejection', e => _fr('fehler', 'Promise: ' + String(e.reason && (e.reason.message || e.reason)).slice(0, 200)));
+  try { renderer.domElement.addEventListener('webglcontextlost', () => _fr('grafik-verlust')); renderer.domElement.addEventListener('webglcontextrestored', () => _fr('grafik-zurueck')); } catch (e) {}
+  try { new PerformanceObserver(l => { for (const x of l.getEntries()) if (x.duration > 700) _fr('haenger', Math.round(x.duration)); }).observe({ entryTypes: ['longtask'] }); } catch (e) {}
+  // Lebenszeichen alle 2 s; bei großen Szenen alle 10 s Speicher + gezeichnete Dreiecke
+  let n = 0;
+  setInterval(() => {
+    if (++n % 5 === 0) { const t = _frSceneTris(); if (t > BIGMESH_TRIS) _fr('bild', { szene: t, gezeichnet: renderer.info.render.triangles, aufrufe: renderer.info.render.calls }); }
+    _frSave();
+  }, 2000);
+}
+setTimeout(() => { try { _frStart(); } catch (e) { console.warn('[Flugschreiber]', e); } }, 0);
+
 // ── Große Modelle: vor dem Import warnen und qualitätsschonend vereinfachen ──
 // Riesige Scans (Millionen Dreiecke) ließen V3D CAD beim Bearbeiten/Importieren
 // abstürzen (Volker 21.10.). Ab BIGMESH_TRIS fragt der Import nach; vereinfacht wird
@@ -39325,6 +39375,7 @@ function _soupGeo(pos) {
 async function _bigMeshGate(geos, filename) {
   const total = geos.reduce((s, g) => s + _geoTriCount(g), 0);
   if (total < BIGMESH_TRIS) return { geos, simplified: false };
+  _fr('gross-fenster', { datei: filename, dreiecke: Math.round(total), teile: geos.length });
   const fmt = n => Math.round(n).toLocaleString('de');
   const modal = document.getElementById('bigmesh-modal');
   const info = document.getElementById('bigmesh-info'), resEl = document.getElementById('bigmesh-res');
@@ -39357,6 +39408,7 @@ async function _bigMeshGate(geos, filename) {
   })();
   const c = await choice;
   modal.classList.remove('show');
+  _fr('gross-wahl', { wahl: c, rechenzeit: Math.round(performance.now() - t0), fehler: failed });
   if (c === 'simp' && results && !failed) {
     const out = geos.map((g, i) => { if (!results[i]) return g; g.dispose(); return _soupGeo(results[i].pos); });
     return { geos: out, simplified: true };
@@ -39368,6 +39420,7 @@ async function _bigMeshGate(geos, filename) {
 // stl/obj liefern EINE Geometrie, 3MF evtl. mehrere Teile.
 async function _importMeshFile(buf, filename, showDialog) {
   const ext = (filename.split('.').pop() || '').toLowerCase();
+  _fr('import', { datei: filename, mb: +(buf.byteLength / 1048576).toFixed(1) });
   const schon = _libIsSimplified(buf, ext);   // schon vereinfacht → nicht noch einmal fragen/vereinfachen
   if (ext === '3mf') return _importThreeMF(buf, filename, { ask: !schon });
   let geo;
@@ -39375,6 +39428,7 @@ async function _importMeshFile(buf, filename, showDialog) {
   catch (err) { notify('Import Fehler: ' + err.message, 'e'); return false; }
   const r = schon ? { geos: [geo], simplified: false } : await _bigMeshGate([geo], filename);
   if (!r) return false;
+  _fr('import-gelesen', { dreiecke: Math.round(_geoTriCount(r.geos[0])), vereinfacht: r.simplified });
   if (!r.geos[0].attributes.normal) r.geos[0].computeVertexNormals();
   // vereinfachte Geometrie passt nicht mehr zu den rohen STL-Bytes → nicht mitgeben
   _addImportedGeo(r.geos[0], filename, ext !== 'obj', (ext === 'stl' && !r.simplified) ? buf : null, showDialog);
@@ -39412,7 +39466,11 @@ function _addImportedGeo(geo, filename, zUp, stlBuf, showDialog, stepBytes) {
       _stlCy: (geo.boundingBox ? (geo.boundingBox.min.y + geo.boundingBox.max.y) / 2 : 12.8),
       _stlCz: (geo.boundingBox ? (geo.boundingBox.min.z + geo.boundingBox.max.z) / 2 : 10.1) };
     if (stepBytes) { mesh.userData._brepStep = stepBytes; _brepPrepare(mesh); }
-    scene.add(mesh); objects.push(mesh); selectObjs([mesh]); updateTree();
+    scene.add(mesh); objects.push(mesh);
+    _fr('koerper-neu', { dreiecke: Math.round(_geoTriCount(geo)) });
+    selectObjs([mesh]); updateTree();
+    // Wird das erste Bild danach noch fertig? (Grafik-Hänger vs. Rechnen/Speicher)
+    requestAnimationFrame(() => requestAnimationFrame(() => _fr('koerper-gezeichnet')));
     if (showDialog) _showSizeDialog(() => notify('"' + filename + '" importiert & positioniert ✓', 'ok'));
     else { fitToObjects([mesh]); notify('"' + filename + '" geladen ✓', 'ok'); }
   } catch(err) { notify('Import Fehler: ' + err.message, 'e'); }
@@ -39471,6 +39529,7 @@ async function _importThreeMF(buf, filename, opts) {
     for (const p of parts) if (!p.geo.attributes.normal) p.geo.computeVertexNormals();
   }
   if (!parts.length) { notify('3MF enthält kein 3D-Modell (nur Vorschau) — bitte „Drucken"', 'w'); return false; }
+  _fr('import-gelesen', { dreiecke: Math.round(parts.reduce((t, p) => t + _geoTriCount(p.geo), 0)), teile: parts.length });
   if (parts.length > 1) _addImported3MFParts(parts, filename);
   else _addImportedGeo(parts[0].geo, filename, true, null, false);
   return true;
@@ -42216,6 +42275,8 @@ function _doAutoSave() {
     return;
   }
   _autoSaveBusy = true;
+  const _frT = _frSceneTris() > BIGMESH_TRIS ? performance.now() : 0;
+  if (_frT) _fr('speichern');
   try {
     if (!currentDesignId) {
       currentDesignId = dsNewId();
@@ -42239,7 +42300,7 @@ function _doAutoSave() {
       localStorage.setItem('v3d-disk-tip', '1');
       notify('Tipp: Einmal Strg+S drücken — dann speichert V3D CAD dein Design automatisch auch als Datei auf deiner Festplatte.', 'ok', 10000);
     }
-  } finally { _autoSaveBusy = false; }
+  } finally { _autoSaveBusy = false; if (_frT) _fr('speichern-fertig', { ms: Math.round(performance.now() - _frT) }); }
 }
 
 function _startAutoSave() {
@@ -69450,10 +69511,11 @@ async function _stlOpenInScene(idx){
   const f=_stlFiles[idx]; if(!f) return;
   if(_stlOpening){ notify('Moment – „'+_stlOpening+'“ wird noch geöffnet …','i'); return; }
   _stlOpening=f.name;
+  _fr('bib-oeffnen', { datei: f.name, mb: +(f.size / 1048576).toFixed(1) });
   const btns=[...document.querySelectorAll('[onclick="_stlOpenInScene('+idx+')"]')], alt=btns.map(b=>b.innerHTML);
   btns.forEach(b=>{ b.innerHTML='⏳ Wird geöffnet …'; b.disabled=true; });
   if(f.size>8e6) notify('„'+f.name+'“ wird geöffnet ('+(f.size/1048576).toFixed(0)+' MB) …','i');
-  try{ await _stlOpenInScene2(f); }
+  try{ await _stlOpenInScene2(f); _fr('bib-geoeffnet', { datei: f.name }); }
   finally{ _stlOpening=false; btns.forEach((b,i)=>{ b.innerHTML=alt[i]; b.disabled=false; }); }
 }
 async function _stlOpenInScene2(f){
@@ -70179,8 +70241,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.246';
+const VOLME3D_VERSION = '1.18.247';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.247', date:'2026-10-21', changes:[
+    ['🩺','<b>Absturz-Protokoll für große Modelle.</b> Damit wir Abstürze nach dem Laden großer Teile finden, die sich auf unserem Server nicht nachstellen lassen, schreibt V3D CAD ab jetzt still mit, was dabei passiert (Schritte, Speicherbedarf, Grafikchip, Hänger). Stürzt die Seite ab, geht dieses Protokoll beim nächsten Start einmal an uns – keine Modelldaten, keine Dateien, nur der Ablauf. Bei normalem Arbeiten wird nichts verschickt.'],
+  ]},
   { version:'1.18.246', date:'2026-10-21', changes:[
     ['🧠','<b>Große Modelle brauchen deutlich weniger Arbeitsspeicher.</b> Nach dem Laden eines großen Scans fror die Seite ein und stürzte ab. Die Hintergrundrechner fürs Lesen und Vereinfachen behielten ihren Speicher (bei einem 4-Millionen-Dreiecke-Scan mehrere hundert MB) – jetzt geben sie ihn nach getaner Arbeit frei. Dazu entfallen doppelte Kopien beim Vereinfachen. Gemessen mit einem Kopf-Scan: dauerhaft 0,8 statt 1,5 GB, Höchstwert beim Laden 2,0 statt 2,4 GB.'],
   ]},

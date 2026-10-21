@@ -662,6 +662,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._nutzung_melden()
             return
+        if self.path == '/api/absturz':
+            if not self._need_session():
+                return
+            self._absturz_melden()
+            return
         if self.path == '/ki/generate':
             if not self._need_session(ki=True):
                 return
@@ -803,6 +808,36 @@ class Handler(BaseHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     return  # Zuschauer hat weggeklickt
                 rest -= len(chunk)
+
+    def _absturz_melden(self):
+        """POST /api/absturz — Absturz-Protokoll (Flugschreiber) eines Tabs, der nicht sauber
+        beendet wurde. Landet als JSON in ~/.config/volme3d/absturz/ (Diagnose, Volker 21.10.)."""
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        if length <= 0 or length > 400000:
+            self._json(413, {'error': 'Protokoll zu gross'})
+            return
+        try:
+            body = json.loads(self.rfile.read(length))
+        except ValueError:
+            self._json(400, {'error': 'kein JSON'})
+            return
+        sess = self._session() or {}
+        email = str(sess.get('e') or 'unbekannt')
+        ordner = os.path.expanduser('~/.config/volme3d/absturz')
+        os.makedirs(ordner, exist_ok=True)
+        name = time.strftime('%Y%m%d-%H%M%S') + '_' + re.sub(r'[^a-z0-9@._-]', '_', email.lower())[:60] + '.json'
+        with open(os.path.join(ordner, name), 'w', encoding='utf-8') as f:
+            json.dump({'email': email, 'empfangen': time.strftime('%Y-%m-%d %H:%M:%S'),
+                       'ua': self.headers.get('User-Agent', ''), 'protokoll': body}, f, ensure_ascii=False, indent=1)
+        alte = sorted(os.listdir(ordner))
+        for alt in alte[:-200]:   # hoechstens 200 Protokolle behalten
+            try:
+                os.remove(os.path.join(ordner, alt))
+            except OSError:
+                pass
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
 
     def _nutzung_melden(self):
         """POST /api/nutzung — {art, detail}: was nur der Browser sieht (Exporte)."""
