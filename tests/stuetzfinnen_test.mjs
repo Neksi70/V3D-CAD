@@ -146,6 +146,60 @@ try {
   ok('Kuppeldecke: Finnen mit Zinken', kg.fins >= 1 && kg.tines > 0, { fins: kg.fins, tines: kg.tines, unserved: kg.unserved });
   await pg.evaluate(() => { _sfnClose(); const k = objects.find(o => o.userData.name === 'Kuppel-Test'); scene.remove(k); objects.splice(objects.indexOf(k), 1); });
 
+  // ── Rippe von Hand + Festigkeit am schlanken Turm (10 × 10 × 60 mm) ──
+  await pg.evaluate(() => {
+    _sfnClose();
+    const g = new THREE.BoxGeometry(10, 10, 60).toNonIndexed(); g.translate(0, 0, 30);
+    const m = _moldSceneMesh(g, 'Turm-Test'); m.position.x += 5; m.updateMatrixWorld(true);
+    _updateObjEdgeLines(m); selectObjs([m]); _sfnOpen();
+    orbitTarget.set(5, 3, 0); sph.theta = Math.PI / 2; sph.phi = Math.PI / 2 - 0.15; sph.r = 16; sph2cam();
+  });
+  await pg.waitForFunction(() => _sfnDbg().info, { timeout: 60000 });
+  await pg.evaluate(() => _sfnDrawStart('brace'));
+  // +X-Seite des Turms (Welt x = 5,5 cm), oben (55 mm) → volle Höhe
+  const t1 = await scr(5.5, 5.5, 0);
+  await pg.mouse.move(t1[0] - 30, t1[1]); await pg.mouse.move(t1[0], t1[1], { steps: 3 });
+  await pg.waitForFunction(() => /Rippe ·|keine Rippe/.test(document.getElementById('hint').textContent), { timeout: 20000 }).catch(() => {});
+  const hintTxt = await pg.evaluate(() => document.getElementById('hint').textContent);
+  ok('Rippen-Vorschau beim Überfahren', /Rippe · \d+ mm/.test(hintTxt) && (await pg.evaluate(() => _sfnDbg().ghost)) > 0, hintTxt.slice(-80));
+  await pg.mouse.down(); await pg.mouse.up();
+  await pg.waitForFunction(() => _sfnDbg().braces === 1 && _sfnDbg().info && (_sfnDbg().info.handBraces || []).length === 1, { timeout: 30000 }).catch(() => {});
+  const bi = await pg.evaluate(() => _sfnDbg().info);
+  ok('Rippe von Hand gebaut', bi && bi.handBraces && bi.handBraces[0] && bi.handBraces[0].ok, bi && bi.handBraces);
+  ok('Rippe läuft über die volle Höhe', bi && bi.handBraces && bi.handBraces[0].full && bi.handBraces[0].height > 50, bi && bi.handBraces);
+  // Klick auf die Deckfläche (waagrecht) → abgelehnt
+  const t2 = await pg.evaluate(() => { sph.phi = 0.3; sph2cam(); return 1; });
+  const tp = await scr(5.0, 6.0, 0);
+  await pg.mouse.move(tp[0], tp[1]); await pg.mouse.down(); await pg.mouse.up();
+  await pg.waitForTimeout(800);
+  ok('Rippe an waagrechter Fläche abgelehnt', (await pg.evaluate(() => _sfnDbg().braces)) === 1);
+  await pg.keyboard.press('Escape');
+
+  // Festigkeit: Zug senkrecht am stehenden Turm = schwach; stärkste Lage legt ihn hin
+  await pg.evaluate(() => { _sfnLoadSetArt('zug'); _sfnLoadSetKraft('z'); });
+  const f1 = await pg.evaluate(() => ({ txt: document.getElementById('sfn-load-info').textContent, crit: _sfnDbg().load.crit, pfeile: scene.children.filter(c => c.userData && c.userData.isSfnHelper && c.type === 'ArrowHelper').length }));
+  ok('Zug quer zu den Schichten = Schwach', /^Schwach/.test(f1.txt) && Math.abs(f1.crit[1]) > 0.99, f1.txt.slice(0, 60));
+  ok('Kraftpfeil sichtbar', f1.pfeile >= 1, f1.pfeile);
+  await pg.evaluate(() => _sfnLoadBest());
+  await pg.waitForFunction(() => /Gedreht|schon die stärkste|Keine druckbare|fehlgeschlagen/.test(document.getElementById('sfn-load-best').textContent), { timeout: 60000 });
+  const f2 = await pg.evaluate(() => {
+    const o = objects.find(o => o.userData.name === 'Turm-Test'); o.updateMatrixWorld(true);
+    const b = getMeshBox(o);
+    return { best: document.getElementById('sfn-load-best').textContent, info: document.getElementById('sfn-load-info').textContent,
+             hoehe: (b.max.y - b.min.y) * 10, minY: b.min.y * 10, crit: _sfnDbg().load.crit };
+  });
+  ok('Stärkste Lage legt den Turm hin', /Gedreht/.test(f2.best) && f2.hoehe < 12 && Math.abs(f2.minY) < 0.01, { hoehe: f2.hoehe, best: f2.best.slice(0, 50) });
+  ok('danach Zug entlang der Schichten = Gut', /^Gut/.test(f2.info) && Math.abs(f2.crit[1]) < 0.01, f2.info.slice(0, 50));
+  // Hebel: liegender Balken, Kraft senkrecht (Z) → Arm = lange Achse (waagrecht) → Gut,
+  // obwohl Zug in Z hier Schwach wäre
+  await pg.evaluate(() => { _sfnLoadSetArt('hebel'); _sfnLoadSetKraft('z'); _sfnLoadSetArm('auto'); });
+  const f3 = await pg.evaluate(() => ({ txt: document.getElementById('sfn-load-info').textContent, crit: _sfnDbg().load.crit }));
+  ok('Hebel: Arm liegt in den Schichten = Gut', /^Gut/.test(f3.txt) && Math.abs(f3.crit[1]) < 0.01, f3);
+  await pg.evaluate(() => _sfnLoadSetArt('zug'));
+  ok('gleiche Kraft als Zug = Schwach', /^Schwach/.test(await pg.evaluate(() => document.getElementById('sfn-load-info').textContent)));
+  await pg.evaluate(() => { _sfnClose(); const k = objects.find(o => o.userData.name === 'Turm-Test'); scene.remove(k); objects.splice(objects.indexOf(k), 1); });
+  ok('Pfeile nach Schließen weg', await pg.evaluate(() => scene.children.filter(c => c.userData && c.userData.isSfnHelper).length) === 0);
+
   // Lage vorschlagen
   await pg.evaluate(() => { selectObjs([objects.find(o => o.userData.name === 'T-Test')]); _sfnOpen(); });
   await pg.waitForFunction(() => _sfnDbg().info, { timeout: 60000 });

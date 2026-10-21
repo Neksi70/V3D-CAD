@@ -3730,6 +3730,23 @@ const firebaseConfig = {
         <span class="vsec">Hohe Teile</span>
         <div class="vrow"><label title="Senkrechte Rippen, die schlanke hohe Teile seitlich festhalten, damit sie beim Drucken nicht wackeln">Stabilisierungsrippen</label> <input type="checkbox" id="sfn-sway" onchange="_sfnSet('sway',this.checked)" style="flex:0"></div>
         <div class="vrow"><label title="Hohe Finnen bekommen Querrippen, damit sie nicht umknicken">Hohe Finnen versteifen</label> <input type="checkbox" id="sfn-tall" checked onchange="_sfnSet('tallRibs',this.checked)" style="flex:0"></div>
+        <div class="vrow"><label title="Eine Stabilisierungsrippe genau dort, wo du eine senkrechte Seite anklickst. Weit oben geklickt = über die ganze Höhe, weiter unten = endet auf Klickhöhe. Geht auch ohne „Stabilisierungsrippen“.">Von Hand</label><button class="btn" id="sfn-brace-btn" style="flex:1;font-size:12px;padding:5px 8px" onclick="_sfnDrawStart('brace')">🦴 Rippe anklicken</button></div>
+        <div class="g3info" id="sfn-braces-n" style="margin-top:0;padding-top:0;border:0">noch keine Rippe von Hand</div>
+        <span class="vsec" title="Ein Druckteil ist quer zu den Schichten am schwächsten. Hier sagst du, wie es belastet wird — V3D CAD bewertet die Lage und sucht eine stärkere, die gut druckbar bleibt.">💪 Festigkeit</span>
+        <div class="vbg" id="sfn-load-bg">
+          <button class="vtb on" data-v="aus" onclick="_sfnLoadSetArt('aus')">Keine Last</button>
+          <button class="vtb" data-v="zug" onclick="_sfnLoadSetArt('zug')" title="Das Teil wird auseinandergezogen — z. B. Öse, Lasche, Kettenglied">↔ Zug</button>
+          <button class="vtb" data-v="hebel" onclick="_sfnLoadSetArt('hebel')" title="Das Teil wird gebogen — z. B. Haken, Halter, Clip, Hebel">⤴ Hebel</button>
+        </div>
+        <div id="sfn-load-rows" style="display:none">
+          <div class="vrow"><label title="In welche Richtung die Kraft wirkt (Richtung auf der Platte, wie das Teil jetzt liegt). Orange Pfeil.">Kraft</label>
+            <div class="vbg" id="sfn-kraft-bg" style="flex:1;margin:0"><button class="vtb" data-v="x" onclick="_sfnLoadSetKraft('x')">X Breite</button><button class="vtb" data-v="y" onclick="_sfnLoadSetKraft('y')">Y Tiefe</button><button class="vtb" data-v="z" onclick="_sfnLoadSetKraft('z')">Z Höhe</button></div></div>
+          <div class="vrow" id="sfn-arm-row"><label title="Entlang welcher Richtung der Hebelarm läuft — von der Einspannung bis dahin, wo die Kraft angreift. Lila Pfeil. „Auto“ = längste Seite quer zur Kraft.">Hebelarm</label>
+            <div class="vbg" id="sfn-arm-bg" style="flex:1;margin:0"><button class="vtb on" data-v="auto" onclick="_sfnLoadSetArm('auto')">Auto</button><button class="vtb" data-v="x" onclick="_sfnLoadSetArm('x')">X</button><button class="vtb" data-v="y" onclick="_sfnLoadSetArm('y')">Y</button><button class="vtb" data-v="z" onclick="_sfnLoadSetArm('z')">Z</button></div></div>
+          <div class="vrow"><label></label><button class="btn" style="flex:1;font-size:12px;padding:5px 8px" onclick="_sfnLoadBest()" title="Dreht das Teil in die Lage, in der die Last am besten entlang der Schichten läuft — aber nur unter Lagen, die gut druckbar bleiben (keine Nadel-Türme).">💪 Stärkste druckbare Lage</button></div>
+        </div>
+        <div class="g3info" id="sfn-load-info" style="margin-top:4px"></div>
+        <div class="g3info" id="sfn-load-best" style="margin-top:0;padding-top:0;border:0"></div>
         <div class="g3info" id="sfn-info"></div>
         <div class="g3info">Die Finnen werden ein eigener Körper (orange). <b>Teil + Finnen zusammen exportieren</b> und im Slicer <b>Stützstrukturen aus</b>. Nach dem Druck abbrechen. Rechenkern: <i>Support Fins</i> (printfins.com, MIT-Lizenz).</div>
       </div>
@@ -32221,8 +32238,10 @@ async function _sfnPreview() {
   if (info) info.textContent = 'Finnen werden berechnet…';
   try {
     await _sfnAnalyze();
-    const opts = _sfnOpts(), walls = _sfnWallsMm(), key = _sfnSoupKey + '|' + JSON.stringify(opts) + '|' + JSON.stringify(walls);
-    const r = await _sfnCall('build', { threshold: 45, opts, walls });
+    _sfnLoadUpdate(true);   // Pfeile + Bewertung folgen einer Drehung von Hand
+    const opts = _sfnOpts(), walls = _sfnWallsMm(), braces = _sfnBracesMm(),
+          key = _sfnSoupKey + '|' + JSON.stringify(opts) + '|' + JSON.stringify(walls) + '|' + JSON.stringify(braces);
+    const r = await _sfnCall('build', { threshold: 45, opts, walls, braces });
     if (gen !== _sfnGen || !_sfnObj) return null;
     _sfnDrop('prev');
     if (r.tris.length) { _sfnPrev = _sfnHelperMesh(r.tris, '#ff9800', 1); scene.add(_sfnPrev); }
@@ -32241,7 +32260,10 @@ function _sfnShowInfo(r) {
   const wv = r.walls || [], wOk = wv.filter(w => w.ok).length, wBad = wv.filter(w => !w.ok);
   if (wv.length) t.push('<b>' + wOk + ' von ' + wv.length + ' Wänden von Hand</b> gebaut' +
     (wBad.length ? ' — <span style="color:#c62828">' + wBad.map(w => _stlEsc(w.grund)).join('; ') + '</span>' : ''));
-  if (!r.regions && !wv.length) t.push('Nichts zu stützen.');
+  const bv = r.handBraces || [], bOk = bv.filter(b => b.ok).length, bBad = bv.filter(b => !b.ok);
+  if (bv.length) t.push('<b>' + bOk + ' von ' + bv.length + ' Rippen von Hand</b> gebaut' +
+    (bBad.length ? ' — <span style="color:#c62828">' + bBad.map(b => _stlEsc(b.grund)).join('; ') + '</span>' : ''));
+  if (!r.regions && !wv.length && !bv.length) t.push('Nichts zu stützen.');
   else if (r.regions && r.fins + (r.braces || 0) > 0 || _sfnP.mode !== 'draw') {
     t.push('<b>' + r.fins + ' Finne' + (r.fins === 1 ? '' : 'n') + '</b>' + (r.tines ? ', ' + r.tines + ' Zinken' : '') +
            (r.braces ? ', ' + r.braces + ' Stabilisierungsrippe' + (r.braces === 1 ? '' : 'n') : '') + (r.pad ? ', Bett-Pad' : ''));
@@ -32261,6 +32283,7 @@ function _sfnOpen() {
   if (typeof Worker === 'undefined') { notify('Dieser Browser kann keine Hintergrund-Berechnung (Worker)', 'e'); return; }
   if (_sfnObj) _sfnClose();
   _sfnObj = o; _sfnSoupKey = ''; _sfnSoup = null; _sfnLast = null; _sfnSug = null; _sfnWalls = []; _sfnDrawUI();
+  Object.assign(_sfnLoadP, { art: 'aus', kraft: null, arm: null, armWahl: 'auto' });
   // Liegt das Teil nicht auf der Platte, rechnet der Kern es trotzdem aufgesetzt —
   // die Finnen kämen dann in der Luft an. Also gleich hinsetzen (mit Rückgängig).
   o.updateMatrixWorld(true);
@@ -32269,7 +32292,7 @@ function _sfnOpen() {
   const e = document.getElementById('sfn-dim');
   if (e) e.innerHTML = 'Teil: <b>' + _stlEsc(o.userData.name || 'Körper') + '</b>';
   const sg = document.getElementById('sfn-sug'); if (sg) sg.textContent = '';
-  _sfnSyncUI();
+  _sfnSyncUI(); _sfnLoadUpdate();
   document.getElementById('sfn-modal').classList.add('show');
   _sfnPlanPreview(0);
 }
@@ -32277,6 +32300,7 @@ function _sfnClose() {
   const m = document.getElementById('sfn-modal'); if (m) m.classList.remove('show');
   clearTimeout(_sfnTimer); _sfnGen++;
   if (_sfnPick) _sfnDrawEnd();
+  _sfnLoadP.art = 'aus'; _sfnLoadArrows();
   _sfnDrop('red'); _sfnDrop('prev');
   _sfnObj = null; _sfnSoup = null; _sfnSoupKey = ''; _sfnLast = null; _sfnSug = null;
 }
@@ -32306,6 +32330,24 @@ function _sfnSet(k, v) {
   _sfnSyncUI(); _sfnPlanPreview();
 }
 
+// Drehung des Kerns (Spalten-Matrix, mm/Z oben) auf den Körper anwenden: in der
+// Szene (Y oben) ist das C·R·C⁻¹ mit C = Drehung um X −90°. Gedreht wird um die
+// Mitte, danach wieder auf die Platte.
+function _sfnApplyRot(o, rot) {
+  const C = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+  const R = new THREE.Matrix4().setFromMatrix3(new THREE.Matrix3().fromArray(rot));
+  const M = C.clone().multiply(R).multiply(C.clone().invert());
+  o.updateMatrixWorld(true);
+  const b0 = getMeshBox(o), cx = (b0.min.x + b0.max.x) / 2, cz = (b0.min.z + b0.max.z) / 2;
+  o.quaternion.premultiply(new THREE.Quaternion().setFromRotationMatrix(M));
+  o.updateMatrixWorld(true);
+  const b1 = getMeshBox(o);
+  o.position.x += cx - (b1.min.x + b1.max.x) / 2; o.position.z += cz - (b1.min.z + b1.max.z) / 2;
+  o.updateMatrixWorld(true);
+  o.position.y -= getMeshBox(o).min.y; o.updateMatrixWorld(true);
+  updateTFInputs(); _doRepositionDimHandles();
+}
+
 // Ausrichtung vorschlagen: der Kern bewertet Lagen (Überhangfläche, Stützmaterial,
 // Höhe, Auflage). Jeder weitere Klick = nächster Vorschlag, wie bei ⊥ Aufstellen.
 async function _sfnSuggest() {
@@ -32324,19 +32366,9 @@ async function _sfnSuggest() {
   const S = _sfnSug, c = S.list[S.i];
   saveUndo();
   o.quaternion.copy(S.q0); o.position.copy(S.p0); o.updateMatrixWorld(true);
-  // Drehung des Kerns (Spalten-Matrix, mm/Z oben) in die Szene (Y oben): C·R·C⁻¹
-  const C = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
-  const R = new THREE.Matrix4().setFromMatrix3(new THREE.Matrix3().fromArray(c.rot));
-  const M = C.clone().multiply(R).multiply(C.clone().invert());
-  const b0 = getMeshBox(o), cx = (b0.min.x + b0.max.x) / 2, cz = (b0.min.z + b0.max.z) / 2;
-  o.quaternion.premultiply(new THREE.Quaternion().setFromRotationMatrix(M));
-  o.updateMatrixWorld(true);
-  const b1 = getMeshBox(o);
-  o.position.x += cx - (b1.min.x + b1.max.x) / 2; o.position.z += cz - (b1.min.z + b1.max.z) / 2;
-  o.updateMatrixWorld(true);
-  o.position.y -= getMeshBox(o).min.y; o.updateMatrixWorld(true);
+  _sfnApplyRot(o, c.rot);
   S.qSet = o.quaternion.clone();
-  updateTFInputs(); _doRepositionDimHandles();
+  _sfnLoadUpdate();
   const sicher = { high: 'klarer Favorit', medium: 'knapp vorn', low: 'mehrere Lagen etwa gleich gut', none: 'keine Lage steht sicher' }[S.conf] || '';
   if (sg) sg.innerHTML = 'Vorschlag <b>' + (S.i + 1) + ' von ' + S.list.length + '</b>' + (S.i === 0 && sicher ? ' (' + sicher + ')' : '') +
     ': ' + c.regions + ' Überhang-Bereich' + (c.regions === 1 ? '' : 'e') + ', Höhe ' + Math.round(c.height) + ' mm' +
@@ -32347,7 +32379,7 @@ function _sfnReset() {
   const o = _sfnObj, S = _sfnSug; if (!o || !S) return;
   saveUndo();
   o.quaternion.copy(S.q0); o.position.copy(S.p0); o.updateMatrixWorld(true);
-  _sfnSug = null; updateTFInputs(); _doRepositionDimHandles();
+  _sfnSug = null; updateTFInputs(); _doRepositionDimHandles(); _sfnLoadUpdate();
   const sg = document.getElementById('sfn-sug'); if (sg) sg.textContent = 'Ursprüngliche Lage.';
   _sfnPlanPreview(0);
 }
@@ -32357,7 +32389,7 @@ async function _sfnApply() {
   const btn = document.getElementById('sfn-go'); if (btn) btn.disabled = true;
   try {
     let L = _sfnLast;
-    const key = _sfnPoseKey(o) + '|' + JSON.stringify(_sfnOpts()) + '|' + JSON.stringify(_sfnWallsMm());
+    const key = _sfnPoseKey(o) + '|' + JSON.stringify(_sfnOpts()) + '|' + JSON.stringify(_sfnWallsMm()) + '|' + JSON.stringify(_sfnBracesMm());
     if (!L || L.key !== key) L = await _sfnPreview();
     if (!L) return;
     if (!L.tris.length) { notify('Keine Finnen nötig — das Teil druckt in dieser Lage ohne Stützen', 'ok'); _sfnClose(); return; }
@@ -32374,11 +32406,125 @@ async function _sfnApply() {
     const r = L.info;
     _sfnClose();
     selectObjs([o, m]); updateTree(); updateFP();
-    const nh = (r.walls || []).filter(w => w.ok).length;
-    notify('🦈 ' + (_sfnP.mode === 'draw' ? nh + ' Wand' + (nh === 1 ? '' : 'e') + ' von Hand' : r.fins + ' Stützfinne' + (r.fins === 1 ? '' : 'n') + (nh ? ' + ' + nh + ' von Hand' : '')) + ' erzeugt — Teil + Finnen zusammen exportieren und im Slicer Stützstrukturen AUS', 'ok', 7000);
+    const nh = (r.walls || []).filter(w => w.ok).length + (r.handBraces || []).filter(b => b.ok).length;
+    notify('🦈 ' + (_sfnP.mode === 'draw' ? nh + ' Wand' + (nh === 1 ? '' : 'e') + ' von Hand' : r.fins + ' Stützfinne' + (r.fins === 1 ? '' : 'n') + (nh ? ' + ' + nh + ' Teil' + (nh === 1 ? '' : 'e') + ' von Hand' : '')) + ' erzeugt — Teil + Finnen zusammen exportieren und im Slicer Stützstrukturen AUS', 'ok', 7000);
   } finally { if (btn) btn.disabled = false; }
 }
 
+
+// ── Festigkeit: Zug oder Hebel (_sfnLoad*) ────────────────────────────────
+// Ein Druckteil ist QUER zu den Schichten am schwächsten. Entscheidend ist, wie
+// viel der kritischen Zugrichtung entlang der Bauachse zeigt (Kern: orient.js
+// loadAlignment/suggestStrengthPose, bewusst nur gut/teils/schwach statt einer
+// erfundenen „3,4× stärker“-Zahl).
+//   Zug   — das Teil wird auseinandergezogen (Öse, Lasche): kritisch ist die Kraft selbst.
+//   Hebel — das Teil wird gebogen (Haken, Halter, Clip): die Zugspannung läuft
+//           entlang des Hebelarms, also QUER zur Kraft. Im Original ist das nur als
+//           künftige Option erwähnt; hier zählt dafür die Richtung des Arms.
+// Richtungen werden im Rahmen des KÖRPERS gespeichert, damit sie beim Drehen mitgehen.
+const _sfnLoadP = { art: 'aus', kraft: null, arm: null, armWahl: 'auto' };   // kraft/arm: Vector3 lokal
+let _sfnArrF = null, _sfnArrA = null;
+
+function _sfnAxisWorld(k) { return k === 'x' ? new THREE.Vector3(1, 0, 0) : k === 'y' ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0); }
+// Szene-Richtung → Körper-Rahmen und zurück (nur Drehung, Skalierung raus)
+function _sfnDirToLocal(o, w) { const q = new THREE.Quaternion(); o.getWorldQuaternion(q); return w.clone().applyQuaternion(q.invert()).normalize(); }
+function _sfnDirToWorld(o, l) { const q = new THREE.Quaternion(); o.getWorldQuaternion(q); return l.clone().applyQuaternion(q).normalize(); }
+// Szene-Achsen-Kürzel der aktuellen Richtung (für die Knopf-Markierung)
+function _sfnAxisOf(o, l) {
+  if (!l) return null; const w = _sfnDirToWorld(o, l);
+  const a = [Math.abs(w.x), Math.abs(w.z), Math.abs(w.y)], i = a.indexOf(Math.max(...a));
+  return a[i] > 0.999 ? ['x', 'y', 'z'][i] : null;
+}
+
+function _sfnLoadSetArt(a) { _sfnLoadP.art = a; if (a !== 'aus' && !_sfnLoadP.kraft) _sfnLoadSetKraft('z', true); _sfnLoadUpdate(); }
+function _sfnLoadSetKraft(k, still) {
+  const o = _sfnObj; if (!o) return;
+  _sfnLoadP.kraft = _sfnDirToLocal(o, _sfnAxisWorld(k));
+  if (_sfnLoadP.armWahl === k) _sfnLoadP.armWahl = 'auto';
+  _sfnLoadArmAuto();
+  if (!still) _sfnLoadUpdate();
+}
+function _sfnLoadSetArm(k) { _sfnLoadP.armWahl = k; _sfnLoadArmAuto(); _sfnLoadUpdate(); }
+// Hebelarm: gewählte Achse, sonst die längste Ausdehnung des Teils quer zur Kraft
+function _sfnLoadArmAuto() {
+  const o = _sfnObj, P = _sfnLoadP; if (!o || !P.kraft) return;
+  const fk = _sfnAxisOf(o, P.kraft);
+  let k = P.armWahl;
+  if (k === 'auto' || k === fk) {
+    o.updateMatrixWorld(true);
+    const s = getMeshBox(o).getSize(new THREE.Vector3()), ext = { x: s.x, y: s.z, z: s.y };
+    k = ['x', 'y', 'z'].filter(a => a !== fk).sort((a, b) => ext[b] - ext[a])[0];
+  }
+  P.arm = _sfnDirToLocal(o, _sfnAxisWorld(k));
+}
+// Kritische Zugrichtung in der Szene (Y = Bauachse)
+function _sfnLoadCrit() {
+  const o = _sfnObj, P = _sfnLoadP;
+  if (!o || P.art === 'aus' || !P.kraft) return null;
+  return _sfnDirToWorld(o, P.art === 'hebel' ? (P.arm || P.kraft) : P.kraft);
+}
+function _sfnLoadArrows() {
+  for (const a of [_sfnArrF, _sfnArrA]) if (a) { scene.remove(a); a.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); }); }
+  _sfnArrF = _sfnArrA = null;
+  const o = _sfnObj, P = _sfnLoadP;
+  if (!o || P.art === 'aus' || !P.kraft) return;
+  o.updateMatrixWorld(true);
+  const bb = getMeshBox(o), c = bb.getCenter(new THREE.Vector3()), L = bb.getSize(new THREE.Vector3()).length() * 0.75;
+  const mk = (dir, col) => {
+    const a = new THREE.ArrowHelper(dir, c.clone().addScaledVector(dir, -L / 2), L, col, L * 0.18, L * 0.1);
+    a.traverse(ch => { if (ch.material) { ch.material.depthTest = false; ch.material.transparent = true; } ch.renderOrder = 12; ch.raycast = () => {}; });
+    a.userData = { isSfnHelper: true }; scene.add(a); return a;
+  };
+  _sfnArrF = mk(_sfnDirToWorld(o, P.kraft), 0xff6d00);
+  if (P.art === 'hebel' && P.arm) _sfnArrA = mk(_sfnDirToWorld(o, P.arm), 0x8e24aa);
+}
+function _sfnLoadVerdict(cross) {
+  // wie orient.js alignQuality: ≤ 0,5 gut, ≤ 0,866 teils, sonst schwach
+  return cross <= 0.5 ? { q: 'good', col: '#2e7d32', t: 'Gut' } : cross <= 0.866 ? { q: 'mixed', col: '#ef6c00', t: 'Teils' } : { q: 'poor', col: '#c62828', t: 'Schwach' };
+}
+function _sfnLoadUpdate(keepBest) {
+  const P = _sfnLoadP, o = _sfnObj, $ = id => document.getElementById(id);
+  document.querySelectorAll('#sfn-load-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === P.art));
+  const fk = o ? _sfnAxisOf(o, P.kraft) : null, ak = o ? _sfnAxisOf(o, P.arm) : null;
+  document.querySelectorAll('#sfn-kraft-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === fk));
+  document.querySelectorAll('#sfn-arm-bg .vtb').forEach(b => {
+    b.classList.toggle('on', P.armWahl === 'auto' ? b.dataset.v === 'auto' : b.dataset.v === ak);
+    b.disabled = b.dataset.v === fk;
+  });
+  if ($('sfn-load-rows')) $('sfn-load-rows').style.display = P.art === 'aus' ? 'none' : '';
+  if ($('sfn-arm-row')) $('sfn-arm-row').style.display = P.art === 'hebel' ? '' : 'none';
+  _sfnLoadArrows();
+  const el = $('sfn-load-info'); if (!el) return;
+  const c = _sfnLoadCrit();
+  if (!c) { el.innerHTML = 'Wird das Teil belastet? <b>Zug</b> = es wird auseinandergezogen (Öse, Lasche). <b>Hebel</b> = es wird gebogen (Haken, Halter, Clip).'; return; }
+  const v = _sfnLoadVerdict(Math.abs(c.y));
+  const was = P.art === 'hebel' ? 'Der Hebelarm (lila)' : 'Die Kraft (orange)';
+  const txt = v.q === 'good' ? was + ' läuft entlang der Schichten — die starke Richtung.'
+            : v.q === 'mixed' ? was + ' kreuzt die Schichten teilweise.'
+            : was + ' zieht quer durch die Schichten — da reißen Drucke zuerst.';
+  el.innerHTML = '<b style="color:' + v.col + '">' + v.t + ':</b> ' + txt +
+    (P.art === 'hebel' ? ' <span style="color:#888">(Beim Biegen reißt das Teil an der Wurzel des Arms auf, entlang des Arms.)</span>' : '');
+  const s = $('sfn-load-best'); if (s && !keepBest) s.textContent = '';
+}
+async function _sfnLoadBest() {
+  const o = _sfnObj, c = _sfnLoadCrit(), s = document.getElementById('sfn-load-best');
+  if (!o || !c) return;
+  if (s) s.textContent = 'Lagen werden bewertet…';
+  try {
+    await _sfnLoad();
+    const r = await _sfnCall('strength', { dir: [c.x, -c.z, c.y], threshold: 45 });
+    if (!r.best) { if (s) s.textContent = 'Keine druckbare Lage gefunden, die sicher auf der Platte steht.'; return; }
+    if (r.now && r.best.cross >= r.now.cross - 0.02) { if (s) s.innerHTML = 'Die jetzige Lage ist unter den gut druckbaren schon die stärkste.'; return; }
+    saveUndo();
+    _sfnSug = null;
+    _sfnApplyRot(o, r.best.rot);
+    _sfnLoadUpdate();
+    const v = _sfnLoadVerdict(r.best.cross);
+    if (s) s.innerHTML = 'Gedreht: jetzt <b style="color:' + v.col + '">' + v.t + '</b>, Höhe ' + Math.round(r.best.height) + ' mm. ' +
+      'Nur Lagen, die gut druckbar bleiben (Überhang/Höhe im Rahmen). ↺ oben = zurück.';
+    _sfnPlanPreview(0);
+  } catch (e) { if (s) s.textContent = 'Bewertung fehlgeschlagen: ' + (e.message || e); }
+}
 
 // ── Von Hand zeichnen ─────────────────────────────────────────────────────
 // Wie „Draw“ bei Support Fins: zwei Klicks auf die Unterseite eines Überhangs,
@@ -32386,7 +32532,8 @@ async function _sfnApply() {
 // mit denselben Zinken wie die automatischen Finnen. Die Endpunkte liegen im
 // Rahmen des KÖRPERS — gedreht oder verschoben, wandern die Wände mit und werden
 // für die neue Lage neu gerechnet (wie im Original).
-let _sfnWalls = [];       // [{ a: Vector3 (lokal), b: Vector3 (lokal) }]
+let _sfnWalls = [];       // [{ a: Vector3 (lokal), b: Vector3 (lokal) }] Wände, [{ kind:'brace', a }] Rippen
+let _sfnTool = 'wall';    // 'wall' = zwei Klicks unter einen Überhang, 'brace' = ein Klick an eine Seitenwand
 let _sfnStart = null;     // erster Klick der Wand im Bau (lokal)
 let _sfnGhost = null, _sfnDot = null, _sfnCur = null;
 let _sfnGhostBusy = false, _sfnGhostNext = null;
@@ -32395,7 +32542,11 @@ let _sfnGhostBusy = false, _sfnGhostNext = null;
 function _sfnToMm(v) { return [v.x * 10, -v.z * 10, v.y * 10]; }
 function _sfnWallsMm() {
   const o = _sfnObj; o.updateMatrixWorld(true);
-  return _sfnWalls.map(w => [..._sfnToMm(o.localToWorld(w.a.clone())), ..._sfnToMm(o.localToWorld(w.b.clone()))]);
+  return _sfnWalls.filter(w => w.kind !== 'brace').map(w => [..._sfnToMm(o.localToWorld(w.a.clone())), ..._sfnToMm(o.localToWorld(w.b.clone()))]);
+}
+function _sfnBracesMm() {
+  const o = _sfnObj; o.updateMatrixWorld(true);
+  return _sfnWalls.filter(w => w.kind === 'brace').map(w => ({ p: _sfnToMm(o.localToWorld(w.a.clone())) }));
 }
 function _sfnMarker(color, r) {
   const m = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12),
@@ -32415,16 +32566,23 @@ function _sfnHit(e) {
   const isPart = (x) => { for (; x; x = x.parent) if (x === o) return true; return false; };
   return pickObjects(e).find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines && isPart(h.object)) || null;
 }
-function _sfnDrawStart() {
-  if (!_sfnObj) return;
-  if (_sfnPick) { _sfnDrawEnd(); return; }
-  _sfnPick = true;
-  canvas.style.cursor = 'crosshair';
-  _sfnDrawUI();
+const _SFN_HINT = {
+  wall: '<b>Wand zeichnen:</b> Anfang und Ende auf der <b>Unterseite</b> des Überhangs anklicken (Ansicht dafür von unten drehen)',
+  brace: '<b>Rippe setzen:</b> eine <b>senkrechte Seite</b> anklicken — weit oben = Rippe über die ganze Höhe, weiter unten = endet dort',
+};
+function _sfnHint(extra) {
   const h = document.getElementById('hint');
-  h.innerHTML = '<b>Wand zeichnen:</b> Anfang und Ende auf der <b>Unterseite</b> des Überhangs anklicken (Ansicht dafür von unten drehen)' +
-                ' — <span style="font-size:10px">Esc = Abbrechen</span>';
+  h.innerHTML = _SFN_HINT[_sfnTool] + (extra ? '<br>' + extra : '') + ' — <span style="font-size:10px">Esc = Abbrechen</span>';
   h.classList.add('show');
+}
+function _sfnDrawStart(tool) {
+  if (!_sfnObj) return;
+  tool = tool || 'wall';
+  if (_sfnPick && _sfnTool === tool) { _sfnDrawEnd(); return; }
+  if (_sfnPick) _sfnDrawClear();
+  _sfnTool = tool; _sfnPick = true;
+  canvas.style.cursor = 'crosshair';
+  _sfnDrawUI(); _sfnHint();
 }
 function _sfnDrawEnd() {
   _sfnPick = false; _sfnDrawClear();
@@ -32433,10 +32591,16 @@ function _sfnDrawEnd() {
   _sfnDrawUI();
 }
 function _sfnDrawUI() {
+  const on = (t) => _sfnPick && _sfnTool === t;
   const b = document.getElementById('sfn-draw-btn');
-  if (b) { b.classList.toggle('pri', _sfnPick); b.textContent = _sfnPick ? '■ Zeichnen beenden' : '✏️ Wand zeichnen'; }
+  if (b) { b.classList.toggle('pri', on('wall')); b.textContent = on('wall') ? '■ Zeichnen beenden' : '✏️ Wand zeichnen'; }
+  const r = document.getElementById('sfn-brace-btn');
+  if (r) { r.classList.toggle('pri', on('brace')); r.textContent = on('brace') ? '■ Rippen beenden' : '🦴 Rippe anklicken'; }
+  const nw = _sfnWalls.filter(w => w.kind !== 'brace').length, nb = _sfnWalls.length - nw;
   const n = document.getElementById('sfn-walls-n');
-  if (n) n.textContent = _sfnWalls.length ? _sfnWalls.length + ' Wand' + (_sfnWalls.length === 1 ? '' : 'e') + ' von Hand' : 'noch keine Wand von Hand';
+  if (n) n.textContent = nw ? nw + ' Wand' + (nw === 1 ? '' : 'e') + ' von Hand' : 'noch keine Wand von Hand';
+  const m = document.getElementById('sfn-braces-n');
+  if (m) m.textContent = nb ? nb + ' Rippe' + (nb === 1 ? '' : 'n') + ' von Hand' : 'noch keine Rippe von Hand';
 }
 function _sfnPickHover(e) {
   const hit = _sfnHit(e);
@@ -32444,7 +32608,7 @@ function _sfnPickHover(e) {
   const r = 0.06 * Math.max(0.5, Math.min(4, camera.position.distanceTo(hit.point) / 20));
   if (!_sfnCur) _sfnCur = _sfnMarker(0x1e88e5, 1);
   _sfnCur.scale.setScalar(r); _sfnCur.position.copy(hit.point); _sfnCur.visible = true;
-  if (_sfnStart) _sfnGhostAt(hit.point);
+  if (_sfnStart || _sfnTool === 'brace') _sfnGhostAt(hit.point);
 }
 // Vorschau der Wand im Bau: höchstens eine Rechnung gleichzeitig, die jüngste gewinnt
 function _sfnGhostAt(p) {
@@ -32453,12 +32617,20 @@ function _sfnGhostAt(p) {
   _sfnGhostBusy = true;
   (async () => {
     try {
-      while (_sfnGhostNext && _sfnStart && _sfnObj) {
+      while (_sfnGhostNext && _sfnObj && _sfnPick && (_sfnStart || _sfnTool === 'brace')) {
         const q = _sfnGhostNext; _sfnGhostNext = null;
         await _sfnLoad();
-        const a = _sfnToMm(_sfnObj.localToWorld(_sfnStart.clone())), b = _sfnToMm(q);
-        const r = await _sfnCall('ghost', { a, b, threshold: 45 });
-        if (!_sfnStart) break;
+        let r;
+        if (_sfnTool === 'brace') {
+          r = await _sfnCall('brace', { p: _sfnToMm(q), opts: _sfnOpts(), threshold: 45 });
+          if (!_sfnPick || _sfnTool !== 'brace') break;
+          _sfnHint(r.ok2 ? '<span style="color:#1e88e5">Rippe · ' + Math.round(r.height) + ' mm' + (r.full ? ' · volle Höhe' : ' · höher klicken = volle Höhe') + '</span>'
+                         : '<span style="color:#c62828">Hier keine Rippe: ' + _stlEsc(r.grund) + '</span>');
+        } else {
+          const a = _sfnToMm(_sfnObj.localToWorld(_sfnStart.clone())), b = _sfnToMm(q);
+          r = await _sfnCall('ghost', { a, b, threshold: 45 });
+          if (!_sfnStart) break;
+        }
         if (_sfnGhost) { scene.remove(_sfnGhost); _sfnGhost.geometry.dispose(); _sfnGhost.material.dispose(); _sfnGhost = null; }
         if (r.ok2 && r.tris.length) { _sfnGhost = _sfnHelperMesh(r.tris, '#1e88e5', 0.55); scene.add(_sfnGhost); }
       }
@@ -32471,6 +32643,18 @@ async function _sfnPickClick(e) {
   if (!hit) { notify('Bitte auf das Teil klicken', 'w'); return; }
   const o = _sfnObj; o.updateMatrixWorld(true);
   const local = o.worldToLocal(hit.point.clone());
+  if (_sfnTool === 'brace') {
+    try {
+      await _sfnLoad();
+      const r = await _sfnCall('brace', { p: _sfnToMm(hit.point), opts: _sfnOpts(), threshold: 45 });
+      if (!r.ok2) { notify('Rippe nicht möglich: ' + r.grund, 'w', 5000); return; }
+      _sfnWalls.push({ kind: 'brace', a: local });
+      notify('Rippe gesetzt (' + Math.round(r.height) + ' mm' + (r.full ? ', volle Höhe' : '') + ')', 'ok');
+    } catch (err) { notify('Rippe nicht möglich: ' + (err.message || err), 'w'); return; }
+    if (_sfnGhost) { scene.remove(_sfnGhost); _sfnGhost.geometry.dispose(); _sfnGhost.material.dispose(); _sfnGhost = null; }
+    _sfnDrawUI(); _sfnPlanPreview(0);
+    return;
+  }
   if (!_sfnStart) {
     _sfnStart = local;
     if (!_sfnDot) _sfnDot = _sfnMarker(0xff6d00, 1);
@@ -32497,7 +32681,8 @@ function _sfnDbg() {
   return { open: !!_sfnObj, red: _sfnRed ? _sfnRed.geometry.attributes.position.count / 3 : 0,
            prev: _sfnPrev ? _sfnPrev.geometry.attributes.position.count / 3 : 0,
            info: _sfnLast ? { ..._sfnLast.info, tris: undefined } : null, p: { ..._sfnP },
-           pick: _sfnPick, walls: _sfnWalls.length, start: !!_sfnStart, ghost: _sfnGhost ? _sfnGhost.geometry.attributes.position.count / 3 : 0 };
+           pick: _sfnPick, tool: _sfnTool, walls: _sfnWalls.filter(w => w.kind !== 'brace').length, braces: _sfnWalls.filter(w => w.kind === 'brace').length,
+           load: { art: _sfnLoadP.art, crit: (() => { const c = _sfnObj && _sfnLoadCrit(); return c ? [c.x, c.y, c.z] : null; })() }, start: !!_sfnStart, ghost: _sfnGhost ? _sfnGhost.geometry.attributes.position.count / 3 : 0 };
 }
 
 function mirrorObj(axis) {
@@ -69141,8 +69326,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.225';
+const VOLME3D_VERSION = '1.18.226';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.226', date:'2026-10-21', changes:[
+    ['🦴','<b>Stützfinnen: Stabilisierungsrippen von Hand.</b> <b>🦴 Rippe anklicken</b> stellt eine Rippe genau an die senkrechte Seite, die du anklickst. Schon beim Überfahren zeigt eine blaue Vorschau, wie hoch sie wird. Weit oben geklickt läuft sie über die ganze Höhe, weiter unten endet sie auf Klickhöhe. Sie hält ein schlankes, hohes Teil mit Zinken seitlich fest, damit es beim Drucken nicht wackelt. Geht es an der Stelle nicht, steht dabei, warum.'],
+    ['💪','<b>Stützfinnen: Festigkeit nach Zug oder Hebel.</b> Ein Druckteil ist quer zu den Schichten am schwächsten. Unter <b>💪 Festigkeit</b> sagst du, wie das Teil belastet wird: <b>Zug</b> (es wird auseinandergezogen, z. B. Öse oder Lasche) oder <b>Hebel</b> (es wird gebogen, z. B. Haken oder Halter), dazu die Kraftrichtung und beim Hebel den Hebelarm. Pfeile zeigen beides am Teil, die Bewertung sagt Gut, Teils oder Schwach. <b>💪 Stärkste druckbare Lage</b> dreht das Teil so, dass die Last entlang der Schichten läuft, aber nur in Lagen, die gut druckbar bleiben.'],
+  ]},
   { version:'1.18.225', date:'2026-10-21', changes:[
     ['↝','<b>Entlang Pfad: Anfügen und Abziehen direkt im Fenster.</b> Wie beim Extrudieren gibt es jetzt <b>Automatisch</b>, Neuer Körper, Anfügen, Abziehen, Schnittmenge und Loch-Körper. Neu ist die <b>Lage</b> des Querschnitts: <b>Auf</b> der Fläche (Leiste, Steg), <b>Eingesenkt</b> (Nut, Kabelkanal, Rinne) oder <b>Mittig</b>. Skizze mit „▱ Auf Fläche“ auf eine Platte legen, Querschnitt und Pfad zeichnen, „Eingesenkt“ – die Nut wird automatisch abgezogen. Bleibt im Baum als „↝ Pfad-Skizze“ änderbar.'],
   ]},
