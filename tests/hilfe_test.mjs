@@ -24,7 +24,9 @@ try {
   ok(await p.evaluate(() => /Nichts gefunden/.test(document.getElementById('hl-body').innerText)), 'kein Treffer → freundlicher Hinweis');
   // Jetzt öffnen: Messen
   await p.fill('#hl-q', 'messen'); await p.dispatchEvent('#hl-q', 'input');
-  await p.click('.hl-e:has-text("Messen") button:has-text("Jetzt öffnen")');
+  // Karte über den TITEL wählen: seit 1.18.188 enthält auch „Loch vertiefen“ das Wort „messen“
+  // und steht in der Trefferliste vorne → has-text("Messen") klickte die falsche Karte
+  await p.locator('.hl-e').filter({ has: p.locator('.hl-t', { hasText: /^\W*Messen\s*$/ }) }).locator('button:has-text("Jetzt öffnen")').click();
   ok(await p.evaluate(() => !_hlf.open && (typeof _measureMode !== 'undefined' ? !!_measureMode : true)), '„Jetzt öffnen“ startet Messen und schließt die Hilfe');
   await p.keyboard.press('Escape');
   // F1
