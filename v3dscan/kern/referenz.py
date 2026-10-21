@@ -109,3 +109,43 @@ def punkt_aus_ebenen(e1, e2, e3):
         raise ValueError("Die drei Ebenen schneiden sich nicht in einem Punkt.")
     rhs = np.array([n @ np.asarray(e["punkt"], float) for n, e in zip(N, (e1, e2, e3))])
     return {"art": "punkt", "punkt": np.linalg.solve(N, rhs)}
+
+
+def aus_flaeche(shape, nummer):
+    """Referenz aus einer Koerperflaeche (QuickSurface "aus CAD-Flaeche"): Ebene -> Ebene (durch den
+    Flaechenschwerpunkt, Normale nach aussen), Zylinder/Kegel/Torus -> Achse, Kugel -> Mittelpunkt."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Plane, GeomAbs_Sphere, GeomAbs_Torus
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_REVERSED
+    from OCP.TopoDS import TopoDS
+    from . import features as ft
+    karte = ft.flaechen_karte(shape)
+    if not 1 <= int(nummer) <= karte.Extent():
+        raise ValueError("Fläche %s gibt es nicht." % nummer)
+    f = TopoDS.Face_s(karte.FindKey(int(nummer)))
+    s = BRepAdaptor_Surface(f)
+    g = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(f, g)
+    c = g.CentreOfMass()
+    mitte = np.array([c.X(), c.Y(), c.Z()])
+
+    def vec(d):
+        return np.array([d.X(), d.Y(), d.Z()], float)
+    t = s.GetType()
+    if t == GeomAbs_Plane:
+        pl = s.Plane()
+        n = vec(pl.Axis().Direction())
+        if f.Orientation() == TopAbs_REVERSED:
+            n = -n
+        return {"art": "ebene", "punkt": mitte, "normale": _einheit(n)}
+    if t in (GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Torus):
+        ax = {GeomAbs_Cylinder: s.Cylinder, GeomAbs_Cone: s.Cone, GeomAbs_Torus: s.Torus}[t]().Axis()
+        p, d = vec(ax.Location()), _einheit(vec(ax.Direction()))
+        p = p + ((mitte - p) @ d) * d                 # Achsenpunkt auf Hoehe der Flaechenmitte
+        return {"art": "achse", "punkt": p, "richtung": d}
+    if t == GeomAbs_Sphere:
+        return {"art": "punkt", "punkt": vec(s.Sphere().Location())}
+    raise ValueError("Aus dieser Flächenart (Freiform) lässt sich keine Referenz ableiten – Ebene, Zylinder, "
+                     "Kegel, Torus oder Kugel wählen.")

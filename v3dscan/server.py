@@ -11,6 +11,7 @@
 import argparse
 import base64
 import json
+import math
 import mimetypes
 import os
 import struct
@@ -556,6 +557,37 @@ def koerper_befehl(was, d):
                            parameter=dict(par, nennmass=nenn, verlaengern=zahl(d, "verlaengern", 0),
                                           typ=el.get("typ")))
         return {"koerper": k.id, "info": info}
+    if was == "eingabe":
+        # Grundkoerper per Eingabe (QuickSurface "Primitive by Input")
+        art = d.get("art", "quader")
+        mitte = [float(x) for x in d.get("mitte") or (0, 0, 0)]
+        achse = np.asarray(d.get("achse") or (0, 0, 1), float)
+        achse = achse / max(np.linalg.norm(achse), 1e-12)
+        if art == "quader":
+            par = {"art": "quader", "mitte": mitte, "groesse": [float(x) for x in d.get("groesse") or (10, 10, 10)]}
+        elif art == "kugel":
+            par = {"art": "kugel", "mitte": mitte, "radius": zahl(d, "radius", 5)}
+        elif art in ("zylinder", "kegel"):
+            h = zahl(d, "hoehe", 10)
+            basis = (np.asarray(mitte) - achse * h / 2).tolist()
+            par = {"art": art, "basis": basis, "achse": achse.tolist(), "hoehe": h}
+            if art == "zylinder":
+                par["radius"] = zahl(d, "radius", 5)
+            else:
+                par["r_min"], par["r_max"] = zahl(d, "r_min", 2), zahl(d, "r_max", 5)
+                par["halbwinkel"] = math.atan2(par["r_max"] - par["r_min"], h)
+        else:
+            raise Fehler("Unbekannte Grundform „%s“." % art)
+        op = d.get("operation", "neu")
+        ziel = p.koerper_holen(d["ziel"]) if op != "neu" else None
+        try:
+            werkzeug = kp.baue(par)
+        except ValueError as x:
+            raise Fehler(str(x))
+        if d.get("vorschau"):
+            return {"vorschau": netz_json(kp.vernetzen(werkzeug)), "info": {"text": kp.beschreibung(par, False)}}
+        k = p.grundkoerper(werkzeug, kp.ART_NAMEN[art], op, ziel, quelle={"eingabe": True}, parameter=par)
+        return {"koerper": k.id, "info": {"text": kp.beschreibung(par, False)}}
     if was == "setzen":
         sichtbar = d.get("sichtbar")
         p.koerper_setzen(d.get("kid"), None if sichtbar is None else bool(sichtbar), d.get("name"))
@@ -805,6 +837,10 @@ def skizze_befehl(was, d):
     if was == "dxf":
         skz, _ = _skizze_ziel(d)
         return {"dxf": sk.dxf(skz), "name": skz.get("name", "skizze")}
+    if was == "iges":
+        skz, _ = _skizze_ziel(d)
+        daten = kp.exportieren([sk_feat.skizze_drahtmodell(skz)], "iges")
+        return {"iges": base64.b64encode(daten).decode("ascii"), "name": skz.get("name", "skizze")}
     if was in ("zeichnen", "spline", "versatz", "spiegeln", "kopieren", "ecke", "bedingung", "abstand",
                "kette_entfernen", "laenge", "winkel", "hilfe", "bedingung_entfernen", "trennen", "verlaengern"):
         skz, gespeichert = _skizze_ziel(d)
@@ -1026,8 +1062,11 @@ def feature_befehl(was, d):
         kanten = [int(x) for x in d.get("kanten") or []]
         neu = sk_feat.kanten_runden(k.shape, kanten, zahl(d, "radius", 1), fase=(was == "fasen"))
         if d.get("vorschau"):
-            return {"vorschau": netz_json(kp.vernetzen(neu)),
-                    "info": {"volumen": round(kp.kennwerte(neu)["volumen"], 3)}}
+            info = {"volumen": round(kp.kennwerte(neu)["volumen"], 3)}
+            if d.get("id") is not None and int(d["id"]) in p.scans:
+                # Fillet mit Live-Abweichung: passt der Radius zum Scan?
+                info["abweichung"] = sk_feat.rundung_abweichung(k.shape, neu, p.scan(d["id"]).xyz)
+            return {"vorschau": netz_json(kp.vernetzen(neu)), "info": info}
         typ = "Fase" if was == "fasen" else "Rundung"
         from kern.verlauf import kanten_bezug
         p.koerper_aendern(k.id, neu, typ, {"typ": was, "kanten": kanten, "radius": zahl(d, "radius", 1),
@@ -1381,6 +1420,15 @@ def referenz_befehl(was, d):
             e = {"art": "ebene", "punkt": E["ursprung"], "normale": E["n"]}
         r = p.referenz_hinzufuegen(rf.json_form(e), "Ebene")
         return {"rid": r["id"]}
+    if was == "aus_flaeche":
+        k = p.koerper_holen(d["kid"])
+        fl = d.get("flaechen") or []
+        if len(fl) != 1:
+            raise Fehler("Genau eine Fläche des Körpers anklicken.")
+        e = rf.aus_flaeche(k.shape, int(fl[0]))
+        name = {"ebene": "Ebene", "achse": "Achse", "punkt": "Punkt"}[e["art"]]
+        r = p.referenz_hinzufuegen(dict(rf.json_form(e), quelle="flaeche"), name)
+        return {"rid": r["id"], "art": e["art"]}
     if was == "mitte":
         a = _erk_element(d["id"], d.get("element"))
         b = _erk_element(d["id"], d.get("element2"))
@@ -1429,10 +1477,20 @@ def freiform_befehl(was, d):
         return {"koerper": k.id, "info": info}
     if was == "flaeche":
         P, _ = _gewaehlte_punkte(d)
-        face, info = ff.flaeche_einpassen(P, int(zahl(d, "raster", 0)) or None, zahl(d, "verlaengern", 10) / 100.0,
-                                          int(zahl(d, "glaettung", 0)))
-        w = np.abs(kp.abweichung([face], P))
-        info.update({"median": round(float(np.median(w)), 4), "p95": round(float(np.percentile(w, 95)), 4)})
+        tol = zahl(d, "toleranz", 0)
+        raster_liste = [int(zahl(d, "raster", 0)) or None]
+        if tol > 0:
+            # Auto-Fit nach Toleranz: Raster verfeinern, bis 95 % der Punkte innerhalb liegen
+            raster_liste = [4, 6, 8, 11, 15, 20, 28, 40, 56, 80]
+        for raster in raster_liste:
+            face, info = ff.flaeche_einpassen(P, raster, zahl(d, "verlaengern", 10) / 100.0, int(zahl(d, "glaettung", 0)))
+            w = np.abs(kp.abweichung([face], P))
+            info.update({"median": round(float(np.median(w)), 4), "p95": round(float(np.percentile(w, 95)), 4)})
+            if tol <= 0 or info["p95"] <= tol:
+                break
+        if tol > 0:
+            info["toleranz_erreicht"] = bool(info["p95"] <= tol)
+            info["raster_gewaehlt"] = raster
         if d.get("vorschau"):
             return {"vorschau": netz_json(kp.vernetzen(face)), "info": info}
         k = p.feature(face, "Fläche", "neu", None, {"typ": "flaeche", "punkte": int(len(P))})

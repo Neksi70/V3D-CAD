@@ -2300,8 +2300,9 @@ function skizzenListeZeichnen() {
     const el = document.createElement('div');
     el.className = 'skizze' + (m.id === S.skizzeAktiv ? ' aktiv' : '') + (m.sichtbar ? '' : ' versteckt');
     el.innerHTML = `<button class="auge" title="Ein-/Ausblenden">${m.sichtbar ? '👁' : '◌'}</button><span>✎</span>
-      <span class="name" title="Doppelklick: bearbeiten"></span><span><button class="dxf" title="als DXF speichern">⬇</button><button class="weg" title="Skizze entfernen">✕</button></span><span class="zahl"></span>`;
+      <span class="name" title="Doppelklick: bearbeiten"></span><span><button class="dxf" title="als DXF speichern">⬇</button><button class="igs" title="als IGES speichern (3D-Kurven)">I</button><button class="weg" title="Skizze entfernen">✕</button></span><span class="zahl"></span>`;
     el.querySelector('.dxf').addEventListener('click', (ev) => { ev.stopPropagation(); sicher(() => skizzeDxf(m.id)); });
+    el.querySelector('.igs').addEventListener('click', (ev) => { ev.stopPropagation(); sicher(() => skizzeIges(m.id)); });
     el.querySelector('.name').textContent = m.name;
     el.querySelector('.zahl').textContent = `${m.geschlossen} von ${m.ketten} Konturen geschlossen · ${m.elemente} Elemente`;
     el.addEventListener('click', () => { S.skizzeAktiv = S.skizzeAktiv === m.id ? null : m.id; skizzenListeZeichnen(); featureAuswahlFuellen(); });
@@ -2669,9 +2670,13 @@ function knParameter() {
   return { kid: k.meta.id, kanten: [...S.knKanten], radius: Number($('#knRadius').value) || 1 };
 }
 async function knVorschau() {
-  const j = await api('feature/' + $('#knArt').value, { ...knParameter(), vorschau: true }, 'Baue Vorschau…');
+  // sichtbarer Scan dazu: Abweichung im Bereich der neuen Rundung (Fillet mit Live-Abweichung)
+  const scan = [...S.scans.values()].find((e) => e.obj.visible && e.id === S.aktiv) || [...S.scans.values()].find((e) => e.obj.visible);
+  const j = await api('feature/' + $('#knArt').value, { ...knParameter(), vorschau: true, id: scan ? scan.id : null }, 'Baue Vorschau…');
   featVorschauZeigen(j.vorschau);
-  $('#knInfo').textContent = `${S.knKanten.size} Kante(n) · Volumen danach ${zahlText(j.info.volumen, 1)} mm³`;
+  const a = j.info.abweichung;
+  $('#knInfo').textContent = `${S.knKanten.size} Kante(n) · Volumen danach ${zahlText(j.info.volumen, 1)} mm³` +
+    (a && a.nachher_median !== undefined ? ` · Abweichung zum Scan dort ${zahlText(a.nachher_median, 3)} mm (95 % unter ${zahlText(a.nachher_p95, 3)}, ohne Rundung ${zahlText(a.vorher_median, 3)})` : '');
 }
 async function knAnwenden() {
   await api('feature/' + $('#knArt').value, knParameter(), $('#knArt').value === 'fasen' ? 'Fase…' : 'Runde…');
@@ -3091,14 +3096,15 @@ async function afAnwenden() {
 async function flVorschau() {
   const masken = auswahlMasken();
   if (!Object.keys(masken).length) throw new Error('Erst Punkte auswählen (Rechteck oder Lasso).');
-  const j = await api('freiform/flaeche', { masken, verlaengern: Number($('#flVerl').value) || 0, raster: Number($('#flRaster').value) || 0, vorschau: true }, 'Passe Fläche ein…');
+  const j = await api('freiform/flaeche', { masken, verlaengern: Number($('#flVerl').value) || 0, raster: Number($('#flRaster').value) || 0, toleranz: Number($('#flToleranz').value) || 0, vorschau: true }, 'Passe Fläche ein…');
   featVorschauZeigen(j.vorschau);
-  $('#flInfo').textContent = `${j.info.punkte.toLocaleString('de-DE')} Punkte · Raster ${j.info.raster.join(' × ')} · Abweichung Median ${zahlText(j.info.median, 3)}, 95 % unter ${zahlText(j.info.p95, 3)} mm`;
+  $('#flInfo').textContent = `${j.info.punkte.toLocaleString('de-DE')} Punkte · Raster ${j.info.raster.join(' × ')} · Abweichung Median ${zahlText(j.info.median, 3)}, 95 % unter ${zahlText(j.info.p95, 3)} mm`
+    + (j.info.toleranz_erreicht === false ? ' – Toleranz auch mit feinstem Raster nicht erreicht' : '');
 }
 async function flAnwenden() {
   const masken = auswahlMasken();
   if (!Object.keys(masken).length) throw new Error('Erst Punkte auswählen (Rechteck oder Lasso).');
-  const j = await api('freiform/flaeche', { masken, verlaengern: Number($('#flVerl').value) || 0, raster: Number($('#flRaster').value) || 0 }, 'Erzeuge Fläche…');
+  const j = await api('freiform/flaeche', { masken, verlaengern: Number($('#flVerl').value) || 0, raster: Number($('#flRaster').value) || 0, toleranz: Number($('#flToleranz').value) || 0 }, 'Erzeuge Fläche…');
   featVorschauWeg();
   S.koerperAktiv = j.koerper;
   for (const k of S.koerper.values()) koerperDarstellung(k);
@@ -3610,6 +3616,14 @@ async function skizzeBearbeiten(sid) {
   skVorschauSetzen(j);
   $('#skEditor').open = true;
   meldung(`„${j.skizze.name}“ wird bearbeitet – „Übernehmen“ speichert die Änderungen.`, 'ok');
+}
+async function skizzeIges(sid) {
+  const j = await apiRoh('skizze/iges', { sid });
+  const bin = Uint8Array.from(atob(j.iges), (c) => c.charCodeAt(0));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([bin], { type: 'model/iges' }));
+  a.download = (j.name || 'skizze') + '.igs';
+  document.body.appendChild(a); a.click(); a.remove();
 }
 async function skizzeDxf(sid) {
   const j = await apiRoh('skizze/dxf', { sid });
@@ -4196,6 +4210,15 @@ const AKTIONEN = {
   } },
   invertieren: { text: 'Auswahl umkehren', taste: 'Ctrl+I', fn: auswahlUmkehren },
   optionen: { text: 'Optionen (Navigation, Auto-Sicherung)', fn: optionenOeffnen },
+  geVorschau: { text: 'Grundkörper: Vorschau', fn: () => geAusfuehren(true) },
+  geAnwenden: { text: 'Grundkörper per Eingabe', fn: () => geAusfuehren(false) },
+  rkAnwenden: { text: 'Referenz aus Körperfläche', fn: async () => {
+    const kid = Number($('#rkK').value);
+    const j = await api('referenz/aus_flaeche', { kid, flaechen: [...S.fwahl] }, 'Lege Referenz an…');
+    S.fwahl.clear(); fwahlZeichnen();
+    $('#rkInfo').textContent = { ebene: 'Ebene', achse: 'Achse', punkt: 'Punkt' }[j.art] + ' angelegt.';
+    meldung('Referenz angelegt.', 'ok');
+  } },
   optionenZu: { text: '', fn: () => $('#optionenDialog').close() },
   sicherungJetzt: { text: '', fn: async () => { const j = await apiRoh('sicherung/jetzt', {}); meldung(j.name ? 'Gesichert.' : 'Nichts zu sichern.', 'ok'); await sicherungListe(); } },
   pinsel: { text: 'Werkzeug: Pinsel', taste: 'N', fn: () => werkzeugSetzen('pinsel') },
@@ -4767,3 +4790,29 @@ navAnwenden();
   try { m = localStorage.getItem('v3dscan.sicherung'); } catch (e) { /* privat */ }
   if (m !== null) apiRoh('sicherung/einstellen', { minuten: Number(m) }).catch(() => {});
 })();
+
+// Grundkörper per Eingabe (v1.2)
+function dreiZahlen(text) {
+  const z = String(text).split(/[;\s]+/).filter(Boolean).map((x) => Number(x.replace(',', '.')));
+  if (z.length !== 3 || z.some((x) => !Number.isFinite(x))) throw new Error(`„${text}“: drei Zahlen, getrennt mit ; angeben.`);
+  return z;
+}
+async function geAusfuehren(vorschau) {
+  const art = $('#geArt').value, op = $('#geOp').value;
+  const d = { art, mitte: dreiZahlen($('#geMitte').value), operation: op, vorschau };
+  if (op !== 'neu') d.ziel = Number($('#geZiel').value);
+  if (art === 'quader') d.groesse = dreiZahlen($('#geGroesse').value);
+  if (art === 'zylinder' || art === 'kegel') { d.achse = dreiZahlen($('#geAchse').value); d.hoehe = Number($('#geHoehe').value); }
+  if (art === 'zylinder' || art === 'kugel') d.radius = Number($('#geRadius').value);
+  if (art === 'kegel') { d.r_max = Number($('#geRmax').value); d.r_min = Number($('#geRmin').value); }
+  const j = await api('koerper/eingabe', d, vorschau ? 'Vorschau…' : 'Erzeuge Grundkörper…');
+  $('#geInfo').textContent = j.info.text;
+  if (vorschau) { featVorschauZeigen(j.vorschau); return; }
+  featVorschauWeg();
+  neuerKoerperAus(j, 'Grundkörper erzeugt.');
+}
+$('#geArt').addEventListener('change', () => {
+  const a = $('#geArt').value;
+  $$('[data-ge]').forEach((e) => { e.hidden = !e.dataset.ge.split(' ').includes(a); });
+});
+$('#geArt').dispatchEvent(new Event('change'));

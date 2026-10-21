@@ -1352,3 +1352,58 @@ def uebergang(shape_a, kante_a, shape_b, kante_b):
     if not mf.IsDone():
         raise ValueError("Zwischen diesen Kanten lässt sich keine Übergangsfläche bilden.")
     return mf.Shape()
+
+
+
+# --- v1.2: Skizze als IGES, Rundung mit Abweichung, Uebergangskurve -----------------------------------
+def skizze_drahtmodell(skz):
+    """Alle Konturen einer 2D-Skizze als 3D-Draehte (Compound) - fuer den IGES/STEP-Export der Skizze."""
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+    if skz.get("art") == "3d":
+        return skizze_draht(skz)
+    E = sk.ebene_lesen(skz["ebene"])
+    c = TopoDS_Compound()
+    b = BRep_Builder()
+    b.MakeCompound(c)
+    n = 0
+    for kette in skz["ketten"]:
+        for el in kette["elemente"]:
+            e = _kante(sk.element_lesen(el), E)
+            if e is not None:
+                b.Add(c, e)
+                n += 1
+    if not n:
+        raise ValueError("Die Skizze ist leer.")
+    return c
+
+
+def rundung_abweichung(alt, neu, xyz, max_punkte=60000):
+    """Fillet mit Live-Abweichung: Scanpunkte, deren Abstand sich durch die Rundung aendert (= im Bereich
+    der neuen Flaechen), vorher/nachher vergleichen. -> {"punkte", "vorher_median", "nachher_median", "nachher_p95"}"""
+    from . import koerper as kp
+    X = np.asarray(xyz, float)
+    if len(X) > max_punkte:
+        X = X[np.random.default_rng(0).choice(len(X), max_punkte, replace=False)]
+    d0 = np.abs(kp.abweichung([alt], X))
+    d1 = np.abs(kp.abweichung([neu], X))
+    groesse = float(np.ptp(X, axis=0).max())
+    betroffen = (np.abs(d1 - d0) > 1e-4 * max(groesse, 1.0)) & (np.minimum(d0, d1) < 0.05 * groesse)
+    if betroffen.sum() < 5:
+        return {"punkte": int(betroffen.sum())}
+    return {"punkte": int(betroffen.sum()), "vorher_median": round(float(np.median(d0[betroffen])), 4),
+            "nachher_median": round(float(np.median(d1[betroffen])), 4),
+            "nachher_p95": round(float(np.percentile(d1[betroffen], 95)), 4)}
+
+
+def uebergangskurve(a, ta, b, tb, staerke=1.0, g2=False):
+    """Blend Curve: Kurve vom Punkt a (Richtung ta) zum Punkt b (Richtung tb, zeigt in die Kurve hinein
+    gesehen von b aus nach aussen) - G1 als kubische Bezier, Tangentenlaenge = staerke * Abstand/3.
+    -> Punktfolge (n, 3)."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    ta = np.asarray(ta, float) / max(np.linalg.norm(ta), 1e-12)
+    tb = np.asarray(tb, float) / max(np.linalg.norm(tb), 1e-12)
+    L = np.linalg.norm(b - a) * float(staerke) / 3
+    P = np.array([a, a + ta * L, b + tb * L, b])
+    t = np.linspace(0, 1, 60)[:, None]
+    return ((1 - t) ** 3 * P[0] + 3 * (1 - t) ** 2 * t * P[1] + 3 * (1 - t) * t ** 2 * P[2] + t ** 3 * P[3])

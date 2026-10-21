@@ -503,7 +503,10 @@ def flaeche_einpassen(P, raster=None, verlaengern=0.1, glaettung=0):
             w = np.sqrt(np.exp(-np.asarray(d2) / (zelle * zelle)))
             # lokale quadratische Ausgleichsflaeche: Wert im Knoten = Absolutglied
             # (Mittelwert wuerde Wellenberge um die Kruemmung abflachen)
-            A = np.c_[np.ones(k), dx, dy, dx * dx, dx * dy, dy * dy] if k >= 12 else np.c_[np.ones(k), dx, dy]
+            # quadratisch nur, wenn der Knoten von Punkten umgeben ist - einseitig (Rand) extrapoliert die
+            # Parabel wild (ein Feld lieferte > 1000 mm Hoehe); dort reicht die Ausgleichsebene
+            umringt = dx.min() < 0 < dx.max() and dy.min() < 0 < dy.max()
+            A = np.c_[np.ones(k), dx, dy, dx * dx, dx * dy, dy * dy] if k >= 12 and umringt else np.c_[np.ones(k), dx, dy]
             try:
                 koef = np.linalg.lstsq(A * w[:, None], Q[:, 2] * w, rcond=None)[0]
                 H[i, j] = koef[0]
@@ -540,6 +543,10 @@ def flaeche_einpassen(P, raster=None, verlaengern=0.1, glaettung=0):
         mit = leer & (anzahl > 0)
         neu_h[mit] = summe[mit] / anzahl[mit]
         H = np.where(mit, neu_h, H)
+    # Verlaengerung bleibt in der Naehe der Daten (lineares Fortsetzen ueber viele Zellen kann aufschaukeln)
+    zlo, zhi = float(q[:, 2].min()), float(q[:, 2].max())
+    rand_h = (zhi - zlo) + float(max(rand.max(), zelle))
+    H = np.clip(H, zlo - rand_h, zhi + rand_h)
     for _ in range(int(glaettung)):
         P_ = np.pad(H, 1, mode="edge")
         H = 0.5 * H + 0.125 * (P_[:-2, 1:-1] + P_[2:, 1:-1] + P_[1:-1, :-2] + P_[1:-1, 2:])

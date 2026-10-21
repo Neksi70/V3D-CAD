@@ -26,7 +26,7 @@ KUGEL_TYPEN = ("kugel", "kugelmulde")
 KEGEL_TYPEN = ("kegel", "senkung")
 ABZIEH_TYPEN = ("bohrung", "kugelmulde", "senkung", "hohlkehle")
 OPERATIONEN = ("neu", "vereinen", "abziehen")
-ART_NAMEN = {"zylinder": "Zylinder", "kugel": "Kugel", "kegel": "Kegel"}
+ART_NAMEN = {"zylinder": "Zylinder", "kugel": "Kugel", "kegel": "Kegel", "quader": "Quader"}
 OP_ZUSATZ = {"vereinen": "vereint", "abziehen": "abgezogen"}
 
 
@@ -177,6 +177,13 @@ def baue(par):
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
     if par["art"] == "kugel":
         return BRepPrimAPI_MakeSphere(gp_Pnt(*par["mitte"]), par["radius"]).Shape()
+    if par["art"] == "quader":
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+        g = np.asarray(par["groesse"], float)
+        if (g <= 0).any():
+            raise ValueError("Quader-Maße müssen größer 0 sein.")
+        ecke = np.asarray(par["mitte"], float) - g / 2
+        return BRepPrimAPI_MakeBox(gp_Pnt(*map(float, ecke)), *map(float, g)).Shape()
     ax = gp_Ax2(gp_Pnt(*par["basis"]), gp_Dir(*par["achse"]))
     if par["art"] == "zylinder":
         return BRepPrimAPI_MakeCylinder(ax, par["radius"], par["hoehe"]).Shape()
@@ -189,6 +196,8 @@ def beschreibung(par, nennmass):
         return "Kugel Ø %s%s" % (_mm(2 * par["radius"], 3), zusatz)
     if par["art"] == "zylinder":
         return "Zylinder Ø %s × %s mm%s" % (_mm(2 * par["radius"], 3), _mm(par["hoehe"], 2), zusatz)
+    if par["art"] == "quader":
+        return "Quader %s mm%s" % (" × ".join(_mm(x, 2) for x in par["groesse"]), zusatz)
     return "Kegel %s° · Ø %s → %s × %s mm%s" % (
         _mm(math.degrees(2 * par["halbwinkel"]), 2), _mm(2 * par["r_max"], 3),
         _mm(2 * par["r_min"], 3), _mm(par["hoehe"], 2), zusatz)

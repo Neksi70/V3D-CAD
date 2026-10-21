@@ -117,6 +117,8 @@ def _drehung(e, skz):
 
 
 def _grundkoerper(par):
+    if par["art"] == "quader":
+        return {"type": "box", "size": [float(x) for x in par["groesse"]], "center": [float(x) for x in par["mitte"]]}
     if par["art"] == "kugel":
         r = par["radius"]
         return {"type": "sphere", "size": [2 * r] * 3, "center": list(map(float, par["mitte"]))}
