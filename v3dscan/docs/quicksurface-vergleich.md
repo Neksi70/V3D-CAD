@@ -36,9 +36,10 @@ Radius-Vorschlag aus erkannten Rundungen, Punktwolken-Werkzeuge (Ausreißer, Tis
 Abwickeln mit Verzerrungsangabe + SVG, Skizze auf Zylinder wickeln, Übergabe an V3D CAD.
 
 **Was QuickSurface voraus hat:** Freiform-Editor mit Kanten-/Flächenmanipulator (Extrude-Handle, Bridge, Merge,
-Split-Loop, Pinsel-Glätten), G1 auch an unregelmäßigen Ecken, Skizzen-Constraint-Solver (gekoppelte Bedingungen),
+Split-Loop, Pinsel-Glätten), G1 auch an unregelmäßigen Ecken,
 Live-Übertragung an SolidWorks/Inventor, E57-Import, Mehrsprachigkeit. Geometriekern Parasolid gegenüber
-OpenCASCADE (robuster bei schwierigen Booleans/Rundungen).
+OpenCASCADE (robuster bei schwierigen Booleans/Rundungen; seit v1.1 fängt eine Rückfallebene
+– Reparatur, Toleranz, Plausibilitätsprüfung – einen Teil davon ab).
 
 ## Einzelvergleich
 
@@ -108,6 +109,7 @@ OpenCASCADE (robuster bei schwierigen Booleans/Rundungen).
 | Trim (radieren), Break/Extend | ◐ Element entfernen → Gerade; Break/Extend ✗ |
 | Hilfslinien (Construction) | ✔ v1.0 — geprüft |
 | Bedingungen waagrecht/senkrecht/parallel/rechtwinklig | ✔ — geprüft |
+| Gekoppelte Bedingungen + Maße (Constraint-Solver: gleich, tangential, konzentrisch, symmetrisch, fest, Länge/Radius/Abstand/Winkel, über Konturen) | ✔ v1.1 eigener Löser, gespeichert, Widerspruch wird gemeldet — geprüft |
 | Tangential / symmetrisch / fixieren, gekoppelter Solver | ◐ tangential automatisch; Solver ✗ |
 | Maße: Radius, Abstand, Länge, Winkel | ✔ v1.0 (treibend) — geprüft |
 | Offset (rund/spitz) | ✔ — geprüft (Formel exakt) |
@@ -246,7 +248,7 @@ OpenCASCADE (robuster bei schwierigen Booleans/Rundungen).
 
 ## Offene Punkte nach Nutzen
 1. Freiform-Editor: Kanten/Flächen wählen, Extrude-Handle, Bridge, Merge, Split-Loop, Pinsel-Glätten
-2. Skizzen-Constraint-Solver (gekoppelte Bedingungen), Break/Extend, Klick-Spline
+2. ~~Skizzen-Constraint-Solver~~ (v1.1 erledigt), Break/Extend, Klick-Spline
 3. Auswahl: Pinsel, Zauberstab mit Winkel, Vergrößern/Verkleinern, Isolieren
 4. G1 an unregelmäßigen Ecken
 5. Live-Übergabe des Verlaufs an V3D CAD (Feature-Liste statt STEP)
