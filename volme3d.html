@@ -39262,6 +39262,13 @@ const BIGMESH_REL_TOL = 0.0002;
 // Fehler), wird er neu gestartet und seine offenen Aufträge scheitern sauber.
 const _vfLanes = {};
 let _vfSeq = 0;
+// Leerlauf → Worker beenden: der WebAssembly-Speicher von meshoptimizer wächst für einen
+// 4-Mio-Scan auf Hunderte MB und schrumpft nie, solange der Worker lebt (Tab stürzte nach
+// dem Laden ab, Volker 21.10.). Neu starten kostet nur ~50 ms.
+function _vfIdle(L) {
+  clearTimeout(L.idle);
+  L.idle = setTimeout(() => { if (L.w && !L.wait.size) { try { L.w.terminate(); } catch (_) {} L.w = null; } }, 8000);
+}
 function _vfLane(name) {
   let L = _vfLanes[name];
   if (L && L.w) return L;
@@ -39273,7 +39280,7 @@ function _vfLane(name) {
     for (const x of ws) { clearTimeout(x.t); x.rej(new Error(msg)); }
   };
   L.fail = fail;
-  L.w.onmessage = e => { const d = e.data || {}, x = L.wait.get(d.id); if (!x) return; L.wait.delete(d.id); clearTimeout(x.t); d.error ? x.rej(new Error(d.error)) : x.res(d); };
+  L.w.onmessage = e => { const d = e.data || {}, x = L.wait.get(d.id); if (!x) return; L.wait.delete(d.id); clearTimeout(x.t); d.error ? x.rej(new Error(d.error)) : x.res(d); _vfIdle(L); };
   L.w.onerror = e => fail('Vereinfachen fehlgeschlagen' + (e && e.message ? ': ' + e.message : ''));
   return L;
 }
@@ -39290,18 +39297,24 @@ function _vfSimplifyAsync(pos, opts) {
   const ms = opts.timeout || (60000 + nTri / 1e6 * 60000);
   return new Promise((res, rej) => {
     const t = setTimeout(() => { console.warn('[vereinfachen] Zeitlimit, Worker „' + lane + '“ neu'); L.fail('Zeitüberschreitung beim Vereinfachen'); }, ms);
+    clearTimeout(L.idle);
     L.wait.set(id, { res, rej, t });
     L.w.postMessage(msg, give);
   });
 }
-function _geoSoup(g) {   // Dreiecksliste (kopiert), auch für indizierte Geometrie (OBJ)
+function _geoSoup(g) {   // Dreiecksliste (immer eine eigene Kopie → darf an Worker übergeben werden)
   const p = g.attributes.position;
-  if (!g.index) return new Float32Array(p.array.subarray(0, p.count * 3));
+  if (!g.index) return p.array.slice(0, p.count * 3);
   const ix = g.index.array, out = new Float32Array(ix.length * 3);
   for (let i = 0; i < ix.length; i++) { out[i * 3] = p.getX(ix[i]); out[i * 3 + 1] = p.getY(ix[i]); out[i * 3 + 2] = p.getZ(ix[i]); }
   return out;
 }
 function _geoTriCount(g) { return g && g.attributes && g.attributes.position ? (g.index ? g.index.count : g.attributes.position.count) / 3 : 0; }
+function _soupGeoRoh(pos) {   // nur Positionen + Box (Normalen später, falls überhaupt)
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.computeBoundingBox(); return g;
+}
 function _soupGeo(pos) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
@@ -39329,7 +39342,7 @@ async function _bigMeshGate(geos, filename) {
   (async () => {
     try {
       const out = [];
-      for (const g of geos) out.push(_geoTriCount(g) < 2000 ? null : await _vfSimplifyAsync(_geoSoup(g), { tol: BIGMESH_TOL_MM }));
+      for (const g of geos) out.push(_geoTriCount(g) < 2000 ? null : await _vfSimplifyAsync(_geoSoup(g), { tol: BIGMESH_TOL_MM, give: true }));
       results = out;
       const after = out.reduce((s, r, i) => s + (r ? r.outTris : _geoTriCount(geos[i])), 0);
       const err = Math.max(0, ...out.map(r => (r ? r.err : 0)));
@@ -39358,10 +39371,11 @@ async function _importMeshFile(buf, filename, showDialog) {
   const schon = _libIsSimplified(buf, ext);   // schon vereinfacht → nicht noch einmal fragen/vereinfachen
   if (ext === '3mf') return _importThreeMF(buf, filename, { ask: !schon });
   let geo;
-  try { geo = ext === 'obj' ? _parseOBJ(new TextDecoder().decode(buf)) : parseSTL(buf); }
+  try { geo = ext === 'obj' ? _parseOBJ(new TextDecoder().decode(buf)) : parseSTL(buf, !schon); }   // Normalen erst nach dem Fenster
   catch (err) { notify('Import Fehler: ' + err.message, 'e'); return false; }
   const r = schon ? { geos: [geo], simplified: false } : await _bigMeshGate([geo], filename);
   if (!r) return false;
+  if (!r.geos[0].attributes.normal) r.geos[0].computeVertexNormals();
   // vereinfachte Geometrie passt nicht mehr zu den rohen STL-Bytes → nicht mitgeben
   _addImportedGeo(r.geos[0], filename, ext !== 'obj', (ext === 'stl' && !r.simplified) ? buf : null, showDialog);
   if (r.simplified) notify('Vereinfacht geladen: ' + Math.round(_geoTriCount(r.geos[0])).toLocaleString('de') + ' Dreiecke', 'ok');
@@ -39446,11 +39460,15 @@ async function _importThreeMF(buf, filename, opts) {
   if (buf.byteLength > 8e6) notify('3MF wird gelesen … (' + (buf.byteLength / 1048576).toFixed(0) + ' MB)', 'i');
   let raw;
   try { raw = await _p3mfParseAsync(buf); } catch (e) { notify('3MF unlesbar: ' + e.message, 'w'); return false; }
-  let parts = raw.map(r => ({ name: r.name, geo: _p3mfGeo(r.pos) }));
+  // Normalen erst NACH dem Warnfenster: bei „Vereinfacht laden" bräuchte man sie fürs
+  // Riesen-Original nie (4-Mio-Scan: 144 MB + 0,5 s umsonst)
+  const ask = opts && opts.ask;
+  let parts = raw.map(r => ({ name: r.name, geo: ask ? _soupGeoRoh(r.pos) : _p3mfGeo(r.pos) }));
   if (opts && opts.ask && parts.length) {   // Nutzer-Import: bei großen Modellen nachfragen (Agent-API nicht)
     const g = await _bigMeshGate(parts.map(p => p.geo), filename);
     if (!g) return false;
     parts = parts.map((p, i) => ({ name: p.name, geo: g.geos[i] }));
+    for (const p of parts) if (!p.geo.attributes.normal) p.geo.computeVertexNormals();
   }
   if (!parts.length) { notify('3MF enthält kein 3D-Modell (nur Vorschau) — bitte „Drucken"', 'w'); return false; }
   if (parts.length > 1) _addImported3MFParts(parts, filename);
@@ -39458,7 +39476,7 @@ async function _importThreeMF(buf, filename, opts) {
   return true;
 }
 
-function parseSTL(buf) {
+function parseSTL(buf, ohneNormalen) {   // ohneNormalen: Aufrufer berechnet sie selbst (spart bei Riesen-Netzen Speicher)
   const geo = new THREE.BufferGeometry();
   const view = new DataView(buf);
   const nTri = view.getUint32(80, true);
@@ -39498,7 +39516,7 @@ function parseSTL(buf) {
   }
   if (dropped) console.warn('[parseSTL] ' + dropped + ' NaN/Inf-Dreieck(e) verworfen');
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.computeVertexNormals();   // ohne Normalen rendert MeshStandardMaterial in Firefox komplett schwarz
+  if (!ohneNormalen) geo.computeVertexNormals();   // ohne Normalen rendert MeshStandardMaterial in Firefox komplett schwarz
   return geo;
 }
 
@@ -67500,7 +67518,7 @@ function _applySimplify(){
           // bleibt bedienbar); Raster-Decimation nur noch als Notnagel.
           const target=Math.max(500,Math.round(nTri*(1-pct/100)));
           try{
-            const r=await _vfSimplifyAsync(_geoSoup(g),{target});
+            const r=await _vfSimplifyAsync(_geoSoup(g),{target,give:true});
             if(r.outTris<nTri){
               const ng=_soupGeo(r.pos); g.dispose(); m.geometry=ng;
               if(m.userData._origGeo) m.userData._origGeo=ng; m.userData._origStlBuf=null;   // gebackene STL passt nicht mehr
@@ -69323,13 +69341,15 @@ function _parse3MFParts(models){
   return P3MF.assemble(models).map(r=>({name:r.name, geo:_p3mfGeo(r.pos)}));
 }
 // Asynchron im Worker: Zip-Bytes → [{name, pos}]; ohne Worker Fallback im Haupt-Thread.
-let _p3mfW=null, _p3mfSeq=0; const _p3mfWait=new Map();
+let _p3mfW=null, _p3mfSeq=0, _p3mfIdle=null; const _p3mfWait=new Map();
 function _p3mfParseAsync(buf){
   try{
     if(!_p3mfW){
       const v=typeof VOLME3D_VERSION!=='undefined'?VOLME3D_VERSION:'1';
       _p3mfW=new Worker('lib/p3mf.js?v='+v);
-      _p3mfW.onmessage=e=>{ const d=e.data||{}, w=_p3mfWait.get(d.id); if(!w) return; _p3mfWait.delete(d.id); d.error?w.rej(new Error(d.error)):w.res(d.parts); };
+      _p3mfW.onmessage=e=>{ const d=e.data||{}, w=_p3mfWait.get(d.id); if(!w) return; _p3mfWait.delete(d.id); d.error?w.rej(new Error(d.error)):w.res(d.parts);
+        // Leerlauf → beenden (gibt den Speicher des Workers frei, s. _vfIdle)
+        clearTimeout(_p3mfIdle); _p3mfIdle=setTimeout(()=>{ if(_p3mfW && !_p3mfWait.size){ try{_p3mfW.terminate();}catch(_){} _p3mfW=null; } }, 8000); };
       _p3mfW.onerror=e=>{ console.warn('3MF-Worker:',e.message||e); const ws=[..._p3mfWait.values()]; _p3mfWait.clear(); try{_p3mfW.terminate();}catch(_){}
         _p3mfW=null; for(const w of ws) w.fallback(); };
     }
@@ -70159,8 +70179,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.245';
+const VOLME3D_VERSION = '1.18.246';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.246', date:'2026-10-21', changes:[
+    ['🧠','<b>Große Modelle brauchen deutlich weniger Arbeitsspeicher.</b> Nach dem Laden eines großen Scans fror die Seite ein und stürzte ab. Die Hintergrundrechner fürs Lesen und Vereinfachen behielten ihren Speicher (bei einem 4-Millionen-Dreiecke-Scan mehrere hundert MB) – jetzt geben sie ihn nach getaner Arbeit frei. Dazu entfallen doppelte Kopien beim Vereinfachen. Gemessen mit einem Kopf-Scan: dauerhaft 0,8 statt 1,5 GB, Höchstwert beim Laden 2,0 statt 2,4 GB.'],
+  ]},
   { version:'1.18.245', date:'2026-10-21', changes:[
     ['📚','<b>Große Dateien in der Bibliothek öffnen, ohne dass die Seite hängt.</b> Nach dem Klick auf „Öffnen“ zeigt der Knopf sofort „⏳ Wird geöffnet …“; ein zweiter Klick startet den Import nicht mehr doppelt (das verdoppelte den Speicher). Vorschaubilder und die Prüfung großer Dateien pausieren, solange eine Datei geöffnet wird.'],
     ['🛡️','<b>Vereinfachte Dateien werden nie ein zweites Mal vereinfacht.</b> V3D CAD vermerkt das jetzt in der Datei selbst – vorher wurde eine schon vereinfachte Datei in einem anderen Browser noch einmal verkleinert und wäre mit jeder Runde gröber geworden. Solche Dateien öffnen ohne erneute Nachfrage.'],
