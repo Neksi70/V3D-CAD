@@ -23250,19 +23250,35 @@ async function _geoGc() {
   const db = await _geoIdb();
   const eintraege = await new Promise((res, rej) => { const out = []; const r = db.transaction('g', 'readonly').objectStore('g').openCursor();
     r.onsuccess = () => { const c = r.result; if (!c) return res(out); out.push([c.key, c.value && c.value.ts || 0]); c.continue(); }; r.onerror = () => rej(r.error); });
-  if (!eintraege.length) return 0;
   const ref = new Set(), re = /"__full":"(g[0-9a-f]+_\d+)"/g;
   const scan = s => { if (typeof s !== 'string') return; let m; re.lastIndex = 0; while ((m = re.exec(s))) ref.add(m[1]); };
   for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith('volme3d_d_')) scan(_dsDecompress(localStorage.getItem(k))); }
+  // Sicherungen Design für Design durchgehen (Cursor) statt getAll: alle auf einmal waren
+  // bei Scan-Designs mehrere GB → Absturz 30 s nach jedem Start. Dabei gleich zu viele
+  // große Sicherungen entfernen (_bakTrimGross).
   const bdb = await _bakDb();
-  const baks = await new Promise((res, rej) => { const r = bdb.transaction('bak', 'readonly').objectStore('bak').getAll(); r.onsuccess = () => res(r.result || []); r.onerror = () => rej(r.error); });
-  for (const list of baks) if (Array.isArray(list)) for (const b of list) scan(typeof b.json === 'string' && b.json.startsWith('GZ1:') ? _dsDecompress(b.json) : b.json);
+  let gekuerzt = 0;
+  await new Promise((res, rej) => {
+    const tx = bdb.transaction('bak', 'readwrite'), r = tx.objectStore('bak').openCursor();
+    r.onsuccess = () => {
+      const c = r.result; if (!c) return;
+      const list = c.value;
+      if (Array.isArray(list)) {
+        const neu = _bakTrimGross(list);
+        if (neu.length !== list.length) { gekuerzt += list.length - neu.length; c.update(neu); }
+        for (const b of neu) scan(typeof b.json === 'string' && b.json.startsWith('GZ1:') ? _dsDecompress(b.json) : b.json);
+      }
+      c.continue();
+    };
+    tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+  });
+  if (gekuerzt) { console.log('[backup] ' + gekuerzt + ' alte große Sicherungen entfernt'); _fr('sicherungen-gekuerzt', { n: gekuerzt }); }
   const alt = Date.now() - 2 * 864e5, weg = eintraege.filter(([k, ts]) => !ref.has(k) && !_geoFullPut.has(k) && ts < alt).map(e => e[0]);
   if (weg.length) await new Promise((res, rej) => { const tx = db.transaction('g', 'readwrite'); weg.forEach(k => tx.objectStore('g').delete(k)); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
   if (weg.length) console.log('[geo-voll] aufgeräumt:', weg.length, 'nicht mehr benutzte Netze');
   return weg.length;
 }
-setTimeout(() => { (window.requestIdleCallback || (f => setTimeout(f, 0)))(() => _geoGc().catch(e => console.warn('[geo-voll] Aufräumen übersprungen:', e))); }, 30000);
+setTimeout(() => { (window.requestIdleCallback || (f => setTimeout(f, 0)))(() => { _fr('aufraeumen'); _geoGc().then(n => _fr('aufraeumen-fertig', { netze: n })).catch(e => { _fr('aufraeumen-fehler', String(e && e.message || e).slice(0, 120)); console.warn('[geo-voll] Aufräumen übersprungen:', e); }); }); }, 30000);
 
 const _geoUndoSnap = new WeakMap();   // JSON-Cache-Eintrag → {__snap} für Rückgängig (nie ins JSON!)
 function _cachedGeoJSON(geo, modus){
@@ -39271,13 +39287,14 @@ function _frGpu() {
 function _frSceneTris() { let n = 0; try { objects.forEach(o => o.traverse(c => { if (c.isMesh && !c.userData.isEdgeLines) n += _geoTriCount(c.geometry); })); } catch (e) {} return Math.round(n); }
 function _frStart() {
   let alt = null; try { alt = JSON.parse(localStorage.getItem(_FR_KEY) || 'null'); } catch (e) {}
-  if (alt && !alt.sauber && Array.isArray(alt.ev) && alt.ev.some(e => /^(import|gross|haenger|grafik|fehler|bib|auswahl|speichern|bild|ziehen)/.test(e.k))) {
+  if (alt && !alt.sauber && Array.isArray(alt.ev) && alt.ev.some(e => /^(import|gross|haenger|grafik|fehler|bib|auswahl|speichern|bild|ziehen|aufraeumen|sicherungen)/.test(e.k))) {
     try { fetch('/api/absturz', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(alt), keepalive: true }).catch(() => {}); } catch (e) {}
   }
   _frLog = { sid: Math.random().toString(36).slice(2, 10), start: new Date().toISOString(), ver: typeof VOLME3D_VERSION !== 'undefined' ? VOLME3D_VERSION : '?',
     gpu: _frGpu(), kerne: navigator.hardwareConcurrency, ramGB: navigator.deviceMemory, heapMax: performance.memory ? Math.round(performance.memory.jsHeapSizeLimit / 1048576) : undefined,
     fenster: innerWidth + 'x' + innerHeight + '@' + devicePixelRatio, sauber: false, ev: [] };
   _fr('start');
+  try { navigator.storage && navigator.storage.estimate && navigator.storage.estimate().then(e => _fr('browser-speicher', { mb: Math.round((e.usage || 0) / 1048576) })).catch(() => {}); } catch (e) {}
   addEventListener('pagehide', () => { if (_frLog) { _frLog.sauber = true; _frSave(); } });
   addEventListener('pageshow', e => { if (e.persisted && _frLog) { _frLog.sauber = false; _fr('zurueck'); } });
   document.addEventListener('visibilitychange', () => _fr(document.hidden ? 'versteckt' : 'sichtbar'));
@@ -42112,6 +42129,15 @@ function _tabClose(id) {
 // letzte Stunde alle (≥ 5 min Abstand), dann einer pro Stunde (24 h), dann einer
 // pro Tag (30 Tage). Festgehaltene Versionen (📌, mit Namen) bleiben immer.
 const _BAK_MAX = 90, _BAK_MIN_GAP = 5 * 60 * 1000;
+// Große Sicherungen (Scan-Szenen) je Design begrenzen: bis zu 90 × 30–375 MB summierten sich
+// auf mehrere GB, und das Aufräumen 30 s nach dem Start lud ALLE auf einmal → Tab-Absturz
+// bei jedem Start (Volker 21.10., Absturz-Protokoll). Die neuesten bleiben — für Designs,
+// die zu groß für den Browser-Speicher sind, ist die Sicherung die einzige lokale Kopie.
+const _BAK_GROSS = 20e6, _BAK_GROSS_BEHALTEN = 2;
+function _bakTrimGross(list) {
+  let n = 0;
+  return list.filter(b => b.pinned || typeof b.json !== 'string' || b.json.length <= _BAK_GROSS || ++n <= _BAK_GROSS_BEHALTEN);
+}
 function _bakThin(list){
   const now = Date.now(), seen = new Set(), out = []; let n = 0;
   for (const b of list) {
@@ -42161,7 +42187,7 @@ async function _bakSnapshot(id, data, force, extra){
     }
     list.unshift({ ts: now, json, n: (data.objects || []).length, thumb: (extra && extra.thumb) || null, name: (extra && extra.name) || '', pinned: !!(extra && extra.pinned) });
     list.sort((a, b) => b.ts - a.ts);
-    await _bakWrite(id, _bakThin(list));
+    await _bakWrite(id, _bakTrimGross(_bakThin(list)));
   } catch(e){ console.warn('[backup]', e); }
 }
 
@@ -70247,8 +70273,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.248';
+const VOLME3D_VERSION = '1.18.249';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.249', date:'2026-10-21', changes:[
+    ['🐛','<b>Absturz 30 Sekunden nach dem Start behoben.</b> Wer viel mit großen Scans gearbeitet hatte, bei dem stürzte V3D CAD bald nach jedem Start ab – auch ohne geöffnetes Modell. Ursache: Die automatische Aufräum-Routine lud alle Sicherungen aller Designs auf einmal in den Speicher, bei Scan-Designs mehrere GB. Jetzt geht sie Design für Design vor und behält je Design die zwei neuesten großen Sicherungen (dazu alle kleinen und alle angehefteten). Gefunden mit dem neuen Absturz-Protokoll – danke fürs Testen!'],
+  ]},
   { version:'1.18.247', date:'2026-10-21', changes:[
     ['🩺','<b>Absturz-Protokoll für große Modelle.</b> Damit wir Abstürze nach dem Laden großer Teile finden, die sich auf unserem Server nicht nachstellen lassen, schreibt V3D CAD ab jetzt still mit, was dabei passiert (Schritte, Speicherbedarf, Grafikchip, Hänger). Stürzt die Seite ab, geht dieses Protokoll beim nächsten Start einmal an uns – keine Modelldaten, keine Dateien, nur der Ablauf. Bei normalem Arbeiten wird nichts verschickt.'],
   ]},
