@@ -1460,6 +1460,7 @@ const firebaseConfig = {
         <div class="sli-item" onclick="newScene()">📄 Neu</div>
         <div class="sli-item" onclick="_localOpen()" title="Design-Datei öffnen (Strg+O)">📂 Öffnen</div>
         <div class="sli-item" onclick="doImport()" title="STL-, STEP-, 3MF-, OBJ- oder SVG-Datei importieren">⬆ Import (STL/STEP/3MF/OBJ/SVG)</div>
+        <div class="sli-item" onclick="_bauplanOeffnen()" title="Bauplan aus V3D Scan (*.v3dcad.json) öffnen: der gescannte Körper wird mit Skizzen, Extrusionen und Drehungen nachgebaut – Maße bleiben im Verlauf änderbar">🪄 Bauplan aus V3D Scan öffnen</div>
         <div class="sli-item" onclick="_svgImportOpen()" title="SVG-Datei laden — als Körper extrudieren, flach einfügen oder als Skizze bearbeiten">⬆ SVG importieren</div>
         <div class="sli-item" onclick="_localSave()" title="Design lokal speichern (Strg+S)" id="btn-local-save">💾 Speichern</div>
         <div class="sli-item" onclick="_localSaveAs()" title="Unter neuem Namen speichern">💾 Speichern unter …</div>
@@ -1482,7 +1483,7 @@ const firebaseConfig = {
       <button class="btn" onclick="_stlLibOpen()" title="Bibliothek: heruntergeladene Modelle (STL/3MF/OBJ/STEP) durchsuchen, ansehen, öffnen, drucken">📚 Bibliothek</button>
       <button class="btn" onclick="_svgImportOpen()" title="SVG importieren — Vektor-Datei (Logo, Schriftzug, Laser-Vorlage) als Körper extrudieren, flach einfügen oder als Skizze bearbeiten">⬆ SVG</button>
       <button class="btn" onclick="_imgInsert()" title="Bild einfügen — Foto/Logo (PNG, JPG) wählen und danach aussuchen, was daraus werden soll: Gravur, Leuchtrelief, Box, Ausstecher …  Bild ins Fenster ziehen geht auch">🖼️ Bild</button>
-      <input type="file" id="fimport" accept=".stl,.step,.stp,.3mf,.obj,.svg" style="display:none" onchange="handleImport(event)">
+      <input type="file" id="fimport" accept=".stl,.step,.stp,.3mf,.obj,.svg,.json" style="display:none" onchange="handleImport(event)">
       <input type="file" id="img-file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="_imgFile(event)">
     </div></div>
     <div class="tbg hot"><span class="tbg-l">Kombinieren</span><div class="tbg-row">
@@ -38854,8 +38855,36 @@ function handleLoad(e) {
 }
 
 function doImport() { document.getElementById('fimport').click(); }
+
+// Bauplan aus V3D Scan (*.v3dcad.json) → Körper wird Schritt für Schritt neu gebaut (Skizzen, Extrusionen,
+// Drehungen, Grundkörper …) und steht danach im Verlauf; ein Undo-Schritt. Siehe v3dApi.bauplan.
+async function _bauplanDatei(file) {
+  let plan;
+  try { plan = JSON.parse(await file.text()); }
+  catch (_) { notify('„' + file.name + '“ ist keine lesbare JSON-Datei.', 'e'); return; }
+  if (!plan || plan.format !== 'v3dscan-bauplan') {
+    notify('„' + file.name + '“ ist kein Bauplan aus V3D Scan (Datei endet auf .v3dcad.json).', 'e'); return;
+  }
+  notify('Bauplan „' + (plan.koerper || file.name) + '“ wird gebaut … (' + plan.befehle.length + ' Schritte)', 'i');
+  const r = await window.v3dApi.bauplan(plan);
+  if (!r.ok) { notify('Bauplan nicht gebaut – ' + r.error, 'e'); return; }
+  try { const o = objects.find(x => x.userData.id === r.id); if (o) selectObjs([o]); } catch (_) {}
+  try { fitView(); } catch (_) {}
+  const vol = r.volumen != null ? ' · Volumen ' + Math.round(r.volumen).toLocaleString('de-DE') + ' mm³' +
+    (r.abweichung != null ? ' (' + (r.abweichung >= 0 ? '+' : '') + (100 * r.abweichung).toFixed(2).replace('.', ',') + ' % zu V3D Scan)' : '') : '';
+  const warn = !r.vollstaendig || (r.abweichung != null && Math.abs(r.abweichung) > 0.02);
+  notify((r.vollstaendig ? 'Bauplan gebaut: ' + r.schritte + ' Schritte, Skizzen im Verlauf änderbar' :
+    'Als fester Körper (STEP) übernommen – ' + (r.hinweise[0] || 'kein Verlauf')) + vol, warn ? 'w' : 'ok');
+}
+function _bauplanOeffnen() {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = '.json,application/json';
+  inp.onchange = () => { if (inp.files[0]) _bauplanDatei(inp.files[0]); };
+  inp.click();
+}
 function handleImport(e) {
   const file = e.target.files[0]; if (!file) return;
+  if (/\.json$/i.test(file.name)) { _bauplanDatei(file); e.target.value = ''; return; }
   if (/\.(step|stp)$/i.test(file.name)) { _importStepFile(file); e.target.value = ''; return; }
   // SVG über den normalen Import → derselbe Dialog wie „SVG importieren" (Burkhard 14.10.)
   if (/\.svg$/i.test(file.name)) { _svgFileSelected({ target: { files: [file], value: '' } }); e.target.value = ''; return; }
@@ -69730,8 +69759,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.235';
+const VOLME3D_VERSION = '1.18.236';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.236', date:'2026-10-21', changes:[
+    ['🪄','<b>Bauplan aus V3D Scan öffnen.</b> V3D Scan macht aus einem Scan mit einem Klick einen CAD-Körper und speichert ihn als Bauplan (<code>.v3dcad.json</code>). In V3D CAD über ☰ Menü → „🪄 Bauplan aus V3D Scan öffnen“ (oder einfach über Import) wird der Körper Schritt für Schritt neu gebaut – mit Skizzen, Extrusionen und Drehungen im Verlauf, Maße also änderbar. Ein Schritt rückgängig; am Ende wird das Volumen mit V3D Scan verglichen.'],
+  ]},
   { version:'1.18.235', date:'2026-10-21', changes:[
     ['📚','<b>Bibliothek vereinfacht große Dateien gleich bei der Aufnahme.</b> Landet eine sehr große Datei in der Bibliothek (ab 300.000 Dreiecken, z. B. ein Scan), prüft V3D CAD sie einmal im Hintergrund und ersetzt sie durch eine vereinfachte Fassung – gleiches Format, gleicher Name, höchstens etwa 0,01 mm Abweichung. Das Original wird nicht gelöscht, sondern liegt im Unterordner <b>Original</b>. Beispiel: ein Kopf-Scan schrumpft von 53 MB (4 Mio Dreiecke) auf 11,5 MB (860.000 Dreiecke), eine Relief-Platte von 33 MB auf 1,7 MB. Dateien, die sich kaum verkleinern lassen, bleiben unverändert. <b>Dafür einmal oben in der Bibliothek auf „Helfer aktualisieren“ klicken</b> (Druck-Helfer Version 12).'],
   ]},
@@ -81073,6 +81105,7 @@ const CMDK = [
   {i:'📂',g:'Datei',t:'Design öffnen',k:'open laden',run:()=>_localOpen()},
   {i:'💾',g:'Datei',t:'Design speichern',k:'save',run:()=>_localSave()},
   {i:'⬆',g:'Datei',t:'Importieren (STL/STEP/3MF/OBJ)',k:'import stl step 3mf obj',run:()=>doImport()},
+  {i:'🪄',g:'Datei',t:'Bauplan aus V3D Scan öffnen',k:'bauplan scan v3dscan v3dcad json reverse engineering',run:()=>_bauplanOeffnen()},
   {i:'✥',g:'Bearbeiten',t:'Exakt versetzen (mm-Schritte)',k:'nudge versetzen verschieben offset schieben',run:()=>toggleNudge()},
   {i:'🩹',g:'Bearbeiten',t:'Löcher verschließen (Stopfen)',k:'loch schliessen fuellen stopfen plug',run:()=>plugHoles()},
   {i:'📁',g:'Seite',t:'Meine Designs',k:'gallery galerie',run:()=>showDesigns()},
@@ -83431,7 +83464,59 @@ function _fillHoles(mesh) {
       .map(([id, c]) => ({ id, params: c.doc, changes_scene: c.undo !== false }));
   }
 
-  window.v3dApi = { version: 1, execute, batch, commands,
+  // Bauplan aus V3D Scan (*.v3dcad.json, format "v3dscan-bauplan"): Befehle der Reihe nach,
+  // "@name" in params = id, die ein früherer Befehl mit "als": name geliefert hat (result.id bzw.
+  // result.created[0].id). Alles zusammen EIN Undo-Schritt, bei Fehler bleibt die Szene unverändert.
+  // Landet im Verlauf (Bauplan) → Skizzen/Maße bleiben in V3D CAD änderbar.
+  function bauplan(plan) {
+    return serial(async () => {
+      if (!plan || plan.format !== 'v3dscan-bauplan' || !Array.isArray(plan.befehle) || !plan.befehle.length)
+        return { ok: false, error: 'Das ist keine Bauplan-Datei aus V3D Scan (format „v3dscan-bauplan“).' };
+      const snap = takeSnap(), namen = {};
+      const ersetzen = v => {
+        if (typeof v === 'string' && v[0] === '@') {
+          if (!(v.slice(1) in namen)) fail('Bauplan: „' + v + '“ wird benutzt, bevor es gebaut ist');
+          return namen[v.slice(1)];
+        }
+        if (Array.isArray(v)) return v.map(ersetzen);
+        if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, ersetzen(x)]));
+        return v;
+      };
+      let i = 0, letzte;
+      try {
+        const { log } = await withLog(async log => {
+          for (; i < plan.befehle.length; i++) {
+            const b = plan.befehle[i] || {};
+            const params = ersetzen(b.params || {});
+            if (isRecorded(b.befehl)) bpBefore(log);
+            const v = await runOne(b.befehl, params, log);
+            bpRecord(b.befehl, params, v);
+            const id = v && (v.id !== undefined ? v.id : (v.created && v.created[0] ? v.created[0].id : undefined));
+            if (b.als) {
+              if (id === undefined) fail('Bauplan: Schritt ' + (i + 1) + ' (' + b.befehl + ') hat keinen Körper geliefert');
+              namen[b.als] = id;
+            }
+            if (id !== undefined) letzte = id;
+          }
+        });
+        commit(snap);
+        const kid = 'k' in namen ? namen.k : letzte;
+        let volumen = null;
+        try { volumen = CMDS['measure'].fn({ id: kid }).bodies[0].volume_mm3; } catch (_) {}
+        const soll = +plan.volumen || 0;
+        const abw = volumen && soll ? (volumen - soll) / soll : null;
+        return Object.assign({ ok: true, id: kid, schritte: plan.befehle.length, volumen, soll: soll || null,
+                               abweichung: abw, vollstaendig: plan.vollstaendig !== false, hinweise: plan.hinweise || [] },
+                             log.length ? { messages: log } : {});
+      } catch (e) {
+        try { rollback(snap); } catch (_) {}
+        return { ok: false, error: 'Schritt ' + (i + 1) + ' von ' + plan.befehle.length + ': ' + errText(e),
+                 messages: e._log || [] };
+      }
+    });
+  }
+
+  window.v3dApi = { version: 1, execute, batch, commands, bauplan,
     ready: () => typeof objects !== 'undefined' && !!renderer };
 })();
 </script>

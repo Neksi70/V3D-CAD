@@ -111,9 +111,30 @@ def _drehung(e, skz):
         raise NichtUebersetzbar("Drehprofil mit mehreren Konturen")
     E = sk.ebene_lesen(skz["ebene"])
     P = sk.zu3d(sk.kette_polygon({"elemente": [sk.element_lesen(x) for x in zu[0]["elemente"]]}), E)
-    r = np.linalg.norm((P - p)[:, :2], axis=1)
-    profil = [[round(float(a), 5), round(float(b), 5)] for a, b in zip(r, P[:, 2])]
+    # Ein Schnitt durch die Achse liefert beide Seiten in EINER Kontur -> wie features.drehen auf die
+    # groessere Seite beschneiden (sonst klappt |r| beide Seiten aufeinander: Profil ohne Flaeche)
+    w = np.cross(E["n"], np.asarray(d, float))
+    s = (P - p) @ w
+    seiten = [_halbebene(np.c_[vz * s, P[:, 2]]) for vz in (1.0, -1.0)]
+    halb = max(seiten, key=lambda q: abs(sk.flaeche(q)) if len(q) >= 3 else 0.0)
+    if len(halb) < 3:
+        raise NichtUebersetzbar("Drehprofil liegt auf der Achse")
+    profil = [[round(max(float(a), 0.0), 5), round(float(b), 5)] for a, b in halb]
     return {"profile": profil, "center": [round(float(p[0]), 6), round(float(p[1]), 6)]}
+
+
+def _halbebene(q):
+    """Polygon (n, 2) auf x >= 0 beschneiden (Sutherland-Hodgman)."""
+    aus = []
+    n = len(q)
+    for i in range(n):
+        a, b = q[i], q[(i + 1) % n]
+        if a[0] >= 0:
+            aus.append(a)
+        if (a[0] >= 0) != (b[0] >= 0):
+            t = a[0] / (a[0] - b[0])
+            aus.append(np.array([0.0, a[1] + t * (b[1] - a[1])]))
+    return np.array(aus) if aus else np.zeros((0, 2))
 
 
 def _grundkoerper(par):
