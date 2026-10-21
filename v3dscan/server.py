@@ -1180,7 +1180,9 @@ def _koerper_werkzeug(was, d):
         if rf_info.get("stufe", "normal") != "normal":
             hinweis = {"repariert": "erst nach Reparatur der Eingangskörper (ShapeFix) gelungen",
                        "unscharf": "nur mit Toleranz %.2g mm gelungen (fast berührende Flächen)" % rf_info.get("fuzzy", 0),
-                       "nachrepariert": "Ergebnis musste repariert werden"}[rf_info["stufe"]]
+                       "nachrepariert": "Ergebnis musste repariert werden",
+                       "maengel": "mit kleinen Topologie-Mängeln (BRepCheck) – für STL unkritisch, STEP im Ziel-CAD prüfen"
+                       }[rf_info["stufe"]]
         if vorschau:
             a = antwort(shape, None, None)
             if hinweis:
@@ -1409,6 +1411,7 @@ def freiform_befehl(was, d):
         if s.tri is None or not len(s.tri):
             raise Fehler("Die Freiform braucht ein Dreiecksnetz – Punktwolke erst vernetzen.")
         raster = None
+        zuordnung = None
         if was in ("kaefig_neu", "kaefig_wrap"):
             P, _ = _gewaehlte_punkte(d)
             if was == "kaefig_neu":
@@ -1434,11 +1437,67 @@ def freiform_befehl(was, d):
                 V = ff._Projektor(s.xyz, s.tri)(V)
             elif op == "einrasten":
                 V = ff._Projektor(s.xyz, s.tri)(V)
+            elif op in ("extrudieren", "bruecke", "verschmelzen", "schleife", "loeschen", "ausrichten",
+                        "verschieben", "umdrehen", "auf_scan"):
+                ids = [int(i) for i in d.get("ids") or []]
+                kanten = [tuple(int(x) for x in k) for k in d.get("kanten") or []]
+                if op == "extrudieren":
+                    if not kanten:
+                        raise Fehler("Randkanten wählen (Modus Kanten).")
+                    laenge = zahl(d, "laenge", 0) or None
+                    V, F, zuordnung = ff.kaefig_extrudieren(V, F, kanten, laenge)
+                    if d.get("auf_scan", True):
+                        neu = np.arange(len(zuordnung), len(V))
+                        V[neu] = ff._Projektor(s.xyz, s.tri)(V[neu])
+                elif op == "bruecke":
+                    if len(kanten) != 2:
+                        raise Fehler("Für die Brücke genau zwei Randkanten wählen.")
+                    V, F, zuordnung = ff.kaefig_bruecke(V, F, kanten[0], kanten[1])
+                elif op == "verschmelzen":
+                    if len(kanten) == 2:
+                        (a, b), (c, e) = kanten
+                        paare = [(a, e), (b, c)] if np.linalg.norm(V[a] - V[e]) + np.linalg.norm(V[b] - V[c]) <= \
+                            np.linalg.norm(V[a] - V[c]) + np.linalg.norm(V[b] - V[e]) else [(a, c), (b, e)]
+                    elif len(ids) == 2:
+                        paare = [tuple(ids)]
+                    else:
+                        raise Fehler("Zum Verschmelzen zwei Ecken oder zwei Kanten wählen.")
+                    V, F, zuordnung = ff.kaefig_verschmelzen(V, F, paare)
+                elif op == "schleife":
+                    if len(kanten) != 1:
+                        raise Fehler("Für „Schleife einfügen“ genau eine Kante wählen.")
+                    V, F, zuordnung = ff.kaefig_schleife(V, F, kanten[0], s.xyz, s.tri)
+                elif op == "loeschen":
+                    if not d.get("flaechen"):
+                        raise Fehler("Vierecke wählen (Modus Flächen).")
+                    V, F, zuordnung = ff.kaefig_loeschen(V, F, d["flaechen"])
+                elif op == "ausrichten":
+                    V = ff.kaefig_ausrichten(V, ids)
+                elif op == "verschieben":
+                    if not ids:
+                        raise Fehler("Ecken wählen (Modus Ecken).")
+                    V = ff.kaefig_verschieben(V, F, ids, d.get("versatz") or (0, 0, 0), zahl(d, "normal", 0))
+                elif op == "umdrehen":
+                    F = F[:, ::-1].copy()
+                else:
+                    wahl = ids or list(range(len(V)))
+                    V[wahl] = ff._Projektor(s.xyz, s.tri)(V[wahl])
             else:
                 raise Fehler("Unbekannte Käfig-Operation „%s“." % op)
         seg = np.stack([V[F], V[np.roll(F, -1, axis=1)]], 2).reshape(-1, 2, 3)
-        return {"V": _b64(V, np.float32), "F": _b64(F, np.uint32), "linien": _b64(seg, np.float32),
-                "vierecke": int(len(F)), "raster": raster}
+        aus = {"V": _b64(V, np.float32), "F": _b64(F, np.uint32), "linien": _b64(seg, np.float32),
+               "vierecke": int(len(F)), "raster": raster,
+               "unregelmaessig": [[int(i), int(n), bool(r)] for i, n, r in ff.kaefig_unregelmaessig(F)]}
+        if zuordnung is not None:
+            # scharfe Kanten mit umnummerieren; Raster ist nach Topologie-Aenderung nicht mehr gueltig
+            neu = []
+            for a, b in d.get("scharf") or []:
+                a, b = int(zuordnung[a]) if a < len(zuordnung) else -1, int(zuordnung[b]) if b < len(zuordnung) else -1
+                if a >= 0 and b >= 0 and a != b:
+                    neu.append("%d-%d" % (min(a, b), max(a, b)))
+            aus["scharf"] = neu
+            aus["topologie"] = True
+        return aus
     if was == "eine_flaeche":
         s = p.scan(d["id"])
         V = np.frombuffer(base64.b64decode(d["V"]), np.float32).reshape(-1, 3).astype(float)

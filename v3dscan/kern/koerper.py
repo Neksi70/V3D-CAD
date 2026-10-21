@@ -253,28 +253,33 @@ def _bool_lauf(ziel, werkzeug, operation, fuzzy=0.0):
 
 
 def _bool_pruefen(erg, va, vb, operation, tol):
-    """Ergebnis gueltig (BRepCheck) und das Volumen plausibel? -> Fehlertext oder None."""
+    """-> (Fehlertext oder None, Volumen plausibel?). "ungültige Topologie" ist ein weicher Fehler: bei
+    Freiform-Koerpern meldet BRepCheck oft Maengel an brauchbaren Ergebnissen."""
     from OCP.BRepCheck import BRepCheck_Analyzer
     if erg is None:
-        return "nicht berechenbar"
-    if not BRepCheck_Analyzer(erg).IsValid():
-        return "ungültige Topologie"
+        return "nicht berechenbar", False
     v = _volumen(erg)
     t = tol * max(va, vb, 1e-9) + 1e-9
-    if operation == "abziehen" and not (-t <= v <= va + t):
-        return "Volumen unplausibel"
-    if operation == "schneiden" and v > min(va, vb) + t:
-        return "Volumen unplausibel"
-    if operation == "vereinen" and not (max(va, vb) - t <= v <= va + vb + t):
-        return "Volumen unplausibel"
-    return None
+    if operation == "abziehen":
+        plausibel = -t <= v <= va + t
+    elif operation == "schneiden":
+        plausibel = v <= min(va, vb) + t
+    else:
+        plausibel = max(va, vb) - t <= v <= va + vb + t
+    if not plausibel:
+        return "Volumen unplausibel", False
+    if not BRepCheck_Analyzer(erg).IsValid():
+        return "ungültige Topologie", True
+    return None, True
 
 
-def boolean(ziel, werkzeug, operation, info=None):
-    """Vereinen | abziehen | schneiden mit Rueckfallebene: 1. normal, 2. Eingaben mit ShapeFix repariert,
-    3. mit wachsender Unschaerfe (Fuzzy, 1e-6 .. 1e-4 der Diagonale - fast beruehrende/koplanare Flaechen),
-    4. Ergebnis nachtraeglich repariert. Jede Stufe wird auf gueltige Topologie und plausibles Volumen
-    geprueft. info (dict) bekommt "stufe" und ggf. "fuzzy" - fuer die Meldung."""
+def boolean(ziel, werkzeug, operation, info=None, budget=None):
+    """Vereinen | abziehen | schneiden mit Rueckfallebene: 1. normal, 2. Ergebnis mit ShapeFix repariert,
+    3. mit Unschaerfe (Fuzzy 1e-6 .. 1e-4 der Diagonale - fast beruehrende/koplanare Flaechen), 4. Eingaben
+    repariert. Jede Stufe prueft Volumen-Plausibilitaet (hart) und BRepCheck (weich). Liefert keine Stufe ein
+    gueltiges Ergebnis, gilt das erste plausible (Stufe "maengel"). Weitere Stufen laufen nur im Zeitbudget
+    (Standard: 4x Dauer des ersten Laufs, mind. 10 s); nach einem plausiblen Ergebnis nur noch ein Versuch. info bekommt "stufe", "fuzzy", "gruende"."""
+    import time
     va, vb = _volumen(ziel), _volumen(werkzeug)
     diag = _diagonale(ziel, werkzeug)
     gruende = []
@@ -284,32 +289,45 @@ def boolean(ziel, werkzeug, operation, info=None):
         if not rep:
             rep["z"], rep["w"] = _repariert(ziel), _repariert(werkzeug)
         return rep["z"], rep["w"]
-    stufen = [("repariert", repariert, 0.0)] + [("unscharf", repariert, f * diag) for f in (1e-6, 1e-5, 1e-4)]
-    if _eingabe_ok(ziel) and _eingabe_ok(werkzeug):
-        stufen.insert(0, ("normal", lambda: (ziel, werkzeug), 0.0))
+    eingabe_ok = _eingabe_ok(ziel) and _eingabe_ok(werkzeug)
+    original = (lambda: (ziel, werkzeug)) if eingabe_ok else repariert
+    stufen = [("normal" if eingabe_ok else "repariert", original, 0.0)]
+    stufen += [("unscharf", original, f * diag) for f in (1e-6, 1e-5, 1e-4)]
+    if eingabe_ok:
+        stufen += [("repariert", repariert, 0.0)]
     else:
         gruende.append("normal: Eingangskörper ungültig oder umgedreht")
-    letzter = None
-    for name, eingaben, fz in stufen:
+    kandidat = None
+    start = time.time()
+    for n, (name, eingaben, fz) in enumerate(stufen):
+        if n == 1 and budget is None:
+            budget = max(10.0, 4 * (time.time() - start))
+        # liegt schon ein plausibles (nur BRepCheck-bemaengeltes) Ergebnis vor: hoechstens EIN weiterer Versuch
+        if kandidat is not None and (n - kandidat[2] > 1 or time.time() - start > budget):
+            gruende.append("weitere Stufen übersprungen")
+            break
         try:
             erg = _bool_lauf(*eingaben(), operation, fz)
         except Exception as x:          # OCCT wirft bei kaputten Eingaben auch Standard_Failure
-            erg, grund = None, "Ausnahme: %s" % x
+            erg, grund, plausibel = None, "Ausnahme: %s" % x, False
         else:
-            grund = _bool_pruefen(erg, va, vb, operation, 1e-3 if fz == 0 else 1e-2)
+            grund, plausibel = _bool_pruefen(erg, va, vb, operation, 1e-3 if fz == 0 else 1e-2)
+        if grund == "ungültige Topologie":
+            fix = _repariert(erg)
+            g2, p2 = _bool_pruefen(fix, va, vb, operation, 1e-2)
+            if g2 is None:
+                erg, grund, name = fix, None, ("nachrepariert" if name == "normal" else name)
         if grund is None:
             if info is not None:
                 info.update({"stufe": name, "fuzzy": fz, "gruende": gruende})
             return _vereinheitlichen(erg)
         gruende.append("%s: %s" % (name, grund))
-        if erg is not None:
-            letzter = erg
-    if letzter is not None:
-        erg = _repariert(letzter)
-        if _bool_pruefen(erg, va, vb, operation, 1e-2) is None:
-            if info is not None:
-                info.update({"stufe": "nachrepariert", "fuzzy": 0.0, "gruende": gruende})
-            return _vereinheitlichen(erg)
+        if plausibel and kandidat is None:
+            kandidat = (erg, fz, n)
+    if kandidat is not None:
+        if info is not None:
+            info.update({"stufe": "maengel", "fuzzy": kandidat[1], "gruende": gruende})
+        return _vereinheitlichen(kandidat[0])
     raise ValueError("Boolean-Operation (%s) ist fehlgeschlagen – auch mit Reparatur und Toleranz (%s)."
                      % (operation, "; ".join(gruende[-2:])))
 

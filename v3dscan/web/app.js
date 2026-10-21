@@ -924,9 +924,8 @@ leinwand.addEventListener('pointerup', (ev) => {
   if (WF.haupt && WF.haupt.id === 'w-3dskizze') { s3Klick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-uebergang') { ueKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-koerper-abw' && S.abweichung && S.abweichung.koerper) { wertLabel(x, y); return; }
-  if (WF.haupt && WF.haupt.id === 'w-auto-flaechen' && S.kaefig && $('#kgScharfModus').checked) {
-    const k = kaefigKanteAn(x, y);
-    if (k) { if (S.kaefig.scharf.has(k)) S.kaefig.scharf.delete(k); else S.kaefig.scharf.add(k); kaefigLinien(); }
+  if (WF.haupt && WF.haupt.id === 'w-auto-flaechen' && S.kaefig && $('#kgModus').value !== 'ziehen' && $('#kgModus').value !== 'pinsel') {
+    kaefigKlick(x, y);
     return;
   }
   if (WF.haupt && WF.haupt.id === 'w-skizze' && S.skzKlick) { skzKlick(x, y); return; }
@@ -3137,29 +3136,110 @@ function awSvg() {
 // Käfig von Hand: Ecken über den Scan ziehen
 function kaefigLinien() {
   if (afLinien) objektEntsorgen(afLinien);
-  const { V, F } = S.kaefig;
-  const pos = new Float32Array(F.length * 2 * 3);
-  for (let f = 0; f < F.length / 4; f++) for (let e = 0; e < 4; e++) {
-    const a = F[f * 4 + e], b = F[f * 4 + (e + 1) % 4], o = (f * 4 + e) * 6;
-    pos.set([V[a * 3], V[a * 3 + 1], V[a * 3 + 2], V[b * 3], V[b * 3 + 1], V[b * 3 + 2]], o);
+  const K = S.kaefig;
+  const { V, F } = K;
+  K.wahl = K.wahl || { ecken: [], kanten: new Set(), flaechen: new Set() };
+  K.versteckt = K.versteckt || new Set();
+  const pos = [];
+  const pv = (i) => [V[i * 3], V[i * 3 + 1], V[i * 3 + 2]];
+  for (let f = 0; f < F.length / 4; f++) {
+    if (K.versteckt.has(f)) continue;
+    for (let e = 0; e < 4; e++) pos.push(...pv(F[f * 4 + e]), ...pv(F[f * 4 + (e + 1) % 4]));
   }
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
   afLinien = new THREE.Group();
-  afLinien.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: S.kaefig.geaendert ? 0xd0406a : 0x1f5fd0 })));
-  if (S.kaefig.scharf && S.kaefig.scharf.size) {
-    const sp = [];
-    for (const k of S.kaefig.scharf) {
-      const [i, j] = k.split('-').map(Number);
-      sp.push(V[i * 3], V[i * 3 + 1], V[i * 3 + 2], V[j * 3], V[j * 3 + 1], V[j * 3 + 2]);
-    }
+  afLinien.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: K.geaendert ? 0xd0406a : 0x1f5fd0 })));
+  const ueber = (punkte, farbe) => {
+    if (!punkte.length) return;
     const gs = new THREE.BufferGeometry();
-    gs.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sp), 3));
-    const l = new THREE.LineSegments(gs, new THREE.LineBasicMaterial({ color: 0xff2020, depthTest: false, transparent: true }));
+    gs.setAttribute('position', new THREE.BufferAttribute(new Float32Array(punkte), 3));
+    const l = new THREE.LineSegments(gs, new THREE.LineBasicMaterial({ color: farbe, depthTest: false, transparent: true }));
     l.renderOrder = 7;
     afLinien.add(l);
+  };
+  const kantenPunkte = (menge) => { const sp = []; for (const k of menge) { const [i, j] = k.split('-').map(Number); sp.push(...pv(i), ...pv(j)); } return sp; };
+  ueber(kantenPunkte(K.scharf || []), 0xff2020);
+  ueber(kantenPunkte(K.wahl.kanten), 0xffa000);
+  if (K.wahl.flaechen.size) {
+    const tri = [];
+    for (const f of K.wahl.flaechen) {
+      const q = [0, 1, 2, 3].map((e) => pv(F[f * 4 + e]));
+      tri.push(...q[0], ...q[1], ...q[2], ...q[0], ...q[2], ...q[3]);
+    }
+    const gf = new THREE.BufferGeometry();
+    gf.setAttribute('position', new THREE.BufferAttribute(new Float32Array(tri), 3));
+    const m = new THREE.Mesh(gf, new THREE.MeshBasicMaterial({ color: 0xffa000, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthTest: false }));
+    m.renderOrder = 6;
+    afLinien.add(m);
   }
+  const punkte = (ids, farbe, gr) => {
+    if (!ids.length) return;
+    const gp = new THREE.BufferGeometry();
+    gp.setAttribute('position', new THREE.BufferAttribute(new Float32Array(ids.flatMap(pv)), 3));
+    const p = new THREE.Points(gp, new THREE.PointsMaterial({ color: farbe, size: gr, sizeAttenuation: false, depthTest: false, transparent: true }));
+    p.renderOrder = 8;
+    afLinien.add(p);
+  };
+  const irr = kaefigUnregelmaessig();
+  $('#kgIrrInfo').textContent = irr.length ? `${irr.length} unregelmäßige Ecke(n)` : '';
+  if ($('#kgIrr').checked) punkte(irr, 0xff7a00, 9);
+  punkte(K.wahl.ecken, 0xffd000, 8);
+  const w = K.wahl;
+  $('#kgWahlInfo').textContent = [w.ecken.length && `${w.ecken.length} Ecken`, w.kanten.size && `${w.kanten.size} Kanten`,
+    w.flaechen.size && `${w.flaechen.size} Vierecke`, K.versteckt.size && `${K.versteckt.size} verborgen`].filter(Boolean).join(' · ');
   hilfsGruppe.add(afLinien);
+}
+function kaefigUnregelmaessig() {
+  // innen ≠ 4 Vierecke, am Rand ≠ 1/2 (Extraordinary Vertices) – dort bleibt beim G1-Übergang ein Restknick
+  const { F } = S.kaefig;
+  const zahl = new Map(), kz = new Map();
+  for (let f = 0; f < F.length / 4; f++) for (let e = 0; e < 4; e++) {
+    const a = F[f * 4 + e], b = F[f * 4 + (e + 1) % 4];
+    zahl.set(a, (zahl.get(a) || 0) + 1);
+    const k = a < b ? `${a}-${b}` : `${b}-${a}`;
+    kz.set(k, (kz.get(k) || 0) + 1);
+  }
+  const rand = new Set();
+  for (const [k, n] of kz) if (n === 1) k.split('-').forEach((x) => rand.add(Number(x)));
+  const aus = [];
+  for (const [i, n] of zahl) if (rand.has(i) ? n > 2 : n !== 4) aus.push(i);
+  return aus;
+}
+function kaefigFlaecheAn(x, y) {
+  const { V, F } = S.kaefig;
+  const w = leinwand.clientWidth, h = leinwand.clientHeight, v = new THREE.Vector3();
+  let best = null;
+  for (let f = 0; f < F.length / 4; f++) {
+    if (S.kaefig.versteckt && S.kaefig.versteckt.has(f)) continue;
+    const q = [];
+    let z = 0, hinten = false;
+    for (let e = 0; e < 4; e++) {
+      const i = F[f * 4 + e];
+      v.set(V[i * 3], V[i * 3 + 1], V[i * 3 + 2]).project(kamera);
+      if (v.z > 1) hinten = true;
+      q.push([(v.x + 1) / 2 * w, (1 - v.y) / 2 * h]); z += v.z;
+    }
+    if (hinten) continue;
+    let innen = false;
+    for (let a = 0, b = 3; a < 4; b = a++) {
+      if ((q[a][1] > y) !== (q[b][1] > y) && x < (q[b][0] - q[a][0]) * (y - q[a][1]) / (q[b][1] - q[a][1]) + q[a][0]) innen = !innen;
+    }
+    if (innen && (!best || z < best.z)) best = { z, f };
+  }
+  return best ? best.f : null;
+}
+function kaefigKlick(x, y) {
+  const K = S.kaefig, modus = $('#kgModus').value;
+  const umschalten = (menge, k) => { if (menge.has(k)) menge.delete(k); else menge.add(k); };
+  if (modus === 'scharf') { const k = kaefigKanteAn(x, y); if (k) umschalten(K.scharf, k); }
+  else if (modus === 'kanten') { const k = kaefigKanteAn(x, y); if (k) umschalten(K.wahl.kanten, k); }
+  else if (modus === 'flaechen') { const f = kaefigFlaecheAn(x, y); if (f !== null) umschalten(K.wahl.flaechen, f); }
+  else if (modus === 'ecken') {
+    const i = kaefigEckeAn(x, y);
+    if (i !== null) { const n = K.wahl.ecken.indexOf(i); if (n >= 0) K.wahl.ecken.splice(n, 1); else K.wahl.ecken.push(i); }
+  }
+  kaefigLinien();
 }
 function kaefigEckeAn(x, y) {
   const { V } = S.kaefig;
@@ -3173,9 +3253,28 @@ function kaefigEckeAn(x, y) {
   }
   return best ? best.i : null;
 }
+let kaefigPinsel = null;
+function kaefigPinselSammeln(x, y) {
+  const { V } = S.kaefig;
+  const w = leinwand.clientWidth, h = leinwand.clientHeight, v = new THREE.Vector3(), r = Number($('#kgPinsel').value) || 40;
+  for (let i = 0; i < V.length / 3; i++) {
+    v.set(V[i * 3], V[i * 3 + 1], V[i * 3 + 2]).project(kamera);
+    if (v.z <= 1 && Math.hypot((v.x + 1) / 2 * w - x, (1 - v.y) / 2 * h - y) <= r) kaefigPinsel.add(i);
+  }
+}
 leinwand.addEventListener('pointerdown', (ev) => {
-  if (!S.kaefig || !WF.haupt || WF.haupt.id !== 'w-auto-flaechen' || ev.button !== 0 || S.beschaeftigt || $('#kgScharfModus').checked) return;
+  if (!S.kaefig || !WF.haupt || WF.haupt.id !== 'w-auto-flaechen' || ev.button !== 0 || S.beschaeftigt) return;
+  const modus = $('#kgModus').value;
   const [x, y] = lokalePos(ev);
+  if (modus === 'pinsel') {
+    ev.stopImmediatePropagation(); ev.preventDefault();
+    steuerung.enabled = false;
+    kaefigPinsel = new Set();
+    kaefigPinselSammeln(x, y);
+    leinwand.setPointerCapture(ev.pointerId);
+    return;
+  }
+  if (modus !== 'ziehen') return;
   const i = kaefigEckeAn(x, y);
   if (i === null) return;
   ev.stopImmediatePropagation(); ev.preventDefault();
@@ -3184,6 +3283,7 @@ leinwand.addEventListener('pointerdown', (ev) => {
   leinwand.setPointerCapture(ev.pointerId);
 }, { capture: true });
 leinwand.addEventListener('pointermove', (ev) => {
+  if (kaefigPinsel) { const [x, y] = lokalePos(ev); kaefigPinselSammeln(x, y); return; }
   if (kaefigZug === null) return;
   const [x, y] = lokalePos(ev);
   const t = oberflaechePunkt(x, y, { nurScan: S.kaefig.scan, koerper: false });
@@ -3193,6 +3293,13 @@ leinwand.addEventListener('pointermove', (ev) => {
   kaefigLinien();
 });
 leinwand.addEventListener('pointerup', () => {
+  if (kaefigPinsel) {
+    const ids = [...kaefigPinsel];
+    kaefigPinsel = null;
+    steuerung.enabled = true;
+    if (ids.length) sicher(() => kgOp('glaetten', { ids }));
+    return;
+  }
   if (kaefigZug === null) return;
   kaefigZug = null;
   steuerung.enabled = true;
@@ -3519,8 +3626,11 @@ async function wi(vorschau) {
 
 // --- Käfig von Hand (v1.0) --------------------------------------------------------------------------
 function kaefigSetzen(j, scan) {
-  S.kaefig = { V: b64.float32(j.V), F: b64Uint32(j.F), scan, geaendert: true, raster: j.raster || null,
-    scharf: S.kaefig && S.kaefig.scan === scan && !j.raster ? S.kaefig.scharf : new Set() };
+  const alt = S.kaefig && S.kaefig.scan === scan ? S.kaefig : null;
+  // Topologie geändert: der Server hat die scharfen Kanten umnummeriert; Auswahl/Verbergen gelten nicht mehr
+  const scharf = j.scharf ? new Set(j.scharf) : (alt && !j.raster ? alt.scharf : new Set());
+  S.kaefig = { V: b64.float32(j.V), F: b64Uint32(j.F), scan, geaendert: true, raster: j.raster || null, scharf,
+    wahl: alt && !j.topologie && !j.raster ? alt.wahl : null, versteckt: alt && !j.topologie && !j.raster ? alt.versteckt : null };
   kaefigLinien();
   $('#afInfo').textContent = `Käfig: ${j.vierecke} Vierecke` + (j.raster ? ` (Raster ${j.raster.join(' × ')})` : '') + ' – „Erzeugen“ baut die Flächen.';
 }
@@ -3540,9 +3650,15 @@ async function kgNeu(art) {
 async function kgOp(op, extra = {}) {
   if (!S.kaefig) throw new Error('Erst einen Käfig anlegen (Vorschau, „Neu auf Auswahl“ oder „Wrap“).');
   const raster = S.kaefig.raster;
-  const j = await api('freiform/kaefig_op', { id: S.kaefig.scan, V: zuB64(S.kaefig.V), F: zuB64(S.kaefig.F), op, ...extra }, 'Bearbeite Käfig…');
+  const j = await api('freiform/kaefig_op', { id: S.kaefig.scan, V: zuB64(S.kaefig.V), F: zuB64(S.kaefig.F), op,
+    scharf: [...S.kaefig.scharf].map((k) => k.split('-').map(Number)), ...extra }, 'Bearbeite Käfig…');
   kaefigSetzen(j, S.kaefig.scan);
-  if (op === 'glaetten' && raster) S.kaefig.raster = raster;
+  if (!j.topologie && op !== 'feiner' && op !== 'symmetrie' && raster) S.kaefig.raster = raster;
+}
+function kgWahl() {
+  if (!S.kaefig) throw new Error('Erst einen Käfig anlegen (Vorschau, „Neu auf Auswahl“ oder „Wrap“).');
+  const w = S.kaefig.wahl;
+  return { ids: [...w.ecken], kanten: [...w.kanten].map((k) => k.split('-').map(Number)), flaechen: [...w.flaechen] };
 }
 function kgSpeichern() {
   if (!S.kaefig) throw new Error('Kein Käfig vorhanden.');
@@ -4156,6 +4272,23 @@ const AKTIONEN = {
     return kgOp('symmetrie', { rid });
   } },
   kgSpeichern: { text: 'Käfig-Vorlage speichern', fn: kgSpeichern },
+  kgWahlLeeren: { text: '', fn: () => { if (S.kaefig) { S.kaefig.wahl = null; kaefigLinien(); } } },
+  kgExtrudieren: { text: 'Käfig extrudieren', fn: () => kgOp('extrudieren', { ...kgWahl(), laenge: Number($('#kgLaenge').value) || 0 }) },
+  kgBruecke: { text: 'Käfig-Brücke', fn: () => kgOp('bruecke', kgWahl()) },
+  kgSchleife: { text: 'Schleife einfügen', fn: () => kgOp('schleife', kgWahl()) },
+  kgVerschmelzen: { text: 'Verschmelzen', fn: () => kgOp('verschmelzen', kgWahl()) },
+  kgVerschieben: { text: 'Ecken verschieben', fn: () => kgOp('verschieben', { ...kgWahl(),
+    versatz: ['#kgDx', '#kgDy', '#kgDz'].map((i) => Number($(i).value) || 0), normal: Number($('#kgDn').value) || 0 }) },
+  kgAusrichten: { text: 'Ecken ausrichten', fn: () => kgOp('ausrichten', kgWahl()) },
+  kgAufScan: { text: 'Auf den Scan legen', fn: () => kgOp('auf_scan', kgWahl()) },
+  kgLoeschen: { text: 'Vierecke löschen', fn: () => kgOp('loeschen', kgWahl()) },
+  kgUmdrehen: { text: 'Normalen umdrehen', fn: () => kgOp('umdrehen') },
+  kgVerbergen: { text: '', fn: () => { const w = kgWahl(); for (const f of w.flaechen) S.kaefig.versteckt.add(f); S.kaefig.wahl.flaechen.clear(); kaefigLinien(); } },
+  kgIsolieren: { text: '', fn: () => {
+    const w = kgWahl(); if (!w.flaechen.length) throw new Error('Vierecke wählen, die sichtbar bleiben sollen.');
+    for (let f = 0; f < S.kaefig.F.length / 4; f++) if (!w.flaechen.includes(f)) S.kaefig.versteckt.add(f);
+    S.kaefig.wahl.flaechen.clear(); kaefigLinien(); } },
+  kgAlleZeigen: { text: '', fn: () => { if (S.kaefig) { S.kaefig.versteckt.clear(); kaefigLinien(); } } },
   kgEine: { text: 'Als eine Fläche', fn: async () => {
     if (!S.kaefig || !S.kaefig.raster) throw new Error('„Als eine Fläche“ geht mit einem Raster-Käfig („Neu auf Auswahl“).');
     const j = await api('freiform/eine_flaeche', { id: S.kaefig.scan, V: zuB64(S.kaefig.V), raster: S.kaefig.raster }, 'Passe Fläche ein…');
@@ -4461,7 +4594,8 @@ async function start() {
   fetch('/api/puls');
   steuerung.addEventListener('change', kameraGrenzen);
   window.v3dscan = { S, api, einpassen, werkzeugSetzen, punktAn, auswahlAnwenden, kamera, steuerung, renderer,
-    werkzeugOeffnen, werkzeugSchliessen, bandSetzen, formWaehlen, kaefigEckeAn };
+    werkzeugOeffnen, werkzeugSchliessen, bandSetzen, formWaehlen, kaefigEckeAn, kaefigKanteAn, kaefigFlaecheAn };
   konsole('V3D Scan ' + z.fassung + ' bereit.');
 }
 start().catch((e) => meldung('Start fehlgeschlagen: ' + e.message, 'fehler'));
+$('#kgIrr').addEventListener('change', () => { if (S.kaefig) kaefigLinien(); });

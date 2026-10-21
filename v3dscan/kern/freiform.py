@@ -777,3 +777,220 @@ def obj_kaefig(text):
     if not F:
         raise ValueError("Keine Vierecke in der OBJ-Datei.")
     return np.array(V, float), np.array(F, np.int64)
+
+
+# --- Freiform-Editor (v1.2): Topologie-Operationen auf dem Vierecks-Kaefig --------------------------------
+# Alle Funktionen arbeiten auf (V, F) und liefern zusaetzlich eine Ecken-Zuordnung alt -> neu (-1 = entfallen),
+# damit die Oberflaeche ihre scharfen Kanten / Auswahl umnummerieren kann.
+
+def _kanten_flaechen(F):
+    kf = {}
+    for fi, f in enumerate(F.tolist()):
+        for k in range(4):
+            a, b = f[k], f[(k + 1) % 4]
+            kf.setdefault((min(a, b), max(a, b)), []).append((fi, k))
+    return kf
+
+
+def _flaechen_normale(V, f):
+    n = np.cross(V[f[2]] - V[f[0]], V[f[3]] - V[f[1]])
+    return n / max(np.linalg.norm(n), 1e-12)
+
+
+def ecken_normalen(V, F):
+    N = np.zeros_like(V, dtype=float)
+    for f in F.tolist():
+        n = _flaechen_normale(V, f)
+        N[f] += n
+    return N / np.maximum(np.linalg.norm(N, axis=1), 1e-12)[:, None]
+
+
+def kaefig_kompakt(V, F):
+    """Unbenutzte Ecken entfernen -> (V, F, zuordnung alt->neu)."""
+    benutzt = np.unique(F) if len(F) else np.zeros(0, np.int64)
+    z = -np.ones(len(V), np.int64)
+    z[benutzt] = np.arange(len(benutzt))
+    return np.asarray(V, float)[benutzt], z[F] if len(F) else F, z
+
+
+def kaefig_rand(F):
+    """Randkanten (nur einem Viereck zugeordnet) als Menge (min, max)."""
+    return {k for k, l in _kanten_flaechen(np.asarray(F, np.int64)).items() if len(l) == 1}
+
+
+def kaefig_extrudieren(V, F, kanten, laenge=None):
+    """Extrude-Handle: Randkanten um laenge (Standard: mittlere Kantenlaenge) in der Flaechenebene nach aussen
+    ziehen; zusammenhaengende Kanten teilen sich die neuen Ecken."""
+    V = np.asarray(V, float)
+    F = np.asarray(F, np.int64)
+    kf = _kanten_flaechen(F)
+    if laenge is None:
+        laenge = float(np.mean(np.linalg.norm(V[F] - V[np.roll(F, -1, axis=1)], axis=2)))
+    neuV, neuF = list(V), F.tolist()
+    aussen = {}
+    gerichtet = []
+    for a, b in kanten:
+        k = (min(a, b), max(a, b))
+        l = kf.get(k)
+        if not l or len(l) != 1:
+            raise ValueError("Extrudieren geht nur an Randkanten (Kante %d–%d liegt innen)." % (a + 1, b + 1))
+        fi, pos = l[0]
+        f = F[fi].tolist()
+        a, b = f[pos], f[(pos + 1) % 4]                  # Umlaufrichtung im Nachbarviereck
+        n = _flaechen_normale(V, f)
+        e = V[b] - V[a]
+        r = np.cross(e, n)
+        r /= max(np.linalg.norm(r), 1e-12)
+        if (0.5 * (V[a] + V[b]) - V[f].mean(0)) @ r < 0:
+            r = -r
+        for x in (a, b):
+            aussen.setdefault(x, []).append(r)
+        gerichtet.append((a, b))
+    neu = {}
+    for x, rs in aussen.items():
+        r = np.mean(rs, axis=0)
+        r /= max(np.linalg.norm(r), 1e-12)
+        neu[x] = len(neuV)
+        neuV.append(V[x] + r * laenge)
+    for a, b in gerichtet:
+        neuF.append([b, a, neu[a], neu[b]])
+    return np.array(neuV), np.array(neuF, np.int64), np.arange(len(V))
+
+
+def kaefig_bruecke(V, F, k1, k2):
+    """Bridge: neues Viereck zwischen zwei Randkanten."""
+    V = np.asarray(V, float)
+    F = np.asarray(F, np.int64)
+    kf = _kanten_flaechen(F)
+    paare = []
+    for a, b in (k1, k2):
+        l = kf.get((min(a, b), max(a, b)))
+        if not l or len(l) != 1:
+            raise ValueError("Brücke geht nur zwischen Randkanten.")
+        f = F[l[0][0]].tolist()
+        paare.append((f[l[0][1]], f[(l[0][1] + 1) % 4]))
+    (a, b), (c, d) = paare
+    if len({a, b, c, d}) < 3:
+        raise ValueError("Die Kanten sind gleich.")
+    if np.linalg.norm(V[a] - V[d]) + np.linalg.norm(V[b] - V[c]) <= np.linalg.norm(V[a] - V[c]) + np.linalg.norm(V[b] - V[d]):
+        q = [b, a, d, c]
+    else:
+        q = [b, a, c, d]
+    if len(set(q)) == 3:
+        raise ValueError("Die Kanten teilen eine Ecke – dafür „Verschmelzen“ nehmen.")
+    return V, np.vstack([F, [q]]), np.arange(len(V))
+
+
+def kaefig_verschmelzen(V, F, paare):
+    """Merge: Eckenpaare (i, j) auf ihre Mitte zusammenlegen; entartete Vierecke fallen weg."""
+    V = np.asarray(V, float).copy()
+    F = np.asarray(F, np.int64).copy()
+    ziel = np.arange(len(V))
+
+    def wurzel(i):
+        while ziel[i] != i:
+            i = ziel[i]
+        return i
+    for i, j in paare:
+        i, j = wurzel(int(i)), wurzel(int(j))
+        if i == j:
+            continue
+        V[i] = 0.5 * (V[i] + V[j])
+        ziel[j] = i
+    w = np.array([wurzel(i) for i in range(len(V))])
+    F = w[F]
+    F = F[[len(set(f)) == 4 for f in F.tolist()]]
+    V2, F2, z = kaefig_kompakt(V, F)
+    return V2, F2, np.where(z[w] >= 0, z[w], -1)
+
+
+def kaefig_schleife(V, F, kante, X=None, T=None):
+    """Split: Kantenschleife quer durch den Vierecksstreifen der Kante einfuegen (Kante wird halbiert, ebenso
+    alle gegenueberliegenden Kanten des Rings)."""
+    V = np.asarray(V, float)
+    F = np.asarray(F, np.int64)
+    kf = _kanten_flaechen(F)
+    a, b = kante
+    start = (min(a, b), max(a, b))
+    if start not in kf:
+        raise ValueError("Diese Kante gehört zu keinem Viereck.")
+    ring = {}                                            # Flaeche -> Position der durchquerten Kante (0 oder 1)
+    kanten = {start}
+    for fi0, pos0 in kf[start]:
+        fi, pos = fi0, pos0
+        while fi not in ring:
+            ring[fi] = pos % 2
+            f = F[fi].tolist()
+            o = (f[(pos + 2) % 4], f[(pos + 3) % 4])
+            ko = (min(o), max(o))
+            kanten.add(ko)
+            weiter = [x for x in kf[ko] if x[0] != fi]
+            if not weiter:
+                break
+            fi, pos = weiter[0]
+    neuV = list(V)
+    mitte = {}
+    for k in kanten:
+        mitte[k] = len(neuV)
+        neuV.append(0.5 * (V[k[0]] + V[k[1]]))
+    neuF = []
+    for fi, f in enumerate(F.tolist()):
+        if fi not in ring:
+            neuF.append(f)
+            continue
+        r = ring[fi]
+        v0, v1, v2, v3 = f[r:] + f[:r]
+        m01 = mitte[(min(v0, v1), max(v0, v1))]
+        m23 = mitte[(min(v2, v3), max(v2, v3))]
+        neuF += [[v0, m01, m23, v3], [m01, v1, v2, m23]]
+    neuV = np.array(neuV)
+    if X is not None and len(neuV) > len(V):
+        neuV[len(V):] = _Projektor(X, T)(neuV[len(V):])
+    return neuV, np.array(neuF, np.int64), np.arange(len(V))
+
+
+def kaefig_loeschen(V, F, flaechen):
+    weg = set(int(i) for i in flaechen)
+    F = np.asarray(F, np.int64)
+    F = F[[i not in weg for i in range(len(F))]]
+    if not len(F):
+        raise ValueError("Es würde kein Viereck übrig bleiben.")
+    return kaefig_kompakt(V, F)
+
+
+def kaefig_ausrichten(V, ids):
+    """Align: Ecken einer Kette auf die Gerade zwischen der ersten und letzten gewaehlten Ecke legen."""
+    V = np.asarray(V, float).copy()
+    ids = [int(i) for i in ids]
+    if len(ids) < 3:
+        raise ValueError("Zum Ausrichten mindestens 3 Ecken wählen (erste und letzte bleiben liegen).")
+    p, q = V[ids[0]], V[ids[-1]]
+    d = (q - p) / max(np.linalg.norm(q - p), 1e-12)
+    for i in ids[1:-1]:
+        V[i] = p + ((V[i] - p) @ d) * d
+    return V
+
+
+def kaefig_verschieben(V, F, ids, versatz=(0, 0, 0), normal=0.0):
+    """Manipulator numerisch: Welt-Versatz und/oder Abstand entlang der Eckennormale (lokal)."""
+    V = np.asarray(V, float).copy()
+    ids = np.asarray([int(i) for i in ids], np.int64)
+    V[ids] += np.asarray(versatz, float)
+    if normal:
+        V[ids] += ecken_normalen(V, np.asarray(F, np.int64))[ids] * float(normal)
+    return V
+
+
+def kaefig_unregelmaessig(F):
+    """Unregelmaessige Ecken (Extraordinary Vertices): innen nicht 4 Nachbarvierecke, am Rand nicht 2
+    (Randecken mit 1 Viereck = Ecke der Flaeche, gilt als regulaer). -> Liste [(ecke, anzahl, rand)]."""
+    F = np.asarray(F, np.int64)
+    rand = set(x for k in kaefig_rand(F) for x in k)
+    zahl = np.bincount(F.ravel(), minlength=int(F.max()) + 1 if len(F) else 0)
+    aus = []
+    for i, n in enumerate(zahl.tolist()):
+        if n == 0:
+            continue
+        if (i in rand and n not in (1, 2)) or (i not in rand and n != 4):
+            aus.append((i, n, i in rand))
+    return aus
