@@ -38855,6 +38855,7 @@ const BIGMESH_TRIS = 300000;
 const BIGMESH_TOL_MM = 0.01;
 let _vfW = null, _vfSeq = 0; const _vfWait = new Map();
 // pos = Dreiecksliste (9 Floats/Dreieck); opts {tol} (Einheit von pos) oder {target}
+// opts.give=true: pos/stl werden an den Worker übergeben (nicht kopiert) — danach unbrauchbar
 function _vfSimplifyAsync(pos, opts) {
   if (!_vfW) {
     const v = typeof VOLME3D_VERSION !== 'undefined' ? VOLME3D_VERSION : '1';
@@ -38864,7 +38865,9 @@ function _vfSimplifyAsync(pos, opts) {
       for (const w of ws) w.rej(new Error('Vereinfachen fehlgeschlagen' + (e && e.message ? ': ' + e.message : ''))); };
   }
   const id = ++_vfSeq;
-  return new Promise((res, rej) => { _vfWait.set(id, { res, rej }); _vfW.postMessage({ id, pos, tol: opts.tol || 0, target: opts.target || 0 }); });
+  const msg = { id, pos, stl: opts.stl || null, tol: opts.tol || 0, target: opts.target || 0, sloppy: !!opts.sloppy };
+  const give = opts.give ? [opts.stl || (pos && pos.buffer)].filter(Boolean) : [];
+  return new Promise((res, rej) => { _vfWait.set(id, { res, rej }); _vfW.postMessage(msg, give); });
 }
 function _geoSoup(g) {   // Dreiecksliste (kopiert), auch für indizierte Geometrie (OBJ)
   const p = g.attributes.position;
@@ -68865,11 +68868,19 @@ function _p3mfParseAsync(buf){
 async function _parse3MFGeoAsync(buf){
   const parts=await _p3mfParseAsync(buf);
   if(!parts.length) return null;
-  if(parts.length===1) return _p3mfGeo(parts[0].pos);
-  let n=0; for(const p of parts) n+=p.pos.length;
-  const pos=new Float32Array(n); let off=0;
-  for(const p of parts){ pos.set(p.pos,off); off+=p.pos.length; }
-  return _p3mfGeo(pos);
+  let pos;
+  if(parts.length===1) pos=parts[0].pos;
+  else { let n=0; for(const p of parts) n+=p.pos.length; pos=new Float32Array(n); let off=0; for(const p of parts){ pos.set(p.pos,off); off+=p.pos.length; } }
+  const red=await _thumbReduce(pos);
+  return red?_p3mfGeo(red):null;
+}
+// Vorschaubilder sind 256×192 px: mehr als STLLIB_THUMB_TRIS Dreiecke sieht man nicht,
+// kosten aber Normalen + Zeichnen im Haupt-Thread (4-Mio-Scan: 2,4 s Stillstand, 21.10.).
+const STLLIB_THUMB_TRIS = 150000;
+async function _thumbReduce(pos){
+  if(pos.length/9<=STLLIB_THUMB_TRIS) return pos;
+  try{ return (await _vfSimplifyAsync(pos,{target:STLLIB_THUMB_TRIS,sloppy:true,give:true})).pos; }
+  catch(e){ console.warn('[thumb] Reduzieren fehlgeschlagen:',e); return null; }
 }
 function _renderGeoThumb(geo, zUp){
   if(!geo || !geo.attributes.position || !geo.attributes.position.count) return null;
@@ -68903,6 +68914,11 @@ async function _stlMakeThumb(f){
   if(ext==='stl'){
     const isBin = buf.byteLength>=84 && buf.byteLength===84+new DataView(buf).getUint32(80,true)*50;
     if(!isBin && buf.byteLength>STLLIB_THUMB_MAX_ASCII) return '-big';
+    // große binäre STL: lesen + grob reduzieren komplett im Worker
+    if(isBin && (buf.byteLength-84)/50>STLLIB_THUMB_TRIS){
+      const r=await _vfSimplifyAsync(null,{stl:buf,target:STLLIB_THUMB_TRIS,sloppy:true,give:true});
+      return _renderGeoThumb(_soupGeo(r.pos), true);
+    }
     return _renderGeoThumb(parseSTL(buf), true);
   }
   if(ext==='obj') return _renderGeoThumb(_parseOBJ(new TextDecoder().decode(buf)), false);
@@ -69505,8 +69521,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.233';
+const VOLME3D_VERSION = '1.18.234';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.234', date:'2026-10-21', changes:[
+    ['📚','<b>Bibliothek wieder flott bei großen Scans.</b> Für das Vorschaubild wurde bisher das ganze Modell gezeichnet – bei einem 4-Millionen-Dreiecke-Scan stand die Seite dabei mehrere Sekunden still. Vorschaubilder werden jetzt im Hintergrund aus einer verkleinerten Fassung gerechnet; am Modell selbst ändert sich nichts. Jedes Vorschaubild entsteht nur einmal und wird dann gespeichert.'],
+  ]},
   { version:'1.18.233', date:'2026-10-21', changes:[
     ['⚠️','<b>Große Modelle: Warnung vor dem Import und Vereinfachen ohne Qualitätsverlust.</b> Sehr große Dateien (ab 300.000 Dreiecken, z. B. Scans) ließen V3D CAD beim Importieren und Bearbeiten abstürzen. Jetzt erscheint vorher ein Fenster mit der Dreieckszahl und einer vereinfachten Fassung, die höchstens etwa 0,01 mm vom Original abweicht – eine Druckschicht ist 0,1–0,2 mm dick. Ein 4-Millionen-Dreiecke-Scan wird so zu rund 860.000 Dreiecken, im Druck sieht man keinen Unterschied. Wer will, lädt weiter das Original. Gilt für STL, 3MF und OBJ aus dem Import und aus der Bibliothek.'],
     ['🔻','<b>Vereinfachen arbeitet bei großen Netzen genauer.</b> Statt eines groben Rasters, das feine Details verschmierte, nutzt „🔻 Vereinfachen“ jetzt ein kantentreues Verfahren (meshoptimizer) – im Hintergrund, die Seite bleibt bedienbar.'],
