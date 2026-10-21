@@ -14069,7 +14069,7 @@ function _featLabel(f, k) {
   if (f.typ === 'praegen') return `〰 Prägung ${k + 1} · ${f.p.mode === 'cut' ? 'vertieft' : 'erhaben'} ${({ v: 'V', r: 'rund', q: 'Rechteck' })[f.p.prof] || ''} ${mmS(f.p.w)}×${mmS(f.p.d)} mm`;
   if (f.typ === 'folgen') return `⤳ Folgen ${k + 1} · ${f.op === 'cut' ? 'Abziehen' : f.op === 'join' ? 'Anfügen' : f.op === 'isect' ? 'Schnittmenge' : 'Körper'}`;
   if (f.typ === 'loft') return `⤧ Loft · ${f.rings.length} Profile${f.path ? ' · entlang Pfad' : ''}${f.guides ? ' · ' + f.guides.length + ' Führung' + (f.guides.length > 1 ? 'en' : '') : ''}${f.smooth ? ' · glatt' : ''}`;
-  if (f.typ === 'sweep') return `↝ Pfad-Skizze ${k + 1} · ${f.closed ? 'Ring' : 'offen'}${f.len ? ' ' + String(f.len).replace('.', ',') + ' mm' : ''}`;
+  if (f.typ === 'sweep') return `↝ Pfad-Skizze ${k + 1} · ${f.op && f.op !== 'new' ? ({ join: 'Anfügen', cut: 'Abziehen', isect: 'Schnittmenge' })[f.op] + ' · ' : ''}${f.closed ? 'Ring' : 'offen'}${f.len ? ' ' + String(f.len).replace('.', ',') + ' mm' : ''}`;
   if (f.typ === 'gewinde') { const s = f.p.size === 'eigen' ? 'Ø' + String(f.p.d).replace('.', ',') : f.p.size; return `🔩 Gewinde ${s}×${String(f.p.pitch).replace('.', ',')}${f.cyl.inner ? ' innen' : ' außen'}`; }
   const mm = String(Math.round(Math.abs(f.ab[1] - f.ab[0]) * 100) / 10).replace('.', ',');
   return `✏ Skizze ${k + 1} · ${f.op === 'cut' ? 'Abziehen' : f.op === 'join' ? 'Anfügen' : f.op === 'isect' ? 'Schnittmenge' : 'Körper'} ${mm} mm`;
@@ -14838,7 +14838,7 @@ function _buildSweepGeo(profileLoop, path, N){
 // so bleibt die Wand überall gleich dick (der alte Sweep mittelte nur die
 // Richtung: an einer rechtwinkligen Ecke wurde die Wand um 30 % dünner).
 // Bögen/Splines sind feine Polylinien → viele kleine Gehrungen = glatt.
-const _swp = { open: false, panel: null, prev: null, p: { op: 'new' }, plan: null, busy: false, tilted: false };
+const _swp = { open: false, panel: null, prev: null, p: { op: 'auto', lage: 'auf' }, plan: null, busy: false, tilted: false };
 
 // Ketten aus Elementen: [{pts:[{u,v}], closed}]
 function _swpChains(ents){
@@ -14867,7 +14867,7 @@ function _swpChains(ents){
 
 // Was gezeichnet ist → { prof, path, closed, info } oder { err }.
 // prof in Querschnitt-Koordinaten {s: quer, h: hoch} (Units), path in (u, v).
-function _swpPlanFromEnts(){
+function _swpPlanFromEnts(lage){
   const shapes = _skBuildShapes();
   if (!shapes.length) return { err: 'Zeichne den Querschnitt als geschlossenen Umriss — ein zweiter Umriss darin macht ihn hohl.' };
   const hl = _sk.ents.filter(e => e.hl);
@@ -14879,14 +14879,16 @@ function _swpPlanFromEnts(){
   let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
   for (const s of shapes) for (const p of s.outer){ minU = Math.min(minU, p.u); maxU = Math.max(maxU, p.u); minV = Math.min(minV, p.v); maxV = Math.max(maxV, p.v); }
   const uc = (minU + maxU) / 2, vc = (minV + maxV) / 2;
-  const toSH = lp => lp.map(p => ({ s: p.u - uc, h: maxV - p.v }));   // oben in der Skizze (−v) = oben am Körper
+  // Lage: auf (Unterkante auf der Ebene), ein (Oberkante an der Ebene → Nut), mitte
+  const shift = lage === 'ein' ? -(maxV - minV) : lage === 'mitte' ? -(maxV - minV) / 2 : 0;
+  const toSH = lp => lp.map(p => ({ s: p.u - uc, h: maxV - p.v + shift }));   // oben in der Skizze (−v) = oben am Körper
   const prof = shapes.map(s => ({ outer: toSH(s.outer), holes: (s.holes || []).map(toSH) }));
   let { pts, closed } = chains[0];
   const d = p => Math.hypot(p.u - uc, p.v - vc);
   if (closed){ let k = 0; pts.forEach((p, i) => { if (d(p) < d(pts[k])) k = i; }); pts = pts.slice(k).concat(pts.slice(0, k)); }
   else if (d(pts[pts.length - 1]) < d(pts[0])) pts = pts.slice().reverse();
   let len = 0; for (let i = 1; i < pts.length + (closed ? 1 : 0); i++){ const a = pts[i - 1], b = pts[i % pts.length]; len += Math.hypot(b.u - a.u, b.v - a.v); }
-  return { prof, path: pts, closed, legacy, info: { w: maxU - minU, h: maxV - minV, hohl: prof.some(r => r.holes.length), n: prof.length, len } };
+  return { prof, path: pts, closed, legacy, lage: lage || 'auf', shift, info: { w: maxU - minU, h: maxV - minV, hohl: prof.some(r => r.holes.length), n: prof.length, len } };
 }
 
 // Körper bauen (lokale Skizzen-Koordinaten: x = u, y = Höhe, z = v)
@@ -14957,6 +14959,7 @@ function _swpGeo(prof, path, closed){
 function _skSweep(){
   if (!_sk.active) return;
   _skxClose && _skx.open && _skxClose(true);
+  if (!_sk.editSwp && _swp.fromEdit){ _swp.p = { op: 'auto', lage: 'auf' }; _swp.fromEdit = false; }
   _swp.open = true; _swp.tilted = false;
   if (!_swp.panel){
     const el = _swp.panel = document.createElement('div'); el.id = 'swp-panel';
@@ -14967,30 +14970,67 @@ function _skSweep(){
   _swpUpdate();
 }
 function _swpSet(k, v){ _swp.p[k] = v; _swpUpdate(); }
+const _SWP_OPN = { new: 'Neuer Körper', join: 'Anfügen', cut: 'Abziehen', isect: 'Schnittmenge', hole: 'Loch-Körper' };
+// Automatik + gewählte Operation → { op, target, edit?, auto? } (wie beim Extrudieren)
+function _swpResolve(pl){
+  const p = _swp.p;
+  if (_sk.editSwp){
+    const o = objects.find(x => x.userData.id === _sk.editSwp.id), f = o && o.userData.feat.list[_sk.editSwp.k];
+    const op = !f || f.op === 'new' ? 'new' : (['join', 'cut', 'isect'].includes(p.op) ? p.op : f.op);
+    return { op, target: o, edit: true };
+  }
+  if (p.op === 'hole' || p.op === 'new') return { op: p.op, target: null };
+  // Proben entlang der Pfadmitte: im Querschnitt (halbe Höhe) und knapp unter seiner Unterkante
+  const P = pl.path, step = Math.max(1, Math.floor(P.length / 24)), sh = pl.shift || 0, H = pl.info.h;
+  const probe = y => { for (let i = 0; i < P.length; i += step){ const o = _skxBodyAt(new THREE.Vector3(P[i].u, y, P[i].v)); if (o) return o; } return null; };
+  const mid = probe(sh + H / 2), below = (pl.lage || 'auf') === 'auf' ? probe(sh - 0.02) : null;
+  const auto = mid ? { op: 'cut', target: mid } : below ? { op: 'join', target: below } : { op: 'new', target: null };
+  if (p.op === 'auto' || !p.op) return { ...auto, auto: true };
+  // sonst ein gewählter Körper — aber nur, wenn er den Weg überhaupt berührt (Hüllquader)
+  const box = new THREE.Box3(), half = pl.info.w / 2 + 0.01;
+  for (const q of P) for (const y of [sh - 0.01, sh + H + 0.01]) box.expandByPoint(_skToWorld(new THREE.Vector3(q.u, y, q.v)));
+  box.expandByScalar(half);
+  const near = o => { try { return new THREE.Box3().setFromObject(o).intersectsBox(box); } catch (e){ return false; } };
+  const tgt = mid || below || probe(sh + H + 0.02) || selectedObjs.find(o => _skxBodies().includes(o) && near(o)) || null;
+  return { op: p.op, target: tgt };
+}
 function _swpUpdate(){
   if (!_swp.open) return;
-  const el = _swp.panel, pl = _swp.plan = _swpPlanFromEnts(), mm = x => String(Math.round(x * 100) / 10).replace('.', ',');
+  const el = _swp.panel, pl = _swp.plan = _swpPlanFromEnts(_swp.p.lage), mm = x => String(Math.round(x * 100) / 10).replace('.', ',');
   if (_swp.prev){ _sk.group.remove(_swp.prev); _swp.prev.geometry.dispose(); _swp.prev = null; }
-  let err = pl.err || null, geo = null;
+  let err = pl.err || null, geo = null, r = null;
   if (!err){ try { geo = _swpGeo(pl.prof, pl.path, pl.closed); } catch (e){ err = e.message || String(e); } }
   if (geo){
-    const hole = _swp.p.op === 'hole' && !_sk.editSwp;
-    _swp.prev = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: hole ? 0xef4444 : 0x3b82f6, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide }));
+    r = _swp.res = _swpResolve(pl);
+    const col = r.op === 'cut' || r.op === 'hole' ? 0xef4444 : r.op === 'join' ? 0x22c55e : r.op === 'isect' ? 0xa855f7 : 0x3b82f6;
+    // Abziehen liegt IM Körper → ohne Tiefentest zeichnen, sonst sieht man die Nut nicht
+    _swp.prev = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: col, transparent: true, opacity: 0.55, depthWrite: false, depthTest: r.op !== 'cut', side: THREE.DoubleSide }));
     _swp.prev.renderOrder = 997; _sk.group.add(_swp.prev);
     if (!_swp.tilted){ _swp.tilted = true;
       if (_sk.onFace) _skCamLocal(new THREE.Vector3(Math.sin(0.88) * Math.sin(0.6), Math.cos(0.88), Math.sin(0.88) * Math.cos(0.6)));
       else { sph.theta = 0.6; sph.phi = 0.88; sph2cam(); } }
   }
-  const tb = (on, v, t, tip) => `<button class="vtb${on ? ' on' : ''}" onclick="_swpSet('op','${v}')" title="${tip}">${t}</button>`;
-  const ed = _sk.editSwp && objects.find(x => x.userData.id === _sk.editSwp.id);
+  const lage = _swp.p.lage || 'auf', op = _swp.p.op || 'auto';
+  const lb = (v, t, tip) => `<button class="vtb${lage === v ? ' on' : ''}" onclick="_swpSet('lage','${v}')" title="${tip}">${t}</button>`;
+  const nm = r && r.target ? '„' + (r.target.userData.name || 'Körper') + '“' : '';
+  const info = !r ? '' : r.edit ? `Ändert die Pfad-Skizze von ${nm} (${_SWP_OPN[r.op]}) — das Teil wird <b>neu berechnet</b>.`
+    : r.op === 'cut' ? (r.target ? `Wird aus ${nm} <b style="color:#dc2626">abgezogen</b>${r.auto ? ' (automatisch: liegt im Körper)' : ''}.` : '<span style="color:#dc2626">Kein Körper im Weg — nichts zum Abziehen.</span>')
+    : r.op === 'join' ? (r.target ? `Wird an ${nm} <b style="color:#16a34a">angefügt</b>${r.auto ? ' (automatisch: steht auf dem Körper)' : ''}.` : '<span style="color:#dc2626">Kein Körper berührt — nichts zum Anfügen.</span>')
+    : r.op === 'isect' ? (r.target ? `Von ${nm} bleibt nur die <b style="color:#9333ea">Schnittmenge</b>.` : '<span style="color:#dc2626">Kein Körper berührt — keine Schnittmenge.</span>')
+    : r.op === 'hole' ? 'Erzeugt einen <b style="color:#dc2626">Loch-Körper</b> (rot) — später mit ⊖ Abziehen verwenden.'
+    : 'Erzeugt einen <b style="color:#2563eb">neuen Körper</b>.';
+  const ed = r && r.edit, fNew = ed && r.op === 'new';
+  const ops = ed ? (fNew ? [] : ['join', 'cut', 'isect']) : ['auto', 'new', 'join', 'cut', 'isect', 'hole'];
   el.innerHTML = `<div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">↝ Skizze entlang Pfad</b>
       <span onclick="_swpClose()" style="cursor:pointer;color:var(--dim);font-size:15px" title="Zurück zur Skizze (Esc)">✕</span></div>
     ${pl.err ? '' : `<div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:5px 8px;margin-bottom:8px;line-height:1.45">
       Querschnitt ${mm(pl.info.w)} × ${mm(pl.info.h)} mm${pl.info.hohl ? ' · <b>hohl</b>' : ''}${pl.info.n > 1 ? ' · ' + pl.info.n + ' Umrisse' : ''}<br>
       Pfad ${pl.closed ? '<b>geschlossen</b> (Ring)' : 'offen'} · ${mm(pl.info.len)} mm lang${pl.legacy ? '<br><span style="color:var(--dim)">ohne Hilfslinie: offene Linienkette als Pfad</span>' : ''}</div>`}
-    ${ed ? `<div style="font-size:11.5px;margin-bottom:8px">Ändert die Pfad-Skizze von „${ed.userData.name}“ — das Teil wird <b>neu berechnet</b>.</div>`
-         : `<div class="vrow"><label>Ergebnis</label><div class="vbg" style="flex:1">${tb(_swp.p.op !== 'hole', 'new', 'Körper', 'Neuer Körper')}${tb(_swp.p.op === 'hole', 'hole', 'Loch', 'Als Loch-Körper (rot) — danach mit ⊖ Abziehen aus einem Teil herausschneiden, z. B. eine Nut oder ein Kabelkanal')}</div></div>`}
-    ${err ? `<div style="color:#dc2626;font-size:11.5px;line-height:1.4;margin:6px 0">${err}</div>` : `<div style="font-size:11px;color:var(--dim);line-height:1.4;margin:4px 0 8px">Ecken aus geraden Stücken werden eine Gehrung, Bögen bleiben glatt. Querschnitt so zeichnen, wie man ihn vom Pfadanfang in Laufrichtung sieht.</div>`}
+    <div class="vrow"><label title="Wo der Querschnitt zur Skizzenebene liegt">Lage</label><div class="vbg" style="flex:1">${lb('auf', 'Auf', 'Steht mit der Unterkante auf der Ebene — Leiste, Steg, Rand auf einer Fläche')}${lb('ein', 'Eingesenkt', 'Hängt mit der Oberkante an der Ebene, ragt in die Fläche hinein — Nut, Kabelkanal, Rinne (mit Abziehen)')}${lb('mitte', 'Mittig', 'Halb über, halb unter der Ebene')}</div></div>
+    ${ops.length ? `<div class="vrow"><label>Operation</label><select onchange="_swpSet('op',this.value)" style="flex:1">
+      ${ops.map(v => `<option value="${v}"${(ed ? r.op : op) === v ? ' selected' : ''}>${v === 'auto' ? 'Automatisch' : _SWP_OPN[v]}</option>`).join('')}</select></div>` : ''}
+    ${r ? `<div style="font-size:11.5px;margin:4px 0 8px;line-height:1.4">${info}</div>` : ''}
+    ${err ? `<div style="color:#dc2626;font-size:11.5px;line-height:1.4;margin:6px 0">${err}</div>` : `<div style="font-size:11px;color:var(--dim);line-height:1.4;margin:0 0 8px">Ecken werden Gehrungen, Bögen bleiben glatt. Querschnitt so zeichnen, wie man ihn vom Pfadanfang in Laufrichtung sieht.</div>`}
     <div style="display:flex;gap:6px;justify-content:flex-end">
       <button class="btn" onclick="_swpClose()">Abbrechen</button>
       <button class="btn pri" onclick="_swpApply()"${err ? ' disabled style="opacity:.5"' : ''}>✓ OK</button></div>`;
@@ -15004,7 +15044,7 @@ function _swpClose(silent){
 // Werkzeug-Körper einer Pfad-Skizze (Verlauf), Mesh in L_k
 function _swpFeatMesh(f){
   const keep = _sk.ents; _sk.ents = _featClone(f.ents);
-  let pl; try { pl = _swpPlanFromEnts(); } finally { _sk.ents = keep; }
+  let pl; try { pl = _swpPlanFromEnts(f.lage); } finally { _sk.ents = keep; }
   if (pl.err) throw new Error(pl.err);
   const m = new THREE.Mesh(_swpGeo(pl.prof, pl.path, pl.closed));
   m.applyMatrix4(new THREE.Matrix4().fromArray(f.frame)); m.updateMatrixWorld(true);
@@ -15021,16 +15061,20 @@ function _swpMakeMesh(geo, hole, name){
 }
 async function _swpApply(){
   if (_swp.busy || !_swp.open) return;
-  const pl = _swp.plan || _swpPlanFromEnts(); if (pl.err){ notify(pl.err, 'w'); return; }
+  const lage = _swp.p.lage || 'auf';
+  const pl = _swp.plan || _swpPlanFromEnts(lage); if (pl.err){ notify(pl.err, 'w'); return; }
   let geo; try { geo = _swpGeo(pl.prof, pl.path, pl.closed); } catch (e){ notify(e.message || String(e), 'w'); return; }
+  const r = _swpResolve(pl);
+  if (['cut', 'join', 'isect'].includes(r.op) && !r.target){ geo.dispose(); notify(r.op === 'cut' ? 'Kein Körper zum Abziehen getroffen — „Eingesenkt“ wählen oder die Skizze auf die Fläche legen (▱ Auf Fläche)' : r.op === 'isect' ? 'Kein Körper für die Schnittmenge berührt' : 'Kein Körper zum Anfügen berührt', 'w'); return; }
   _skcIds();
-  const ents = _featClone(_sk.ents), cons = _featClone(_sk.cons || []), frameW = _sk.M ? _sk.M.clone() : new THREE.Matrix4();
+  const ents = _featClone(_sk.ents), cons = _featClone(_sk.cons || []);
+  const frameW = _sk.M && _sk.onFace ? _sk.M.clone() : new THREE.Matrix4();   // wie _skPlace
   const lenMM = Math.round(pl.info.len * 100) / 10;
-  if (_sk.editSwp){   // gespeicherte Pfad-Skizze geändert → Teil neu rechnen
-    const o = objects.find(x => x.userData.id === _sk.editSwp.id), k = _sk.editSwp.k;
+  if (r.edit){   // gespeicherte Pfad-Skizze geändert → Teil neu rechnen
+    const o = r.target, k = _sk.editSwp.k;
     if (!o){ notify('Teil nicht mehr da', 'e'); return; }
     const H = _featClone(o.userData.feat), f = H.list[k];
-    f.ents = ents; f.cons = cons; f.frame = _featChain(o, k).invert().multiply(frameW).elements.slice(); f.closed = pl.closed; f.len = lenMM;
+    f.ents = ents; f.cons = cons; f.frame = _featChain(o, k).invert().multiply(frameW).elements.slice(); f.closed = pl.closed; f.len = lenMM; f.lage = lage; f.op = r.op;
     geo.dispose(); _swp.busy = true;
     try {
       _swpClose(true); saveUndo(); exitSketchMode();
@@ -15041,16 +15085,50 @@ async function _swpApply(){
     finally { _swp.busy = false; }
     return;
   }
-  const hole = _swp.p.op === 'hole';
-  _swpClose(true);
-  saveUndo();
-  const mesh = _swpMakeMesh(geo, hole);
-  _skPlace(mesh, 0);
-  objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
-  _featSet(mesh, { base: null, list: [{ typ: 'sweep', ents, cons, frame: new THREE.Matrix4().elements.slice(), op: 'new', closed: pl.closed, len: lenMM }] });
-  exitSketchMode();
-  selectObjs([mesh]); updateTree();
-  notify((hole ? 'Loch-Körper' : 'Körper') + ' entlang ' + (pl.closed ? 'des geschlossenen Pfades (Ring)' : 'des Pfades') + ' erzeugt — ' + String(lenMM).replace('.', ',') + ' mm' + (hole ? ' · jetzt mit ⊖ Abziehen herausschneiden' : ''), 'ok');
+  const hole = r.op === 'hole';
+  const fNeu = { typ: 'sweep', ents, cons, frame: frameW.elements.slice(), op: hole ? 'new' : r.op, lage, closed: pl.closed, len: lenMM };
+  const start = r.target ? _featStart(r.target) : null;
+  _swp.busy = true;
+  try {
+    _swpClose(true);
+    saveUndo();
+    const n0 = undoStack.length;
+    const mesh = _swpMakeMesh(geo, hole || r.op === 'cut');
+    _skPlace(mesh, 0);
+    objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
+    exitSketchMode();
+    const was = ' entlang ' + (pl.closed ? 'des geschlossenen Pfades' : 'des Pfades') + ' (' + String(lenMM).replace('.', ',') + ' mm)';
+    if (r.op === 'new' || hole){
+      fNeu.frame = new THREE.Matrix4().elements.slice();   // eigener Körper: Skizzenebene = Teil-Lokalraum
+      _featSet(mesh, { base: null, list: [fNeu] });
+      selectObjs([mesh]); updateTree();
+      notify((hole ? 'Loch-Körper' : 'Körper') + was + ' erzeugt' + (hole ? ' · jetzt mit ⊖ Abziehen herausschneiden' : ''), 'ok');
+    } else if (r.op === 'join' || r.op === 'isect'){
+      selectObjs([r.target, mesh]);
+      if (r.op === 'join') await unionSelected(); else await intersectSelected();
+      if (undoStack.length === n0 + 1) undoStack.pop();   // Zwischenstand „Körper daneben" nicht im Verlauf
+      updateUndoRedoButtons();
+      const res = selectedObjs.length === 1 && !objects.includes(r.target) && !objects.includes(mesh) ? selectedObjs[0] : null;
+      if (res){ if (r.op === 'isect') res.userData.name = r.target.userData.name || res.userData.name;
+        fNeu.T = start.T; start.H.list.push(fNeu); _featBake(res); _featSet(res, start.H); updateTree();
+        notify((r.op === 'join' ? 'An „' : 'Schnittmenge mit „') + (r.target.userData.name || 'Körper') + '“' + (r.op === 'join' ? ' angefügt' : '') + was, 'ok'); }
+      else if (objects.includes(mesh) && r.op === 'isect'){ scene.remove(mesh); objects.splice(objects.indexOf(mesh), 1); updateTree(); }
+    } else {
+      updateTree();
+      _progressShow('Abziehen läuft…'); _progressSet(8); _progressCreep(93);
+      const ctl = _progressCancelable();
+      try {
+        await _doSubtractHoles([r.target], [mesh], ctl); _progressDone();
+        const res = selectedObjs.length === 1 && !objects.includes(r.target) ? selectedObjs[0] : null;
+        if (res){ fNeu.T = start.T; start.H.list.push(fNeu); _featBake(res); _featSet(res, start.H); updateTree(); }
+        notify('Aus „' + (r.target.userData.name || 'Körper') + '“ abgezogen' + was, 'ok');
+      } catch (err){
+        _progressHide();
+        if (objects.includes(mesh)){ scene.remove(mesh); objects.splice(objects.indexOf(mesh), 1); updateTree(); }
+        notify('Abziehen nicht möglich: ' + (err.message || err), 'e');
+      }
+    }
+  } finally { _swp.busy = false; }
 }
 // Pfad-Skizze k wieder öffnen
 function _featEditSweep(id, k){
@@ -15063,6 +15141,7 @@ function _featEditSweep(id, k){
   _skSetFrameM(_featChain(o, k).multiply(new THREE.Matrix4().fromArray(f.frame)));
   _sk.ents = _featClone(f.ents); _sk.cons = _featClone(f.cons || []); _sk.pending = []; _skcIds(); _skRender(); _skcPanel();
   _sk.editSwp = { id, k };
+  _swp.p = { op: f.op || 'new', lage: f.lage || 'auf' }; _swp.fromEdit = true;
   notify(`Pfad-Skizze von „${o.userData.name}“: Querschnitt oder Pfad (┄ Hilfslinie) ändern, dann „↝ Entlang Pfad…“ — das Teil rechnet sich neu`, 'ok');
 }
 // Hilfslinie: neue Elemente als Pfad zeichnen — oder gewählte Elemente umschalten
@@ -69062,8 +69141,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.224';
+const VOLME3D_VERSION = '1.18.225';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.225', date:'2026-10-21', changes:[
+    ['↝','<b>Entlang Pfad: Anfügen und Abziehen direkt im Fenster.</b> Wie beim Extrudieren gibt es jetzt <b>Automatisch</b>, Neuer Körper, Anfügen, Abziehen, Schnittmenge und Loch-Körper. Neu ist die <b>Lage</b> des Querschnitts: <b>Auf</b> der Fläche (Leiste, Steg), <b>Eingesenkt</b> (Nut, Kabelkanal, Rinne) oder <b>Mittig</b>. Skizze mit „▱ Auf Fläche“ auf eine Platte legen, Querschnitt und Pfad zeichnen, „Eingesenkt“ – die Nut wird automatisch abgezogen. Bleibt im Baum als „↝ Pfad-Skizze“ änderbar.'],
+  ]},
   { version:'1.18.224', date:'2026-10-21', changes:[
     ['✏️','<b>Stützfinnen von Hand zeichnen.</b> Im Stützfinnen-Panel setzt <b>✏️ Wand zeichnen</b> eine Wand genau dort, wo du sie willst: Anfang und Ende auf der Unterseite eines Überhangs anklicken (Ansicht von unten drehen), eine blaue Vorschau zeigt die Wand schon beim Ziehen. Sie reicht bis auf die Platte und greift mit denselben Zinken wie die automatischen Finnen. Das geht als Ergänzung in jedem Modus oder mit <b>✏️ Von Hand</b> ganz ohne automatische Finnen. Geht eine Wand nicht, steht dabei, warum. ↶ nimmt die letzte weg, 🗑 alle, Esc bricht ab. Gedrehte Teile nehmen ihre Wände mit.'],
   ]},
@@ -81578,8 +81660,9 @@ function _fillHoles(mesh) {
     const U = x => x / S;
     const rect = (bw, bh, h0) => [{ s: -bw / 2, h: h0 }, { s: bw / 2, h: h0 }, { s: bw / 2, h: h0 + bh }, { s: -bw / 2, h: h0 + bh }];
     const circ = (d, hc) => Array.from({ length: 48 }, (_, i) => ({ s: d / 2 * Math.cos(i / 48 * 2 * Math.PI), h: hc + d / 2 * Math.sin(i / 48 * 2 * Math.PI) }));
-    const outer = kind === 'rect' ? rect(U(w), U(h), 0) : circ(U(w), U(w) / 2);
-    const holes = wall > 0 ? [kind === 'rect' ? rect(U(w - 2 * wall), U(h - 2 * wall), U(wall)) : circ(U(w - 2 * wall), U(w) / 2)] : [];
+    const h0 = p.lage === 'ein' ? -U(h) : p.lage === 'mitte' ? -U(h) / 2 : 0;
+    const outer = kind === 'rect' ? rect(U(w), U(h), h0) : circ(U(w), h0 + U(w) / 2);
+    const holes = wall > 0 ? [kind === 'rect' ? rect(U(w - 2 * wall), U(h - 2 * wall), h0 + U(wall)) : circ(U(w - 2 * wall), h0 + U(w) / 2)] : [];
     let geo; try { geo = _swpGeo([{ outer, holes }], pa.map(q => ({ u: q[0] / S, v: -q[1] / S })), !!p.closed); } catch (e) { fail(e.message || String(e)); }
     const mesh = _swpMakeMesh(geo, !!p.hole, p.name ? String(p.name) : null);
     if (p.color && !p.hole) { mesh.userData.color = p.color; mesh.material.color.set(p.color); }
@@ -82389,7 +82472,7 @@ function _fillHoles(mesh) {
     'revolve': { doc: '{profile: [[r, z], …] mm (r = Abstand zur Achse ≥ 0, z = Höhe), center?: [x,y] mm, wall?: mm (aushöhlen), hole?, name?, color?} — Rotationskörper um die senkrechte Achse (Vase, Knauf, Becher). Profil auf der Achse beginnen und enden lassen (erster und letzter Punkt r = 0); wall macht daraus einen Becher (Boden zu, oben offen)', fn(p) {
       return revolve(p);
     } },
-    'sketch.sweep': { doc: '{path: [[x,y], …] mm (Pfad auf der Bauplatte; Ecken aus geraden Stücken werden Gehrungen), closed?: bool (geschlossener Pfad = Ring), section: {kind: rect|circle, width: mm (quer zum Pfad; Kreis = Ø), height?: mm (rect, Standard = width), wall?: mm (hohl: Rohr/Kanal mit dieser Wandstärke)}, z?: mm (Unterkante, Standard 0), hole?: bool, name?, color?} — Querschnitt entlang eines Pfades ziehen: Kabelkanal mit Ecke, Leitung, Ring um ein Sechseck. Der Querschnitt sitzt quer mittig auf dem Pfad und steht mit der Unterkante auf z. Zu enge Kurven für die Breite werden abgelehnt', fn(p) {
+    'sketch.sweep': { doc: '{path: [[x,y], …] mm (Pfad auf der Bauplatte; Ecken aus geraden Stücken werden Gehrungen), closed?: bool (geschlossener Pfad = Ring), section: {kind: rect|circle, width: mm (quer zum Pfad; Kreis = Ø), height?: mm (rect, Standard = width), wall?: mm (hohl: Rohr/Kanal mit dieser Wandstärke)}, z?: mm (Bezugshöhe, Standard 0), lage?: auf|ein|mitte (Querschnitt steht auf z / hängt unter z = Nut / mittig; Standard auf), hole?: bool, name?, color?} — Nut in ein Teil: lage ein, z = Oberseite, hole true, dann bool.subtract. Querschnitt entlang eines Pfades ziehen: Kabelkanal mit Ecke, Leitung, Ring um ein Sechseck. Der Querschnitt sitzt quer mittig auf dem Pfad und steht mit der Unterkante auf z. Zu enge Kurven für die Breite werden abgelehnt', fn(p) {
       return sweep(p);
     } },
     'body.shell': { doc: '{id, thickness: mm, open?: top|bottom|+x|-x|+y|-y oder Liste (Standard top)} — aushöhlen: Wand nach innen, die genannten Seiten bleiben offen (OCCT). Grenzen wie body.fillet: Grundkörper, ungedreht, vor Bool. Runden geht davor oder danach', async fn(p) {
