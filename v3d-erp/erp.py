@@ -1,0 +1,672 @@
+"""V3D ERP – Geschäftslogik (Belegkette, Lager, Offene Posten, Projekte).
+
+Nur Python-Standardbibliothek. Datenbank: SQLite (Prototyp), Schema PostgreSQL-tauglich.
+Alle Funktionen bekommen eine offene Verbindung `db` und arbeiten in einer Transaktion.
+"""
+import datetime as _dt
+import hashlib
+import json
+import os
+import secrets
+import sqlite3
+
+HIER = os.path.dirname(os.path.abspath(__file__))
+
+
+class Fehler(Exception):
+    """Fachlicher Fehler – Text geht so an die Oberfläche."""
+
+
+# ---------------------------------------------------------------- Verbindung
+def verbinden(pfad):
+    db = sqlite3.connect(pfad, isolation_level=None, check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
+    db.execute("PRAGMA journal_mode = WAL")
+    return db
+
+
+def schema_anlegen(db):
+    with open(os.path.join(HIER, "schema.sql"), encoding="utf-8") as f:
+        db.executescript(f.read())
+    if not db.execute("SELECT 1 FROM belegart LIMIT 1").fetchone():
+        grundlagen_anlegen(db)
+
+
+def jetzt():
+    return _dt.datetime.now().isoformat(timespec="seconds")
+
+
+def heute():
+    return _dt.date.today().isoformat()
+
+
+def zeilen(cur):
+    return [dict(r) for r in cur.fetchall()]
+
+
+def zeile(cur):
+    r = cur.fetchone()
+    return dict(r) if r else None
+
+
+class transaktion:
+    def __init__(self, db):
+        self.db = db
+
+    def __enter__(self):
+        self.db.execute("BEGIN IMMEDIATE")
+        return self.db
+
+    def __exit__(self, typ, wert, tb):
+        self.db.execute("ROLLBACK" if typ else "COMMIT")
+        return False
+
+
+def protokoll(db, benutzer, objekt, objekt_id, aktion, details=None):
+    db.execute("INSERT INTO protokoll(zeit,benutzer,objekt,objekt_id,aktion,details) VALUES(?,?,?,?,?,?)",
+               (jetzt(), benutzer, objekt, objekt_id, aktion,
+                json.dumps(details, ensure_ascii=False) if details is not None else None))
+
+
+# ---------------------------------------------------------------- Grundlagen
+BELEGARTEN = [
+    # code, bereich, name, präfix, lager, op, vorzeichen
+    ("AN", "VK", "Angebot", "AN", 0, None, 1),
+    ("AB", "VK", "Auftragsbestätigung", "AB", 0, None, 1),
+    ("LS", "VK", "Lieferschein", "LS", -1, None, 1),
+    ("RE", "VK", "Rechnung", "RE", 0, "debitor", 1),
+    ("GS", "VK", "Gutschrift / Storno", "GS", 0, "debitor", -1),
+    ("PA", "EK", "Preisanfrage", "PA", 0, None, 1),
+    ("BE", "EK", "Bestellung", "BE", 0, None, 1),
+    ("WE", "EK", "Wareneingang", "WE", 1, None, 1),
+    ("ER", "EK", "Rechnungseingang", "ER", 0, "kreditor", 1),
+]
+FOLGEN = [("AN", "AB"), ("AB", "LS"), ("AB", "RE"), ("LS", "RE"), ("RE", "GS"),
+          ("PA", "BE"), ("BE", "WE"), ("BE", "ER"), ("WE", "ER")]
+
+
+def grundlagen_anlegen(db):
+    for i, (c, b, n, p, l, o, v) in enumerate(BELEGARTEN):
+        db.execute("INSERT INTO belegart(code,bereich,name,praefix,lager,op,vorzeichen,reihenfolge) VALUES(?,?,?,?,?,?,?,?)",
+                   (c, b, n, p, l, o, v, i))
+    db.executemany("INSERT INTO belegart_folge(von,nach) VALUES(?,?)", FOLGEN)
+    db.executemany("INSERT INTO zahlungsbedingung(text,tage_netto,skonto_tage,skonto_pct) VALUES(?,?,?,?)", [
+        ("14 Tage netto", 14, 0, 0), ("30 Tage netto", 30, 0, 0),
+        ("10 Tage 2 % Skonto, 30 Tage netto", 30, 10, 2), ("Sofort ohne Abzug", 0, 0, 0)])
+    db.execute("INSERT INTO lager(nr,name) VALUES('1','Hauptlager')")
+
+
+# ---------------------------------------------------------------- Passwörter
+def pw_hash(pw, iter_=200_000):
+    salz = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salz), iter_).hex()
+    return f"pbkdf2_sha256${iter_}${salz}${h}"
+
+
+def pw_pruefen(pw, gespeichert):
+    try:
+        _, it, salz, h = gespeichert.split("$")
+        neu = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salz), int(it)).hex()
+        return secrets.compare_digest(neu, h)
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------- Nummern
+def naechste_nummer(db, praefix, datum):
+    jahr = int(datum[:4])
+    r = db.execute("SELECT naechste FROM nummernkreis WHERE praefix=? AND jahr=?", (praefix, jahr)).fetchone()
+    n = r["naechste"] if r else 1
+    if r:
+        db.execute("UPDATE nummernkreis SET naechste=? WHERE praefix=? AND jahr=?", (n + 1, praefix, jahr))
+    else:
+        db.execute("INSERT INTO nummernkreis(praefix,jahr,naechste) VALUES(?,?,?)", (praefix, jahr, n + 1))
+    return f"{praefix}-{str(jahr)[2:]}-{n:04d}"
+
+
+def naechste_stammnr(db, tabelle, spalte, start):
+    r = db.execute(f"SELECT MAX(CAST({spalte} AS INTEGER)) m FROM {tabelle} WHERE {spalte} GLOB '[0-9]*'").fetchone()
+    return str(max(start, (r["m"] or 0) + 1))
+
+
+# ---------------------------------------------------------------- Adressen
+ADRESS_FELDER = ["kurz", "name1", "name2", "strasse", "plz", "ort", "land", "telefon", "email", "ust_id", "notiz"]
+
+
+def adresse_speichern(db, daten, benutzer=None):
+    """Legt eine Adresse an oder ändert sie. Rollen: daten['kunde'] / daten['lieferant'] (dict oder None)."""
+    if not (daten.get("name1") or "").strip():
+        raise Fehler("Name fehlt.")
+    if not daten.get("kurz"):
+        daten["kurz"] = daten["name1"][:30].upper()
+    if not daten.get("land"):
+        daten["land"] = "DE"
+    with transaktion(db):
+        aid = daten.get("id")
+        werte = [daten.get(f) for f in ADRESS_FELDER]
+        if aid:
+            db.execute(f"UPDATE adresse SET {', '.join(f + '=?' for f in ADRESS_FELDER)} WHERE id=?", werte + [aid])
+            protokoll(db, benutzer, "adresse", aid, "geändert")
+        else:
+            nr = daten.get("adressnr") or naechste_stammnr(db, "adresse", "adressnr", 10000)
+            cur = db.execute(f"INSERT INTO adresse(adressnr,{','.join(ADRESS_FELDER)},angelegt) VALUES(?,{','.join('?' * len(ADRESS_FELDER))},?)",
+                             [nr] + werte + [jetzt()])
+            aid = cur.lastrowid
+            protokoll(db, benutzer, "adresse", aid, "angelegt")
+        k = daten.get("kunde")
+        if k is not None:
+            alt = db.execute("SELECT kundennr FROM kunde WHERE adresse_id=?", (aid,)).fetchone()
+            nr = k.get("kundennr") or (alt["kundennr"] if alt else naechste_stammnr(db, "kunde", "kundennr", 10000))
+            db.execute("""INSERT INTO kunde(adresse_id,kundennr,zahlungsbed_id,rabatt_pct,kreditlimit,leitweg_id,liefersperre)
+                          VALUES(?,?,?,?,?,?,?) ON CONFLICT(adresse_id) DO UPDATE SET kundennr=excluded.kundennr,
+                          zahlungsbed_id=excluded.zahlungsbed_id, rabatt_pct=excluded.rabatt_pct, kreditlimit=excluded.kreditlimit,
+                          leitweg_id=excluded.leitweg_id, liefersperre=excluded.liefersperre""",
+                       (aid, nr, k.get("zahlungsbed_id"), k.get("rabatt_pct") or 0, k.get("kreditlimit"),
+                        k.get("leitweg_id"), 1 if k.get("liefersperre") else 0))
+        lf = daten.get("lieferant")
+        if lf is not None:
+            alt = db.execute("SELECT lieferantennr FROM lieferant WHERE adresse_id=?", (aid,)).fetchone()
+            nr = lf.get("lieferantennr") or (alt["lieferantennr"] if alt else naechste_stammnr(db, "lieferant", "lieferantennr", 70000))
+            db.execute("""INSERT INTO lieferant(adresse_id,lieferantennr,zahlungsbed_id,unsere_kundennr,mindestbestellwert)
+                          VALUES(?,?,?,?,?) ON CONFLICT(adresse_id) DO UPDATE SET lieferantennr=excluded.lieferantennr,
+                          zahlungsbed_id=excluded.zahlungsbed_id, unsere_kundennr=excluded.unsere_kundennr,
+                          mindestbestellwert=excluded.mindestbestellwert""",
+                       (aid, nr, lf.get("zahlungsbed_id"), lf.get("unsere_kundennr"), lf.get("mindestbestellwert")))
+    return adresse_lesen(db, aid)
+
+
+def adresse_lesen(db, aid):
+    a = zeile(db.execute("SELECT * FROM adresse WHERE id=?", (aid,)))
+    if not a:
+        raise Fehler("Adresse nicht gefunden.")
+    a["kunde"] = zeile(db.execute("SELECT * FROM kunde WHERE adresse_id=?", (aid,)))
+    a["lieferant"] = zeile(db.execute("SELECT * FROM lieferant WHERE adresse_id=?", (aid,)))
+    a["ansprechpartner"] = zeilen(db.execute("SELECT * FROM ansprechpartner WHERE adresse_id=? ORDER BY nachname", (aid,)))
+    a["belege"] = zeilen(db.execute("""SELECT b.id,b.belegart,b.nummer,b.status,b.datum,b.brutto,b.betreff FROM beleg b
+                                       WHERE b.adresse_id=? ORDER BY b.datum DESC, b.id DESC LIMIT 50""", (aid,)))
+    a["op"] = zeilen(db.execute("SELECT * FROM offener_posten WHERE adresse_id=? AND offen<>0 ORDER BY faellig", (aid,)))
+    a["projekte"] = zeilen(db.execute("SELECT id,projektnr,titel,status FROM projekt WHERE kunde_id=? ORDER BY id DESC", (aid,)))
+    return a
+
+
+def adressen_liste(db, suche="", rolle=""):
+    sql = """SELECT a.id,a.adressnr,a.kurz,a.name1,a.plz,a.ort,a.telefon,a.email,
+                    k.kundennr, l.lieferantennr, k.zahlungsbed_id k_zb, k.rabatt_pct k_rabatt, l.zahlungsbed_id l_zb
+             FROM adresse a LEFT JOIN kunde k ON k.adresse_id=a.id LEFT JOIN lieferant l ON l.adresse_id=a.id WHERE 1=1"""
+    p = []
+    if suche:
+        sql += " AND (a.kurz LIKE ? OR a.name1 LIKE ? OR a.adressnr LIKE ? OR k.kundennr LIKE ? OR l.lieferantennr LIKE ? OR a.ort LIKE ?)"
+        p += [f"%{suche}%"] * 6
+    if rolle == "kunde":
+        sql += " AND k.kundennr IS NOT NULL"
+    elif rolle == "lieferant":
+        sql += " AND l.lieferantennr IS NOT NULL"
+    return zeilen(db.execute(sql + " ORDER BY a.kurz LIMIT 500", p))
+
+
+# ---------------------------------------------------------------- Artikel
+ARTIKEL_FELDER = ["artikelnr", "kurz", "bezeichnung", "me", "gruppe", "vk_preis", "ek_preis", "steuer_pct",
+                  "lagerfuehrung", "meldebestand", "hauptlieferant_id", "inaktiv"]
+
+
+def artikel_speichern(db, d, benutzer=None):
+    if not (d.get("bezeichnung") or "").strip():
+        raise Fehler("Bezeichnung fehlt.")
+    d.setdefault("kurz", d["bezeichnung"][:30])
+    with transaktion(db):
+        if not d.get("artikelnr"):
+            d["artikelnr"] = naechste_stammnr(db, "artikel", "artikelnr", 100000)
+        werte = [d.get(f) for f in ARTIKEL_FELDER]
+        werte = [w if w is not None else dflt for w, dflt in zip(werte, [None, None, None, "Stk", None, 0, 0, 19, 1, 0, None, 0])]
+        if d.get("id"):
+            db.execute(f"UPDATE artikel SET {', '.join(f + '=?' for f in ARTIKEL_FELDER)} WHERE id=?", werte + [d["id"]])
+            aid = d["id"]
+        else:
+            aid = db.execute(f"INSERT INTO artikel({','.join(ARTIKEL_FELDER)}) VALUES({','.join('?' * len(ARTIKEL_FELDER))})", werte).lastrowid
+        protokoll(db, benutzer, "artikel", aid, "gespeichert")
+    return artikel_lesen(db, aid)
+
+
+def bestand(db, artikel_id):
+    r = db.execute("SELECT COALESCE(SUM(menge),0) m FROM lagerbewegung WHERE artikel_id=?", (artikel_id,)).fetchone()
+    return r["m"]
+
+
+def reserviert(db, artikel_id):
+    """Offene Auftragsmenge: verarbeitete AB-Positionen minus bereits gelieferte Mengen."""
+    r = db.execute("""SELECT COALESCE(SUM(p.menge),0) - COALESCE((SELECT SUM(n.menge) FROM beleg_position n JOIN beleg nb ON nb.id=n.beleg_id
+                        WHERE nb.belegart='LS' AND nb.status='verarbeitet' AND n.vorgaenger_pos_id IN
+                        (SELECT p2.id FROM beleg_position p2 JOIN beleg b2 ON b2.id=p2.beleg_id WHERE b2.belegart='AB' AND b2.status='verarbeitet' AND p2.artikel_id=?)),0) m
+                      FROM beleg_position p JOIN beleg b ON b.id=p.beleg_id
+                      WHERE b.belegart='AB' AND b.status='verarbeitet' AND p.artikel_id=?""", (artikel_id, artikel_id)).fetchone()
+    return max(0, r["m"])
+
+
+def artikel_lesen(db, aid):
+    a = zeile(db.execute("SELECT * FROM artikel WHERE id=?", (aid,)))
+    if not a:
+        raise Fehler("Artikel nicht gefunden.")
+    a["bestand"] = bestand(db, aid)
+    a["reserviert"] = reserviert(db, aid)
+    a["verfuegbar"] = a["bestand"] - a["reserviert"]
+    a["bewegungen"] = zeilen(db.execute("""SELECT lb.datum,lb.menge,lb.text,b.nummer FROM lagerbewegung lb LEFT JOIN beleg b ON b.id=lb.beleg_id
+                                          WHERE lb.artikel_id=? ORDER BY lb.id DESC LIMIT 30""", (aid,)))
+    return a
+
+
+def artikel_liste(db, suche=""):
+    sql = "SELECT a.*, (SELECT COALESCE(SUM(menge),0) FROM lagerbewegung WHERE artikel_id=a.id) bestand FROM artikel a WHERE 1=1"
+    p = []
+    if suche:
+        sql += " AND (a.artikelnr LIKE ? OR a.kurz LIKE ? OR a.bezeichnung LIKE ? OR a.gruppe LIKE ?)"
+        p += [f"%{suche}%"] * 4
+    return zeilen(db.execute(sql + " ORDER BY a.artikelnr LIMIT 500", p))
+
+
+# ---------------------------------------------------------------- Belege
+def _belegart(db, code):
+    r = zeile(db.execute("SELECT * FROM belegart WHERE code=?", (code,)))
+    if not r:
+        raise Fehler(f"Unbekannte Belegart {code}.")
+    return r
+
+
+def _summen(positionen):
+    netto = steuer = 0.0
+    for p in positionen:
+        g = round(float(p["menge"]) * float(p["einzelpreis"]) * (1 - float(p.get("rabatt_pct") or 0) / 100), 2)
+        p["gesamt"] = g
+        netto += g
+        steuer += g * float(p.get("steuer_pct", 19)) / 100
+    netto = round(netto, 2)
+    steuer = round(steuer, 2)
+    return netto, steuer, round(netto + steuer, 2)
+
+
+def beleg_speichern(db, d, benutzer=None):
+    """Neuer Beleg oder Änderung eines Entwurfs. Verarbeitete Belege sind gesperrt."""
+    art = _belegart(db, d.get("belegart") or "")
+    if not d.get("adresse_id"):
+        raise Fehler("Bitte zuerst Kunde bzw. Lieferant wählen.")
+    rolle = "kunde" if art["bereich"] == "VK" else "lieferant"
+    if not db.execute(f"SELECT 1 FROM {rolle} WHERE adresse_id=?", (d["adresse_id"],)).fetchone():
+        raise Fehler(f"Die Adresse ist kein {'Kunde' if rolle == 'kunde' else 'Lieferant'}.")
+    pos = [p for p in (d.get("positionen") or []) if (p.get("text") or p.get("artikel_id"))]
+    for p in pos:
+        if p.get("artikel_id") and not p.get("text"):
+            a = db.execute("SELECT bezeichnung FROM artikel WHERE id=?", (p["artikel_id"],)).fetchone()
+            p["text"] = a["bezeichnung"] if a else "?"
+        p.setdefault("menge", 1)
+        p.setdefault("einzelpreis", 0)
+        p.setdefault("steuer_pct", 19)
+        p.setdefault("me", "Stk")
+    netto, steuer, brutto = _summen(pos)
+    felder = dict(belegart=art["code"], datum=d.get("datum") or heute(), adresse_id=d["adresse_id"],
+                  projekt_id=d.get("projekt_id") or None, betreff=d.get("betreff"), ihre_referenz=d.get("ihre_referenz"),
+                  kopftext=d.get("kopftext"), fusstext=d.get("fusstext"), zahlungsbed_id=d.get("zahlungsbed_id") or None,
+                  lager_id=d.get("lager_id") or 1, netto=netto, steuer=steuer, brutto=brutto)
+    with transaktion(db):
+        bid = d.get("id")
+        if bid:
+            alt = db.execute("SELECT status FROM beleg WHERE id=?", (bid,)).fetchone()
+            if not alt:
+                raise Fehler("Beleg nicht gefunden.")
+            if alt["status"] != "entwurf":
+                raise Fehler("Der Beleg ist verarbeitet und kann nicht mehr geändert werden. Korrektur nur per Gutschrift/Storno.")
+            db.execute(f"UPDATE beleg SET {', '.join(k + '=?' for k in felder)} WHERE id=?", list(felder.values()) + [bid])
+            db.execute("DELETE FROM beleg_position WHERE beleg_id=?", (bid,))
+        else:
+            felder.update(angelegt=jetzt(), angelegt_von=benutzer)
+            bid = db.execute(f"INSERT INTO beleg({','.join(felder)}) VALUES({','.join('?' * len(felder))})", list(felder.values())).lastrowid
+        for i, p in enumerate(pos, 1):
+            db.execute("""INSERT INTO beleg_position(beleg_id,pos,artikel_id,text,menge,me,einzelpreis,rabatt_pct,steuer_pct,gesamt,vorgaenger_pos_id)
+                          VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                       (bid, i, p.get("artikel_id") or None, p["text"], float(p["menge"]), p["me"], float(p["einzelpreis"]),
+                        float(p.get("rabatt_pct") or 0), float(p["steuer_pct"]), p["gesamt"], p.get("vorgaenger_pos_id")))
+        protokoll(db, benutzer, "beleg", bid, "gespeichert")
+    return beleg_lesen(db, bid)
+
+
+def beleg_lesen(db, bid):
+    b = zeile(db.execute("""SELECT b.*, ba.name belegart_name, ba.bereich, a.kurz adresse_kurz, a.name1, a.name2, a.strasse, a.plz, a.ort,
+                                   k.kundennr, l.lieferantennr, p.projektnr, p.titel projekt_titel, z.text zahlungsbed
+                            FROM beleg b JOIN belegart ba ON ba.code=b.belegart JOIN adresse a ON a.id=b.adresse_id
+                            LEFT JOIN kunde k ON k.adresse_id=a.id LEFT JOIN lieferant l ON l.adresse_id=a.id
+                            LEFT JOIN projekt p ON p.id=b.projekt_id LEFT JOIN zahlungsbedingung z ON z.id=b.zahlungsbed_id
+                            WHERE b.id=?""", (bid,)))
+    if not b:
+        raise Fehler("Beleg nicht gefunden.")
+    b["positionen"] = zeilen(db.execute("SELECT * FROM beleg_position WHERE beleg_id=? ORDER BY pos", (bid,)))
+    b["folgearten"] = [dict(r) for r in db.execute(
+        "SELECT f.nach code, ba.name FROM belegart_folge f JOIN belegart ba ON ba.code=f.nach WHERE f.von=? ORDER BY ba.reihenfolge", (b["belegart"],))]
+    b["kette"] = belegkette(db, bid)
+    return b
+
+
+def belegkette(db, bid):
+    """Alle Belege desselben Vorgangs (Vorgänger und Nachfolger, transitiv)."""
+    gesehen, offen = set(), [bid]
+    while offen:
+        x = offen.pop()
+        if x in gesehen:
+            continue
+        gesehen.add(x)
+        for r in db.execute("SELECT vorgaenger_id v, nachfolger_id n FROM beleg_verknuepfung WHERE vorgaenger_id=? OR nachfolger_id=?", (x, x)):
+            offen += [r["v"], r["n"]]
+    if not gesehen:
+        return []
+    q = ",".join("?" * len(gesehen))
+    return zeilen(db.execute(f"""SELECT b.id,b.belegart,b.nummer,b.status,b.datum,b.brutto,ba.name belegart_name
+                                 FROM beleg b JOIN belegart ba ON ba.code=b.belegart WHERE b.id IN ({q})
+                                 ORDER BY b.datum, ba.reihenfolge, b.id""", list(gesehen)))
+
+
+def belege_liste(db, bereich="VK", suche="", belegart="", status=""):
+    sql = """SELECT b.id,b.belegart,b.nummer,b.status,b.datum,b.betreff,b.netto,b.brutto,a.kurz adresse_kurz,
+                    p.projektnr FROM beleg b JOIN belegart ba ON ba.code=b.belegart JOIN adresse a ON a.id=b.adresse_id
+             LEFT JOIN projekt p ON p.id=b.projekt_id WHERE ba.bereich=?"""
+    p = [bereich]
+    if belegart:
+        sql += " AND b.belegart=?"
+        p.append(belegart)
+    if status:
+        sql += " AND b.status=?"
+        p.append(status)
+    if suche:
+        sql += " AND (b.nummer LIKE ? OR a.kurz LIKE ? OR b.betreff LIKE ? OR p.projektnr LIKE ?)"
+        p += [f"%{suche}%"] * 4
+    return zeilen(db.execute(sql + " ORDER BY b.datum DESC, b.id DESC LIMIT 500", p))
+
+
+def beleg_verarbeiten(db, bid, benutzer=None):
+    """Der harte Schnitt: Nummer vergeben, sperren, Lager/OP buchen, Meilensteine erledigen."""
+    meldungen = []
+    with transaktion(db):
+        b = zeile(db.execute("SELECT * FROM beleg WHERE id=?", (bid,)))
+        if not b:
+            raise Fehler("Beleg nicht gefunden.")
+        if b["status"] != "entwurf":
+            raise Fehler("Der Beleg ist bereits verarbeitet.")
+        pos = zeilen(db.execute("SELECT * FROM beleg_position WHERE beleg_id=?", (bid,)))
+        if not pos:
+            raise Fehler("Der Beleg hat keine Positionen.")
+        art = _belegart(db, b["belegart"])
+        nummer = naechste_nummer(db, art["praefix"], b["datum"])
+        db.execute("UPDATE beleg SET nummer=?, status='verarbeitet', verarbeitet=?, verarbeitet_von=? WHERE id=?",
+                   (nummer, jetzt(), benutzer, bid))
+        # Lager
+        if art["lager"]:
+            for p in pos:
+                a = db.execute("SELECT lagerfuehrung FROM artikel WHERE id=?", (p["artikel_id"],)).fetchone() if p["artikel_id"] else None
+                if a and a["lagerfuehrung"]:
+                    db.execute("INSERT INTO lagerbewegung(datum,artikel_id,lager_id,menge,beleg_id,text) VALUES(?,?,?,?,?,?)",
+                               (b["datum"], p["artikel_id"], b["lager_id"] or 1, art["lager"] * p["menge"], bid, f"{art['name']} {nummer}"))
+            meldungen.append("Lager gebucht")
+            if art["lager"] < 0:
+                for p in pos:
+                    if p["artikel_id"]:
+                        rest = bestand(db, p["artikel_id"])
+                        if rest < 0:
+                            meldungen.append(f"Achtung: Bestand „{p['text'][:30]}“ jetzt {rest:g}")
+        # Offene Posten
+        if art["op"]:
+            tage = 30
+            if b["zahlungsbed_id"]:
+                z = db.execute("SELECT tage_netto FROM zahlungsbedingung WHERE id=?", (b["zahlungsbed_id"],)).fetchone()
+                tage = z["tage_netto"] if z else 30
+            faellig = (_dt.date.fromisoformat(b["datum"]) + _dt.timedelta(days=tage)).isoformat()
+            betrag = art["vorzeichen"] * b["brutto"]
+            db.execute("INSERT INTO offener_posten(art,beleg_id,adresse_id,datum,faellig,betrag,offen) VALUES(?,?,?,?,?,?,?)",
+                       (art["op"], bid, b["adresse_id"], b["datum"], faellig, betrag, betrag))
+            meldungen.append(f"Offener Posten {'Debitor' if art['op'] == 'debitor' else 'Kreditor'} angelegt")
+        # Meilensteine im Projekt automatisch erledigen
+        if b["projekt_id"]:
+            ms = zeilen(db.execute("""SELECT * FROM meilenstein WHERE projekt_id=? AND ist_ende IS NULL
+                                      AND (ausloeser_beleg_id=? OR (ausloeser=? AND ausloeser_beleg_id IS NULL))
+                                      ORDER BY pos LIMIT 1""", (b["projekt_id"], bid, b["belegart"])))
+            for m in ms:
+                db.execute("UPDATE meilenstein SET ist_ende=?, ausloeser_beleg_id=? WHERE id=?", (b["datum"], bid, m["id"]))
+                txt = f"{art['name']} {nummer} verarbeitet → „{m['titel']}“ automatisch erledigt"
+                db.execute("INSERT INTO projekt_verlauf(projekt_id,zeit,benutzer,text) VALUES(?,?,?,?)", (b["projekt_id"], jetzt(), benutzer, txt))
+                meldungen.append(f"Meilenstein „{m['titel']}“ erledigt")
+        protokoll(db, benutzer, "beleg", bid, "verarbeitet", {"nummer": nummer})
+    return {"beleg": beleg_lesen(db, bid), "meldungen": meldungen}
+
+
+def offene_menge(db, pos_id, zielart):
+    """Menge einer Position, die noch nicht in Belege der Zielart übernommen wurde."""
+    p = db.execute("SELECT menge FROM beleg_position WHERE id=?", (pos_id,)).fetchone()
+    r = db.execute("""SELECT COALESCE(SUM(n.menge),0) m FROM beleg_position n JOIN beleg b ON b.id=n.beleg_id
+                      WHERE n.vorgaenger_pos_id=? AND b.belegart=? AND b.status<>'storniert'""", (pos_id, zielart)).fetchone()
+    return p["menge"] - r["m"]
+
+
+def beleg_weiterverarbeiten(db, bid, zielart, benutzer=None):
+    """Folgebeleg als Entwurf erzeugen; Positionen mit offener Restmenge werden übernommen."""
+    b = beleg_lesen(db, bid)
+    if b["status"] != "verarbeitet":
+        raise Fehler("Bitte den Beleg zuerst verarbeiten.")
+    if zielart not in [f["code"] for f in b["folgearten"]]:
+        raise Fehler(f"{b['belegart_name']} kann nicht zu {zielart} weiterverarbeitet werden.")
+    ziel = _belegart(db, zielart)
+    pos = []
+    for p in b["positionen"]:
+        rest = offene_menge(db, p["id"], zielart) if ziel["vorzeichen"] > 0 else p["menge"]
+        if rest <= 0:
+            continue
+        pos.append(dict(artikel_id=p["artikel_id"], text=p["text"], menge=rest, me=p["me"], einzelpreis=p["einzelpreis"],
+                        rabatt_pct=p["rabatt_pct"], steuer_pct=p["steuer_pct"], vorgaenger_pos_id=p["id"]))
+    if not pos:
+        raise Fehler(f"Alle Positionen sind bereits vollständig in {ziel['name']} übernommen.")
+    if ziel["vorzeichen"] < 0:
+        betreff = f"Gutschrift zu {b['nummer']}"
+    else:
+        betreff = b["betreff"]
+    neu = beleg_speichern(db, dict(belegart=zielart, adresse_id=b["adresse_id"], projekt_id=b["projekt_id"], betreff=betreff,
+                                   ihre_referenz=b["ihre_referenz"], zahlungsbed_id=b["zahlungsbed_id"], lager_id=b["lager_id"],
+                                   kopftext=b["kopftext"], fusstext=b["fusstext"], positionen=pos), benutzer)
+    with transaktion(db):
+        db.execute("INSERT INTO beleg_verknuepfung(vorgaenger_id,nachfolger_id) VALUES(?,?)", (bid, neu["id"]))
+    return beleg_lesen(db, neu["id"])
+
+
+def beleg_loeschen(db, bid, benutzer=None):
+    with transaktion(db):
+        b = db.execute("SELECT status FROM beleg WHERE id=?", (bid,)).fetchone()
+        if not b:
+            raise Fehler("Beleg nicht gefunden.")
+        if b["status"] != "entwurf":
+            raise Fehler("Verarbeitete Belege werden nie gelöscht – bitte Gutschrift/Storno erstellen.")
+        db.execute("DELETE FROM beleg_verknuepfung WHERE nachfolger_id=? OR vorgaenger_id=?", (bid, bid))
+        db.execute("DELETE FROM beleg_position WHERE beleg_id=?", (bid,))
+        db.execute("DELETE FROM beleg WHERE id=?", (bid,))
+        protokoll(db, benutzer, "beleg", bid, "Entwurf gelöscht")
+
+
+# ---------------------------------------------------------------- Offene Posten
+def op_liste(db, art="debitor", nur_offen=True):
+    sql = """SELECT o.*, a.kurz adresse_kurz, b.nummer, b.belegart,
+                    CAST(julianday('now') - julianday(o.faellig) AS INTEGER) tage_ueber
+             FROM offener_posten o JOIN adresse a ON a.id=o.adresse_id JOIN beleg b ON b.id=o.beleg_id WHERE o.art=?"""
+    if nur_offen:
+        sql += " AND o.offen<>0"
+    return zeilen(db.execute(sql + " ORDER BY o.faellig", (art,)))
+
+
+def zahlung_buchen(db, op_id, betrag, benutzer=None):
+    with transaktion(db):
+        o = db.execute("SELECT * FROM offener_posten WHERE id=?", (op_id,)).fetchone()
+        if not o:
+            raise Fehler("Offener Posten nicht gefunden.")
+        neu = round(o["offen"] - float(betrag), 2)
+        db.execute("UPDATE offener_posten SET offen=? WHERE id=?", (neu, op_id))
+        protokoll(db, benutzer, "op", op_id, "Zahlung", {"betrag": betrag})
+    return {"offen": neu}
+
+
+# ---------------------------------------------------------------- Projekte & Zeitstrahl
+def _tage(a, b):
+    return (_dt.date.fromisoformat(b) - _dt.date.fromisoformat(a)).days
+
+
+def de(d):
+    return _dt.date.fromisoformat(d[:10]).strftime("%d.%m.%Y") if d else "–"
+
+
+def _verschiebe(d, n):
+    return (_dt.date.fromisoformat(d) + _dt.timedelta(days=n)).isoformat()
+
+
+def ms_status(m, stichtag=None):
+    stichtag = stichtag or heute()
+    if m["ist_ende"]:
+        v = _tage(m["zugesagt"], m["ist_ende"])
+        return ("ok", "Termin gehalten") if v <= 0 else ("late", f"Erledigt, {v} Tag{'e' if v > 1 else ''} Verzug")
+    rest = _tage(stichtag, m["plan_ende"])
+    if rest < 0:
+        return "over", f"Überfällig seit {-rest} Tag{'en' if rest < -1 else ''}"
+    if rest <= 3:
+        return "risk", "Heute fällig" if rest == 0 else f"Fällig in {rest} Tag{'en' if rest > 1 else ''}"
+    if _tage(m["plan_start"], stichtag) >= 0:
+        return "open", "In Arbeit"
+    return "fut", "Geplant"
+
+
+def projekt_speichern(db, d, benutzer=None):
+    if not (d.get("titel") or "").strip():
+        raise Fehler("Titel fehlt.")
+    with transaktion(db):
+        if d.get("id"):
+            db.execute("UPDATE projekt SET titel=?, kunde_id=?, ansprechpartner=?, status=? WHERE id=?",
+                       (d["titel"], d.get("kunde_id"), d.get("ansprechpartner"), d.get("status") or "aktiv", d["id"]))
+            pid = d["id"]
+        else:
+            jahr = heute()[2:4]
+            n = db.execute("SELECT COUNT(*) c FROM projekt WHERE projektnr LIKE ?", (f"P-{jahr}-%",)).fetchone()["c"] + 1
+            pid = db.execute("INSERT INTO projekt(projektnr,titel,kunde_id,ansprechpartner,status,angelegt) VALUES(?,?,?,?,?,?)",
+                             (d.get("projektnr") or f"P-{jahr}-{n:04d}", d["titel"], d.get("kunde_id"), d.get("ansprechpartner"),
+                              d.get("status") or "aktiv", jetzt())).lastrowid
+            db.execute("INSERT INTO projekt_verlauf(projekt_id,zeit,benutzer,text) VALUES(?,?,?,?)", (pid, jetzt(), benutzer, "Projekt angelegt"))
+        for i, m in enumerate(d.get("meilensteine") or [], 1):
+            ende = m.get("plan_ende") or m.get("plan_start")
+            db.execute("""INSERT INTO meilenstein(projekt_id,pos,titel,verantwortlich,ist_meilenstein,plan_start,plan_ende,zugesagt,ist_ende,ausloeser,grund)
+                          VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                       (pid, m.get("pos") or i, m["titel"], m.get("verantwortlich"), 1 if m.get("ist_meilenstein") else 0,
+                        m.get("plan_start") or ende, ende, m.get("zugesagt") or ende, m.get("ist_ende"), m.get("ausloeser"), m.get("grund")))
+    return projekt_lesen(db, pid)
+
+
+def plan_fixieren(db, pid, benutzer=None):
+    """Aktuellen Plan als Zusage an den Kunden einfrieren."""
+    with transaktion(db):
+        db.execute("UPDATE meilenstein SET zugesagt=plan_ende WHERE projekt_id=? AND ist_ende IS NULL", (pid,))
+        db.execute("UPDATE projekt SET plan_fixiert=? WHERE id=?", (jetzt(), pid))
+        db.execute("INSERT INTO projekt_verlauf(projekt_id,zeit,benutzer,text) VALUES(?,?,?,?)",
+                   (pid, jetzt(), benutzer, "Terminplan als Zusage an den Kunden eingefroren"))
+    return projekt_lesen(db, pid)
+
+
+def projekt_lesen(db, pid, stichtag=None):
+    p = zeile(db.execute("""SELECT p.*, a.kurz kunde_kurz, a.name1 kunde_name FROM projekt p LEFT JOIN adresse a ON a.id=p.kunde_id WHERE p.id=?""", (pid,)))
+    if not p:
+        raise Fehler("Projekt nicht gefunden.")
+    ms = zeilen(db.execute("""SELECT m.*, b.nummer ausloeser_nummer, ba.name ausloeser_name FROM meilenstein m
+                              LEFT JOIN beleg b ON b.id=m.ausloeser_beleg_id LEFT JOIN belegart ba ON ba.code=m.ausloeser
+                              WHERE m.projekt_id=? ORDER BY m.pos""", (pid,)))
+    for m in ms:
+        m["status"], m["status_text"] = ms_status(m, stichtag)
+    p["meilensteine"] = ms
+    erl = [m for m in ms if m["ist_ende"]]
+    geh = [m for m in erl if m["status"] == "ok"]
+    ende = ms[-1] if ms else None
+    p["kennzahlen"] = dict(erledigt=len(erl), gesamt=len(ms), gehalten=len(geh),
+                           termintreue=round(len(geh) / len(erl) * 100) if erl else 100,
+                           ueberfaellig=sum(1 for m in ms if m["status"] == "over"),
+                           endtermin=(ende["ist_ende"] or ende["plan_ende"]) if ende else None,
+                           endtermin_zugesagt=ende["zugesagt"] if ende else None,
+                           endverzug=_tage(ende["zugesagt"], ende["ist_ende"] or ende["plan_ende"]) if ende else 0)
+    p["verlauf"] = zeilen(db.execute("SELECT * FROM projekt_verlauf WHERE projekt_id=? ORDER BY id DESC", (pid,)))
+    p["belege"] = zeilen(db.execute("""SELECT b.id,b.belegart,b.nummer,b.status,b.datum,b.brutto,ba.name belegart_name,ba.bereich
+                                       FROM beleg b JOIN belegart ba ON ba.code=b.belegart WHERE b.projekt_id=? ORDER BY b.datum,b.id""", (pid,)))
+    return p
+
+
+def projekte_liste(db):
+    out = []
+    for r in zeilen(db.execute("SELECT p.id FROM projekt p ORDER BY p.status='abgeschlossen', p.id DESC")):
+        p = projekt_lesen(db, r["id"])
+        out.append({k: p[k] for k in ("id", "projektnr", "titel", "kunde_kurz", "status", "kennzahlen")})
+    return out
+
+
+def meilenstein_erledigt(db, mid, datum=None, benutzer=None, zuruecknehmen=False):
+    with transaktion(db):
+        m = zeile(db.execute("SELECT * FROM meilenstein WHERE id=?", (mid,)))
+        if not m:
+            raise Fehler("Meilenstein nicht gefunden.")
+        if zuruecknehmen:
+            db.execute("UPDATE meilenstein SET ist_ende=NULL WHERE id=?", (mid,))
+            txt = f"„{m['titel']}“: Erledigt-Meldung zurückgenommen"
+        else:
+            datum = datum or heute()
+            db.execute("UPDATE meilenstein SET ist_ende=? WHERE id=?", (datum, mid))
+            txt = f"„{m['titel']}“ erledigt gemeldet ({de(datum)})"
+        db.execute("INSERT INTO projekt_verlauf(projekt_id,zeit,benutzer,text) VALUES(?,?,?,?)", (m["projekt_id"], jetzt(), benutzer, txt))
+    return projekt_lesen(db, m["projekt_id"])
+
+
+def meilenstein_verschieben(db, mid, neu_ende, grund, folge=True, bemerkung="", benutzer=None):
+    if not grund:
+        raise Fehler("Ohne Grund keine Verschiebung – bitte einen Grund angeben.")
+    with transaktion(db):
+        m = zeile(db.execute("SELECT * FROM meilenstein WHERE id=?", (mid,)))
+        if not m:
+            raise Fehler("Meilenstein nicht gefunden.")
+        if m["ist_ende"]:
+            raise Fehler("Erledigte Schritte können nicht verschoben werden.")
+        delta = _tage(m["plan_ende"], neu_ende)
+        if delta == 0:
+            raise Fehler("Termin unverändert.")
+        db.execute("UPDATE meilenstein SET plan_start=?, plan_ende=?, grund=? WHERE id=?",
+                   (_verschiebe(m["plan_start"], delta), neu_ende, grund, mid))
+        n = 0
+        if folge:
+            for f in zeilen(db.execute("SELECT * FROM meilenstein WHERE projekt_id=? AND pos>? AND ist_ende IS NULL", (m["projekt_id"], m["pos"]))):
+                db.execute("UPDATE meilenstein SET plan_start=?, plan_ende=?, grund=COALESCE(grund, ?) WHERE id=?",
+                           (_verschiebe(f["plan_start"], delta), _verschiebe(f["plan_ende"], delta),
+                            f"Folge aus Schritt {m['pos']} ({grund})", f["id"]))
+                n += 1
+        txt = (f"„{m['titel']}“ verschoben um {'+' if delta > 0 else ''}{delta} Tage auf {de(neu_ende)} – Grund: {grund}"
+               + (f" ({bemerkung})" if bemerkung else "") + (f", {n} Folgeschritte mitgeschoben" if n else ""))
+        db.execute("INSERT INTO projekt_verlauf(projekt_id,zeit,benutzer,text) VALUES(?,?,?,?)", (m["projekt_id"], jetzt(), benutzer, txt))
+    return projekt_lesen(db, m["projekt_id"])
+
+
+# ---------------------------------------------------------------- Startseite
+def uebersicht(db):
+    h = heute()
+    monat = h[:7]
+    umsatz = db.execute("""SELECT COALESCE(SUM(ba.vorzeichen*b.netto),0) s FROM beleg b JOIN belegart ba ON ba.code=b.belegart
+                           WHERE b.status='verarbeitet' AND b.belegart IN ('RE','GS') AND substr(b.datum,1,7)=?""", (monat,)).fetchone()["s"]
+    jahr = db.execute("""SELECT COALESCE(SUM(ba.vorzeichen*b.netto),0) s FROM beleg b JOIN belegart ba ON ba.code=b.belegart
+                         WHERE b.status='verarbeitet' AND b.belegart IN ('RE','GS') AND substr(b.datum,1,4)=?""", (h[:4],)).fetchone()["s"]
+    deb = db.execute("SELECT COALESCE(SUM(offen),0) s, COALESCE(SUM(CASE WHEN faellig<? THEN offen END),0) u FROM offener_posten WHERE art='debitor'", (h,)).fetchone()
+    kred = db.execute("SELECT COALESCE(SUM(offen),0) s, COALESCE(SUM(CASE WHEN faellig<? THEN offen END),0) u FROM offener_posten WHERE art='kreditor'", (h,)).fetchone()
+    entwuerfe = db.execute("SELECT COUNT(*) c FROM beleg WHERE status='entwurf'").fetchone()["c"]
+    melde = zeilen(db.execute("""SELECT a.id,a.artikelnr,a.kurz,a.meldebestand,
+                                 (SELECT COALESCE(SUM(menge),0) FROM lagerbewegung WHERE artikel_id=a.id) bestand
+                                 FROM artikel a WHERE a.lagerfuehrung=1 AND a.meldebestand>0""" ))
+    melde = [m for m in melde if m["bestand"] <= m["meldebestand"]]
+    projekte = projekte_liste(db)
+    kritisch = []
+    for p in projekte:
+        if p["status"] == "abgeschlossen":
+            continue
+        for m in projekt_lesen(db, p["id"])["meilensteine"]:
+            if m["status"] in ("over", "risk"):
+                kritisch.append(dict(projekt_id=p["id"], projektnr=p["projektnr"], titel=m["titel"], status=m["status"],
+                                     status_text=m["status_text"], plan_ende=m["plan_ende"]))
+    return dict(umsatz_monat=umsatz, umsatz_jahr=jahr, op_debitor=deb["s"], op_debitor_ueber=deb["u"],
+                op_kreditor=kred["s"], op_kreditor_ueber=kred["u"], entwuerfe=entwuerfe, meldebestand=melde,
+                projekte=projekte, kritisch=kritisch)
