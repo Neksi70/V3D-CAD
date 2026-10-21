@@ -245,6 +245,17 @@ def befehl(name, d):
         if not 0 <= idx < len(s):
             raise Fehler("Punkt nicht gefunden.")
         return {"maske": maske_b64(wz.verbunden(s, idx, zahl(d, "abstand")))}
+    if name == "auswahl/zauberstab":
+        s = p.scan(d["id"])
+        idx = int(d["index"])
+        if not 0 <= idx < len(s):
+            raise Fehler("Punkt nicht gefunden.")
+        return {"maske": maske_b64(wz.zauberstab(s, idx, zahl(d, "winkel", 15), punkt=d.get("punkt")))}
+    if name == "auswahl/wachsen":
+        aus = {}
+        for sid, m in masken_lesen(d).items():
+            aus[sid] = maske_b64(wz.auswahl_wachsen(p.scan(sid), m, int(zahl(d, "schritte", 1))))
+        return {"masken": aus}
     if name == "info/punktabstand":
         s = p.scan(d["id"])
         return {"abstand": round(wz.punktabstand(s), 4)}

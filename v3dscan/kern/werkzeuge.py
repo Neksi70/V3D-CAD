@@ -5,6 +5,8 @@
 # im Projekt loescht wirklich - so bleibt Vorschau -> Anwenden -> Zuruecksetzen
 # fuer jedes Werkzeug gleich.
 
+import math
+
 import numpy as np
 
 from .o3d import o3d
@@ -56,6 +58,14 @@ def komponenten(xyz, abstand):
     a = np.concatenate(kanten_a)
     c = np.concatenate(kanten_b)
 
+    _, lab = np.unique(_label_weitergabe(m, a, c), return_inverse=True)
+    punkt_lab = lab[inv]
+    groessen = np.bincount(punkt_lab)
+    return punkt_lab, groessen
+
+
+def _label_weitergabe(m, a, c):
+    """Zusammenhangskomponenten eines Graphen (m Knoten, Kanten a-c) -> Label je Knoten."""
     # Label-Weitergabe mit Zeigersprung: jedes Voxel uebernimmt das kleinste
     # Label seiner Nachbarn, bis sich nichts mehr aendert.
     lab = np.arange(m, dtype=np.int64)
@@ -71,16 +81,153 @@ def komponenten(xyz, abstand):
             lab = neu
         if np.array_equal(alt, lab):
             break
-    _, lab = np.unique(lab, return_inverse=True)
-    punkt_lab = lab[inv]
-    groessen = np.bincount(punkt_lab)
-    return punkt_lab, groessen
+    return lab
 
 
 def verbunden(scan, index, abstand):
     """Maske aller Punkte, die mit Punkt `index` zusammenhaengen."""
     lab, _ = komponenten(scan.xyz, abstand)
     return lab == lab[index]
+
+
+def _normalen(scan):
+    if scan.nrm is not None:
+        return np.asarray(scan.nrm, float)
+    if scan.tri is not None and len(scan.tri):
+        m = scan.zu_o3d_netz()
+        m.compute_vertex_normals()
+        return np.asarray(m.vertex_normals)
+    p = scan.zu_o3d(normalen=False)
+    p.estimate_normals()
+    return np.asarray(p.normals)
+
+
+def _zauberstab_netz(X, T, index, grenze, punkt=None):
+    """Netz: Wachstum ueber Dreiecke mit Flaechennormalen (Eckennormalen sind an groben Netzen an jeder Kante
+    gemittelt). Start = das an der Ecke haengende Dreieck, das dem geklickten Punkt am naechsten liegt."""
+    T = np.asarray(T, np.int64)
+    P = X[T]
+    FN = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
+    flaeche = np.linalg.norm(FN, axis=1)
+    FN = FN / np.maximum(flaeche, 1e-12)[:, None]
+    an = np.nonzero((T == index).any(1))[0]
+    if not len(an):
+        raise ValueError("Der Punkt gehört zu keinem Dreieck.")
+    if punkt is not None:
+        start = an[np.argmin(np.linalg.norm(P[an].mean(1) - np.asarray(punkt, float), axis=1))]
+    else:
+        start = an[np.argmax(flaeche[an])]
+    # Nachbardreiecke ueber gemeinsame Kanten
+    e = np.sort(np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), axis=1)
+    f = np.tile(np.arange(len(T)), 3)
+    key = e[:, 0] * (len(X) + 1) + e[:, 1]
+    o = np.argsort(key, kind="stable")
+    k, fo = key[o], f[o]
+    gleich = np.nonzero(k[1:] == k[:-1])[0]
+    a, c = fo[gleich], fo[gleich + 1]
+    # Rauschen daempfen: Flaechennormalen einmal mit den Nachbarn mitteln (flaechengewichtet); mehr Runden
+    # verschleifen echte Kanten zu Treppen aus kleinen Winkeln, ueber die der Zauberstab dann hinweglaeuft
+    G = FN * flaeche[:, None]
+    for _ in range(1):
+        S = G.copy()
+        np.add.at(S, a, G[c])
+        np.add.at(S, c, G[a])
+        G = S / np.maximum(np.linalg.norm(S, axis=1), 1e-12)[:, None] * flaeche[:, None]
+    FN = G / np.maximum(np.linalg.norm(G, axis=1), 1e-12)[:, None]
+    ok = np.einsum("ij,ij->i", FN[a], FN[c]) >= grenze
+    lab = _label_weitergabe(len(T), a[ok], c[ok])
+    wahl = lab == lab[start]
+    maske = np.zeros(len(X), bool)
+    maske[T[wahl].ravel()] = True
+    return maske
+
+
+def zauberstab(scan, index, winkel=15.0, abstand=None, punkt=None):
+    """Magic Wand: von Punkt index aus alles waehlen, was ueber Nachbarn mit Normalen-Unterschied
+    < winkel (Grad) erreichbar ist - haelt an Kanten an. Netze ueber ihre Dreieckskanten, Punktwolken
+    ueber Voxel-Nachbarschaft (Voxel = abstand, Standard 3x Punktabstand)."""
+    grenze = math.cos(math.radians(float(winkel)))
+    if scan.tri is not None and len(scan.tri):
+        return _zauberstab_netz(np.asarray(scan.xyz, float), scan.tri, index, grenze, punkt)
+    xyz = np.asarray(scan.xyz, float)
+    fest = abstand is not None
+    abstand = abstand or 3.0 * punktabstand(scan)
+    for _ in range(6):
+        # Voxel so gross, dass im Median >= 8 Punkte darin liegen (sonst ist die Ebenen-Schaetzung Zufall)
+        g = np.floor((xyz - xyz.min(0)) / max(abstand, 1e-6)).astype(np.int64) + 1
+        b = int(g.max()) + 2
+        schluessel = (g[:, 0] * b + g[:, 1]) * b + g[:, 2]
+        voxel, inv = np.unique(schluessel, return_inverse=True)
+        if fest or np.median(np.bincount(inv)) >= 8:
+            break
+        abstand *= 1.4
+    m = len(voxel)
+    # Voxel-Normale per Hauptachsen (kleinster Eigenvektor der Kovarianz) und Kruemmung lam0/sum: Voxel auf
+    # einer Kante mischen zwei Flaechen -> nicht eben -> Sperre (sonst Treppe aus kleinen Winkeln)
+    zahl = np.bincount(inv, minlength=m).astype(float)
+    mitte = np.zeros((m, 3))
+    np.add.at(mitte, inv, xyz)
+    mitte /= zahl[:, None]
+    d = xyz - mitte[inv]
+    C = np.zeros((m, 3, 3))
+    np.add.at(C, inv, d[:, :, None] * d[:, None, :])
+    lam, vec = np.linalg.eigh(C)
+    VN = vec[:, :, 0]
+    kruemmung = lam[:, 0] / np.maximum(lam.sum(1), 1e-18)
+    eben = (zahl >= 3) & (kruemmung < 0.02 + 0.1 * (1 - grenze))
+    vk = np.stack([voxel // (b * b), (voxel // b) % b, voxel % b], axis=1)
+    ka, kb = [], []
+    for off in _NACHBARN:
+        nk = ((vk[:, 0] + off[0]) * b + vk[:, 1] + off[1]) * b + vk[:, 2] + off[2]
+        pos = np.searchsorted(voxel, nk)
+        pos[pos >= m] = m - 1
+        treffer = voxel[pos] == nk
+        ka.append(np.nonzero(treffer)[0])
+        kb.append(pos[treffer])
+    a, c = np.concatenate(ka), np.concatenate(kb)
+    ok = (np.abs(np.einsum("ij,ij->i", VN[a], VN[c])) >= grenze) & eben[a] & eben[c]
+    lab = _label_weitergabe(m, a[ok], c[ok])
+    wahl = lab == lab[inv[index]]
+    maske = wahl[inv]
+    # gesperrte (nicht ebene) Nachbarvoxel: deren Punkte gehoeren dazu, wenn sie in der Ebene eines
+    # gewaehlten Nachbarvoxels liegen - so endet die Auswahl an der Kante statt einen Voxel davor
+    rand = (wahl[a] & ~eben[c] & ~wahl[c])
+    if rand.any():
+        ordnung = np.argsort(inv, kind="stable")
+        anfang = np.r_[0, np.cumsum(np.bincount(inv, minlength=m))]
+        for va, vc in zip(a[rand].tolist(), c[rand].tolist()):
+            pts = ordnung[anfang[vc]:anfang[vc + 1]]
+            nah = np.abs((xyz[pts] - mitte[va]) @ VN[va]) < 0.15 * abstand
+            maske[pts[nah]] = True
+    return maske
+
+
+def auswahl_wachsen(scan, maske, schritte=1, schritt=None):
+    """Grow/Shrink: Auswahl um schritte x schritt (Standard 1,5x Punktabstand) vergroessern (schritte > 0)
+    oder verkleinern (< 0)."""
+    from .o3d import o3d
+    maske = np.asarray(maske, bool)
+    if not maske.any() or schritte == 0:
+        return maske
+    d = abs(int(schritte)) * (schritt or 1.5 * punktabstand(scan))
+    xyz = np.asarray(scan.xyz, float)
+
+    def wolke(P):
+        return o3d.geometry.PointCloud(o3d.utility.Vector3dVector(P))
+    if schritte > 0:
+        rest = ~maske
+        if not rest.any():
+            return maske
+        dist = np.asarray(wolke(xyz[rest]).compute_point_cloud_distance(wolke(xyz[maske])))
+        neu = maske.copy()
+        neu[np.nonzero(rest)[0][dist <= d]] = True
+        return neu
+    if maske.all():
+        return maske
+    dist = np.asarray(wolke(xyz[maske]).compute_point_cloud_distance(wolke(xyz[~maske])))
+    neu = maske.copy()
+    neu[np.nonzero(maske)[0][dist <= d]] = False
+    return neu
 
 
 def kleine_inseln(scan, abstand, max_anteil_prozent):

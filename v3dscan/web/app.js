@@ -166,15 +166,16 @@ const PUNKT_VS = `
   void main() {
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     gl_Position = projectionMatrix * mv;
-    gl_PointSize = groesse;
+    gl_PointSize = mark > 3.5 ? 0.0 : groesse;
     vec3 c = farbe;
     if (hatNormalen > 0.5 && schatten > 0.5) {
       vec3 n = normalize(normalMatrix * normale);
       float l = abs(dot(n, normalize(-mv.xyz)));
       c *= 0.3 + 0.8 * l;
     }
-    if (mark > 1.5) c = vec3(1.0, 0.18, 0.12);
-    else if (mark > 0.5) c = mix(c, vec3(0.05, 0.78, 0.84), 0.85);
+    float mk = mod(mark, 4.0);
+    if (mk > 1.5) c = vec3(1.0, 0.18, 0.12);
+    else if (mk > 0.5) c = mix(c, vec3(0.05, 0.78, 0.84), 0.85);
     vFarbe = c;
   }`;
 const PUNKT_FS = `
@@ -206,6 +207,7 @@ const NETZ_FS = `
   varying vec3 vSicht;
   varying float vMark;
   void main() {
+    if (vMark > 3.5) discard;
     vec3 n = normalize(vNormale);
     vec3 v = normalize(vSicht);
     // Rueckseiten dunkler-blaeulich: zeigt verdrehte Normalen und Loecher
@@ -608,8 +610,9 @@ function legendeZeichnen() {
 // Markierungen (Auswahl + Vorschau)
 // ---------------------------------------------------------------------------
 function markierungSetzen(e) {
-  const m = e.mark, s = e.sel, v = e.vor;
-  for (let i = 0; i < e.n; i++) m[i] = s[i] | (v[i] << 1);
+  const m = e.mark, s = e.sel, v = e.vor, h = e.verborgen;
+  if (h) for (let i = 0; i < e.n; i++) m[i] = h[i] ? 4 : s[i] | (v[i] << 1);
+  else for (let i = 0; i < e.n; i++) m[i] = s[i] | (v[i] << 1);
   e.geo.getAttribute('mark').needsUpdate = true;
 }
 function alleMarkierungen() { for (const e of S.scans.values()) markierungSetzen(e); punkteInfo(); }
@@ -806,8 +809,9 @@ function jederPunkt(fn, nurScan = null) {
     if (!e.obj.visible || (nurScan !== null && e.id !== nurScan)) continue;
     vp.multiplyMatrices(kamera.projectionMatrix, kamera.matrixWorldInverse).multiply(e.obj.matrix);
     const mv = new THREE.Matrix4().multiplyMatrices(kamera.matrixWorldInverse, e.obj.matrix).elements;
-    const m = vp.elements, p = e.xyz;
+    const m = vp.elements, p = e.xyz, ver = e.verborgen;
     for (let i = 0; i < e.n; i++) {
+      if (ver && ver[i]) continue;
       const x = p[i * 3], y = p[i * 3 + 1], z = p[i * 3 + 2];
       const cw = m[3] * x + m[7] * y + m[11] * z + m[15];
       if (cw <= 0) continue;
@@ -855,15 +859,18 @@ function werkzeugSetzen(w) {
   if (w !== 'orbit') pickModusSetzen(null);
   $$('[data-werkzeug]').forEach((b) => b.classList.toggle('an', b.dataset.werkzeug === w));
   if (zug) { zug = null; zeichnung.innerHTML = ''; }
-  const auswahl = w === 'rechteck' || w === 'lasso' || w === 'polygon';
-  steuerung.mouseButtons = { LEFT: auswahl || w === 'verbunden' ? null : THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
-  leinwand.style.cursor = auswahl ? 'crosshair' : w === 'verbunden' ? 'pointer' : 'grab';
+  const auswahl = w === 'rechteck' || w === 'lasso' || w === 'polygon' || w === 'pinsel';
+  const klick = w === 'verbunden' || w === 'zauberstab';
+  steuerung.mouseButtons = { LEFT: auswahl || klick ? null : THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+  leinwand.style.cursor = auswahl ? 'crosshair' : klick ? 'pointer' : 'grab';
   const tipps = {
     orbit: 'Drehen: linke/rechte Maustaste · Verschieben: mittlere · Zoom: Rad',
     rechteck: 'Rechteck aufziehen = hinzufügen · Strg = abwählen',
     lasso: 'Lasso zeichnen = hinzufügen · Strg = abwählen',
     polygon: 'Ecken anklicken · Doppelklick oder Enter schließt · Rücktaste nimmt letzte Ecke zurück · Strg = abwählen',
     verbunden: 'Punkt anklicken: alles damit Zusammenhängende wird gewählt · Strg = abwählen',
+    pinsel: 'Über den Scan malen = hinzufügen · Strg = abwählen · Größe im Auswahl-Fenster',
+    zauberstab: 'Punkt anklicken: wächst, solange die Fläche nicht stärker knickt als der Winkel · Strg = abwählen',
   };
   status(tipps[w]);
 }
@@ -884,6 +891,7 @@ leinwand.addEventListener('pointerdown', (ev) => {
   const [x, y] = lokalePos(ev);
   if (S.pickModus) { ev.preventDefault(); pickKlick(x, y); return; }
   if (S.werkzeug === 'verbunden') { verbundenKlick(x, y, ev.ctrlKey || ev.metaKey); return; }
+  if (S.werkzeug === 'zauberstab') { zauberstabKlick(x, y, ev.ctrlKey || ev.metaKey); return; }
   if (S.werkzeug === 'polygon') {
     if (!zug) zug = { art: 'polygon', punkte: [], weg: ev.ctrlKey || ev.metaKey };
     const l = zug.punkte[zug.punkte.length - 1];
@@ -892,9 +900,9 @@ leinwand.addEventListener('pointerdown', (ev) => {
     zugZeichnen();
     return;
   }
-  if (S.werkzeug !== 'rechteck' && S.werkzeug !== 'lasso') return;
+  if (S.werkzeug !== 'rechteck' && S.werkzeug !== 'lasso' && S.werkzeug !== 'pinsel') return;
   leinwand.setPointerCapture(ev.pointerId);
-  zug = { art: S.werkzeug, punkte: [[x, y]], weg: ev.ctrlKey || ev.metaKey };
+  zug = { art: S.werkzeug, punkte: [[x, y]], weg: ev.ctrlKey || ev.metaKey, r: Number($('#pinselGroesse').value) || 20 };
   zugZeichnen();
 });
 leinwand.addEventListener('pointermove', (ev) => {
@@ -968,6 +976,8 @@ function zugZeichnen() {
     if (p.length < 2) { zeichnung.innerHTML = ''; return; }
     const x = Math.min(p[0][0], p[1][0]), y = Math.min(p[0][1], p[1][1]);
     zeichnung.innerHTML = `<rect x="${x}" y="${y}" width="${Math.abs(p[1][0] - p[0][0])}" height="${Math.abs(p[1][1] - p[0][1])}" fill="${farbe}22" stroke="${farbe}" stroke-dasharray="5 3"/>`;
+  } else if (zug.art === 'pinsel') {
+    zeichnung.innerHTML = `<polyline points="${p.map((q) => q.join(',')).join(' ')}" fill="none" stroke="${farbe}55" stroke-width="${2 * zug.r}" stroke-linecap="round" stroke-linejoin="round"/>`;
   } else if (zug.art === 'polygon') {
     const alle = zug.maus ? [...p, zug.maus] : p;
     zeichnung.innerHTML = `<polygon points="${alle.map((q) => q.join(',')).join(' ')}" fill="${farbe}22" stroke="${farbe}" stroke-dasharray="5 3"/>`
@@ -986,14 +996,19 @@ function auswahlAnwenden(z) {
   const g = c.getContext('2d');
   g.scale(pr, pr);
   g.beginPath();
-  if (z.art === 'rechteck') {
+  if (z.art === 'pinsel') {
+    g.lineWidth = 2 * z.r; g.lineCap = 'round'; g.lineJoin = 'round';
+    z.punkte.forEach((q, i) => (i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1])));
+    if (z.punkte.length === 1) g.lineTo(z.punkte[0][0] + 0.01, z.punkte[0][1]);
+    g.stroke();
+  } else if (z.art === 'rechteck') {
     const [a, b] = z.punkte;
     g.rect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
   } else {
     z.punkte.forEach((q, i) => (i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1])));
     g.closePath();
   }
-  g.fill();
+  if (z.art !== 'pinsel') g.fill();
   const form = g.getImageData(0, 0, W, H).data;
   const tb = S.durch ? null : tiefenbild();
   const wert = z.weg ? 0 : 1;
@@ -1026,8 +1041,53 @@ async function verbundenKlick(x, y, weg) {
   });
 }
 
+async function zauberstabKlick(x, y, weg) {
+  const p = oberflaechePunkt(x, y, { koerper: false });
+  if (!p || p.id === undefined) { status('Kein Scan unter der Maus.'); return; }
+  await sicher(async () => {
+    const j = await api('auswahl/zauberstab', { id: p.id, index: p.index, winkel: Number($('#zauberWinkel').value) || 15,
+      punkt: [p.lokal.x, p.lokal.y, p.lokal.z] }, 'Zauberstab…');
+    const e = S.scans.get(p.id);
+    const m = b64.maske(j.maske, e.n);
+    let anzahl = 0;
+    for (let i = 0; i < e.n; i++) if (m[i] && !(e.verborgen && e.verborgen[i])) { e.sel[i] = weg ? 0 : 1; anzahl++; }
+    alleMarkierungen();
+    status(`Zauberstab: ${anzahl.toLocaleString('de-DE')} Punkte ${weg ? 'abgewählt' : 'gewählt'}.`);
+  });
+}
+async function auswahlWachsen(schritte) {
+  const masken = auswahlMasken();
+  if (!Object.keys(masken).length) throw new Error('Nichts gewählt.');
+  const j = await api('auswahl/wachsen', { masken, schritte }, schritte > 0 ? 'Vergrößere…' : 'Verkleinere…');
+  for (const [sid, text] of Object.entries(j.masken)) {
+    const e = S.scans.get(Number(sid));
+    const m = b64.maske(text, e.n);
+    for (let i = 0; i < e.n; i++) e.sel[i] = m[i] && !(e.verborgen && e.verborgen[i]) ? 1 : 0;
+  }
+  alleMarkierungen();
+}
+function auswahlVerbergen(isolieren) {
+  let n = 0;
+  for (const e of sichtbareScans()) {
+    let irgend = false;
+    for (let i = 0; i < e.n; i++) if (e.sel[i]) { irgend = true; break; }
+    if (!irgend && !isolieren) continue;
+    e.verborgen = e.verborgen || new Uint8Array(e.n);
+    for (let i = 0; i < e.n; i++) {
+      const weg = isolieren ? !e.sel[i] : e.sel[i];
+      if (weg && !e.verborgen[i]) { e.verborgen[i] = 1; n++; }
+      e.sel[i] = 0;
+    }
+  }
+  alleMarkierungen();
+  status(`${n.toLocaleString('de-DE')} Punkte ausgeblendet – „Alle zeigen“ holt sie zurück (nur Anzeige, nichts gelöscht).`);
+}
+function alleZeigen() {
+  for (const e of S.scans.values()) e.verborgen = null;
+  alleMarkierungen();
+}
 function auswahlAlle(wert) {
-  for (const e of sichtbareScans()) e.sel.fill(wert);
+  for (const e of sichtbareScans()) for (let i = 0; i < e.n; i++) e.sel[i] = e.verborgen && e.verborgen[i] ? 0 : wert;
   alleMarkierungen();
 }
 function auswahlUmkehren() {
@@ -2780,9 +2840,16 @@ function oberflaechePunkt(x, y, { nurScan = null, koerper = true } = {}) {
   const p = wolke ? punktAn(x, y, nurScan) : null;
   if (t && (!p || t.point.distanceTo(kamera.position) <= p.welt.distanceTo(kamera.position) + 1e-6)) {
     const scan = [...S.scans.values()].find((e) => e.obj === t.object);
-    return { pos: t.point.clone(), wo: scan ? 'Scan' : 'Körper' };
+    const aus = { pos: t.point.clone(), wo: scan ? 'Scan' : 'Körper' };
+    if (scan && t.face) {
+      // nächste Ecke des getroffenen Dreiecks (für Werkzeuge, die einen Punkt-Index brauchen)
+      const lokal = scan.obj.worldToLocal(t.point.clone());
+      const d = (i) => Math.hypot(scan.xyz[i * 3] - lokal.x, scan.xyz[i * 3 + 1] - lokal.y, scan.xyz[i * 3 + 2] - lokal.z);
+      Object.assign(aus, { id: scan.id, index: [t.face.a, t.face.b, t.face.c].reduce((a, b) => (d(a) <= d(b) ? a : b)), lokal });
+    }
+    return aus;
   }
-  return p ? { pos: p.welt.clone(), wo: 'Scan' } : null;
+  return p ? { pos: p.welt.clone(), wo: 'Scan', id: p.id, index: p.index, lokal: p.lokal } : null;
 }
 function messPunktAn(x, y) { return oberflaechePunkt(x, y); }
 function messKreis(a, b, c) {
@@ -4108,6 +4175,13 @@ const AKTIONEN = {
     auswahlAlle(0);
   } },
   invertieren: { text: 'Auswahl umkehren', taste: 'Ctrl+I', fn: auswahlUmkehren },
+  pinsel: { text: 'Werkzeug: Pinsel', taste: 'N', fn: () => werkzeugSetzen('pinsel') },
+  zauberstab: { text: 'Werkzeug: Zauberstab', taste: 'W', fn: () => werkzeugSetzen('zauberstab') },
+  vergroessern: { text: 'Auswahl vergrößern', fn: () => auswahlWachsen(1) },
+  verkleinern: { text: 'Auswahl verkleinern', fn: () => auswahlWachsen(-1) },
+  verbergen: { text: 'Auswahl verbergen', taste: 'H', fn: () => auswahlVerbergen(false) },
+  isolieren: { text: 'Auswahl isolieren', fn: () => auswahlVerbergen(true) },
+  alleZeigen: { text: 'Alle Punkte zeigen', taste: 'Alt+H', fn: alleZeigen },
   loeschen: { text: 'Gewählte Punkte löschen', taste: 'Delete', fn: auswahlLoeschen },
   abtrennen: { text: 'Auswahl abtrennen', taste: 'Ctrl+D', fn: auswahlAbtrennen },
   einpassen: { text: 'Ansicht einpassen', taste: 'F', fn: einpassen },
