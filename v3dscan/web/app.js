@@ -143,6 +143,26 @@ const szene = new THREE.Scene();
 const kamera = new THREE.PerspectiveCamera(45, 1, 0.1, 10000);
 kamera.position.set(0, 150, 400);
 const steuerung = new OrbitControls(kamera, leinwand);
+// Navigationsschemata anderer CAD-Programme (Mitte/rechts; Umschalt/Strg wechselt bei OrbitControls
+// zwischen Drehen und Verschieben). Links bleibt der Auswahl/den Werkzeugen vorbehalten.
+const NAV_SCHEMATA = {
+  v3d: { name: 'V3D Scan (rechts drehen, Mitte verschieben)', MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE },
+  solidworks: { name: 'SolidWorks (Mitte drehen, Strg+Mitte verschieben)', MIDDLE: THREE.MOUSE.ROTATE, RIGHT: null },
+  fusion: { name: 'Fusion / Inventor (Mitte verschieben, Umschalt+Mitte drehen)', MIDDLE: THREE.MOUSE.PAN, RIGHT: null },
+  creo: { name: 'Creo / NX / Blender (Mitte drehen, Umschalt+Mitte verschieben)', MIDDLE: THREE.MOUSE.ROTATE, RIGHT: null },
+};
+function navEinstellung() {
+  try { return JSON.parse(localStorage.getItem('v3dscan.nav') || '{}'); } catch (e) { return {}; }
+}
+function mausTasten(linksDrehen) {
+  const n = NAV_SCHEMATA[navEinstellung().schema] || NAV_SCHEMATA.v3d;
+  return { LEFT: linksDrehen ? THREE.MOUSE.ROTATE : null, MIDDLE: n.MIDDLE, RIGHT: n.RIGHT };
+}
+function navAnwenden() {
+  const e = navEinstellung();
+  steuerung.zoomSpeed = e.radUmkehren ? -1 : 1;
+  steuerung.mouseButtons = mausTasten(steuerung.mouseButtons.LEFT !== null);
+}
 steuerung.enableDamping = false;
 steuerung.zoomToCursor = true;
 const hilfsGruppe = new THREE.Group();
@@ -861,7 +881,7 @@ function werkzeugSetzen(w) {
   if (zug) { zug = null; zeichnung.innerHTML = ''; }
   const auswahl = w === 'rechteck' || w === 'lasso' || w === 'polygon' || w === 'pinsel';
   const klick = w === 'verbunden' || w === 'zauberstab';
-  steuerung.mouseButtons = { LEFT: auswahl || klick ? null : THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+  steuerung.mouseButtons = mausTasten(!(auswahl || klick));
   leinwand.style.cursor = auswahl ? 'crosshair' : klick ? 'pointer' : 'grab';
   const tipps = {
     orbit: 'Drehen: linke/rechte Maustaste · Verschieben: mittlere · Zoom: Rad',
@@ -1181,13 +1201,13 @@ function pickModusSetzen(modus) {
   if (modus) {
     if (S.werkzeug !== 'orbit') werkzeugSetzen('orbit');
     S.pickModus = modus;
-    steuerung.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+    steuerung.mouseButtons = mausTasten(false);
     leinwand.style.cursor = 'copy';
     $('#knopfEbenePunkte').classList.toggle('an', modus === 'ebene3');
     $('#knopfPaare').classList.toggle('an', modus === 'paare');
     pickHinweis();
   } else if (S.werkzeug === 'orbit') {
-    steuerung.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+    steuerung.mouseButtons = mausTasten(true);
     leinwand.style.cursor = 'grab';
   }
 }
@@ -4175,6 +4195,9 @@ const AKTIONEN = {
     auswahlAlle(0);
   } },
   invertieren: { text: 'Auswahl umkehren', taste: 'Ctrl+I', fn: auswahlUmkehren },
+  optionen: { text: 'Optionen (Navigation, Auto-Sicherung)', fn: optionenOeffnen },
+  optionenZu: { text: '', fn: () => $('#optionenDialog').close() },
+  sicherungJetzt: { text: '', fn: async () => { const j = await apiRoh('sicherung/jetzt', {}); meldung(j.name ? 'Gesichert.' : 'Nichts zu sichern.', 'ok'); await sicherungListe(); } },
   pinsel: { text: 'Werkzeug: Pinsel', taste: 'N', fn: () => werkzeugSetzen('pinsel') },
   zauberstab: { text: 'Werkzeug: Zauberstab', taste: 'W', fn: () => werkzeugSetzen('zauberstab') },
   vergroessern: { text: 'Auswahl vergrößern', fn: () => auswahlWachsen(1) },
@@ -4455,6 +4478,50 @@ window.addEventListener('keydown', (ev) => {
   }
 });
 
+async function optionenOeffnen() {
+  const e = navEinstellung();
+  const sel = $('#navSchema');
+  sel.innerHTML = '';
+  for (const [k, v] of Object.entries(NAV_SCHEMATA)) sel.add(new Option(v.name, k));
+  sel.value = e.schema || 'v3d';
+  $('#navRad').checked = !!e.radUmkehren;
+  await sicherungListe();
+  $('#optionenDialog').showModal();
+}
+function optionenNavSpeichern() {
+  try { localStorage.setItem('v3dscan.nav', JSON.stringify({ schema: $('#navSchema').value, radUmkehren: $('#navRad').checked })); } catch (e) { /* privat */ }
+  navAnwenden();
+}
+async function sicherungListe() {
+  const j = await apiRoh('sicherung/liste', {});
+  $('#sichMinuten').value = j.minuten;
+  $('#sichOrdner').textContent = j.ordner;
+  const tab = $('#sichTabelle');
+  tab.innerHTML = '';
+  if (!j.liste.length) tab.innerHTML = '<tr><td>Noch keine Sicherung.</td></tr>';
+  for (const e of j.liste) {
+    const tr = document.createElement('tr');
+    const zeit = new Date(e.zeit * 1000).toLocaleString('de-DE');
+    tr.innerHTML = `<td>${zeit}</td><td>${(e.groesse / 1048576).toFixed(1)} MB</td><td></td>`;
+    const b = document.createElement('button');
+    b.textContent = 'Laden';
+    b.addEventListener('click', () => sicher(async () => {
+      if (!confirm(`Sicherung vom ${zeit} laden? Das offene Projekt wird ersetzt.`)) return;
+      await mitSanduhr('Lade Sicherung…', async () => {
+        const j = await apiRoh('sicherung/laden', { name: e.name });
+        for (const s_ of S.scans.values()) szene.remove(s_.obj);
+        S.scans.clear();
+        await zustandUebernehmen(j);
+        listeZeichnen();
+        auswahlListenFuellen();
+      });
+      $('#optionenDialog').close();
+      meldung('Sicherung geladen.', 'ok');
+    }));
+    tr.children[2].appendChild(b);
+    tab.appendChild(tr);
+  }
+}
 function tastenTabelle() {
   const tab = $('#tastenTabelle');
   const umgekehrt = Object.fromEntries(Object.entries(tasten).map(([t, id]) => [id, t]));
@@ -4670,8 +4737,22 @@ async function start() {
   fetch('/api/puls');
   steuerung.addEventListener('change', kameraGrenzen);
   window.v3dscan = { S, api, einpassen, werkzeugSetzen, punktAn, auswahlAnwenden, kamera, steuerung, renderer,
-    werkzeugOeffnen, werkzeugSchliessen, bandSetzen, formWaehlen, kaefigEckeAn, kaefigKanteAn, kaefigFlaecheAn };
+    werkzeugOeffnen, werkzeugSchliessen, bandSetzen, formWaehlen, kaefigEckeAn, kaefigKanteAn, kaefigFlaecheAn, aktionAusfuehren };
   konsole('V3D Scan ' + z.fassung + ' bereit.');
 }
 start().catch((e) => meldung('Start fehlgeschlagen: ' + e.message, 'fehler'));
 $('#kgIrr').addEventListener('change', () => { if (S.kaefig) kaefigLinien(); });
+
+$('#navSchema').addEventListener('change', optionenNavSpeichern);
+$('#navRad').addEventListener('change', optionenNavSpeichern);
+$('#sichMinuten').addEventListener('change', () => sicher(async () => {
+  const minuten = Math.max(0, Number($('#sichMinuten').value) || 0);
+  try { localStorage.setItem('v3dscan.sicherung', String(minuten)); } catch (e) { /* privat */ }
+  await apiRoh('sicherung/einstellen', { minuten });
+}));
+navAnwenden();
+(() => { // gespeicherten Sicherungsabstand an den Dienst geben
+  let m = null;
+  try { m = localStorage.getItem('v3dscan.sicherung'); } catch (e) { /* privat */ }
+  if (m !== null) apiRoh('sicherung/einstellen', { minuten: Number(m) }).catch(() => {});
+})();

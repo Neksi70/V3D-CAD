@@ -29,6 +29,7 @@ class Projekt:
         self.naechste_id = 1
         self.undo = []            # [(text, {id: Scan-Kopie oder None})]
         self.redo = []
+        self.aenderungen = 0      # zaehlt jede Aenderung (Auto-Sicherung)
         # Geometrieerkennung je Scan: {"rev", "elemente" (JSON), "labels" (int32),
         # "zusammenfassung", "freiform"} - gilt nur fuer genau diesen Datenstand
         self.erkennung = {}
@@ -84,6 +85,7 @@ class Projekt:
 
     # --- Rueckgaengig ---------------------------------------------------------
     def _merke(self, text, ids, neu=False):
+        self.aenderungen += 1
         eintrag = {}
         for sid in ids:
             s = self.scans.get(sid)
@@ -100,6 +102,7 @@ class Projekt:
                 "referenzen": copy.deepcopy(self.referenzen), "naechste_referenz": self.naechste_referenz}
 
     def _merke_koerper(self, text):
+        self.aenderungen += 1
         self.undo.append((text, {"koerper": self._koerper_stand()}))
         self.redo.clear()
         self._kuerzen()
@@ -146,9 +149,11 @@ class Projekt:
         return text
 
     def rueckgaengig(self):
+        self.aenderungen += 1
         return self._tausche(self.undo, self.redo)
 
     def wiederholen(self):
+        self.aenderungen += 1
         return self._tausche(self.redo, self.undo)
 
     # --- Aenderungen mit Rueckgaengig ------------------------------------------

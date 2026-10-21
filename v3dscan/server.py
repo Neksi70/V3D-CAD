@@ -35,6 +35,7 @@ from kern import formen as fo  # noqa: E402
 from kern import freiform as ff  # noqa: E402
 from kern import koerper as kp  # noqa: E402
 from kern import loeser  # noqa: E402
+from kern import sicherung as sich  # noqa: E402
 from kern import koordinaten as ko  # noqa: E402
 from kern import netz as nz  # noqa: E402
 from kern import features as sk_feat  # noqa: E402
@@ -245,6 +246,14 @@ def befehl(name, d):
         if not 0 <= idx < len(s):
             raise Fehler("Punkt nicht gefunden.")
         return {"maske": maske_b64(wz.verbunden(s, idx, zahl(d, "abstand")))}
+    if name == "sicherung/liste":
+        return {"liste": sich.liste(), "ordner": sich.ordner(), "minuten": sicherung_stand["minuten"],
+                "letzte": sicherung_stand["letzte_name"]}
+    if name == "sicherung/einstellen":
+        sicherung_stand["minuten"] = max(0.0, float(zahl(d, "minuten", 5)))
+        return {"minuten": sicherung_stand["minuten"]}
+    if name == "sicherung/jetzt":
+        return {"name": sicherung_schreiben(erzwingen=True, gesperrt=True)}
     if name == "auswahl/zauberstab":
         s = p.scan(d["id"])
         idx = int(d["index"])
@@ -1842,6 +1851,15 @@ class Handler(BaseHTTPRequestHandler):
                     vorschau_cache.clear()
                     netz_vorschau.clear()
                     return self._senden(200, projekt.zustand())
+            if pfad == "/api/sicherung/laden":
+                roh = self._koerper()
+                d = json.loads(roh.decode("utf-8")) if roh else {}
+                neu = Projekt.laden(sich.lesen(d.get("name")))
+                with sperre:
+                    projekt = neu
+                    vorschau_cache.clear()
+                    netz_vorschau.clear()
+                    return self._senden(200, projekt.zustand())
             if pfad == "/api/projekt/neu":
                 with sperre:
                     projekt = Projekt()
@@ -1884,6 +1902,43 @@ def browser_oeffnen(url):
     webbrowser.open(url)
 
 
+sicherung_stand = {"minuten": 5.0, "letzte_zeit": time.time(), "gesichert": None, "letzte_name": None}
+
+
+def sicherung_schreiben(erzwingen=False, gesperrt=False):
+    """Projekt ablegen, wenn es sich seit der letzten Sicherung geaendert hat (oder erzwungen).
+    gesperrt: Aufrufer haelt die Projektsperre schon (Befehle laufen darunter)."""
+    def lesen():
+        stand = (id(projekt), projekt.aenderungen)
+        leer = not projekt.scans and not projekt.koerper and not projekt.skizzen
+        if leer or (not erzwingen and stand == sicherung_stand["gesichert"]):
+            return stand, None
+        return stand, projekt.speichern()
+    if gesperrt:
+        stand, daten = lesen()
+    else:
+        with sperre:
+            stand, daten = lesen()
+    if daten is None:
+        return None
+    name = sich.schreiben(daten)
+    sicherung_stand.update(gesichert=stand, letzte_zeit=time.time(), letzte_name=name)
+    return name
+
+
+def sicherer():
+    """Hintergrund: alle `minuten` Minuten sichern (0 = aus)."""
+    while True:
+        time.sleep(10)
+        m = sicherung_stand["minuten"]
+        if m > 0 and time.time() - sicherung_stand["letzte_zeit"] >= 60 * m:
+            try:
+                sicherung_schreiben()
+            except Exception as e:          # Sicherung darf den Dienst nie stoeren
+                print("Auto-Sicherung fehlgeschlagen:", e, file=sys.stderr)
+            sicherung_stand["letzte_zeit"] = time.time()
+
+
 def waechter(max_stille):
     """Beendet den Dienst, wenn die Oberflaeche geschlossen wurde (kein Puls)."""
     while True:
@@ -1909,6 +1964,7 @@ def main():
     print("V3D Scan %s läuft auf %s" % (FASSUNG, url))
     if a.auto_ende:
         threading.Thread(target=waechter, args=(a.auto_ende,), daemon=True).start()
+    threading.Thread(target=sicherer, daemon=True).start()
     if a.browser:
         threading.Timer(0.3, browser_oeffnen, args=(url,)).start()
     try:
