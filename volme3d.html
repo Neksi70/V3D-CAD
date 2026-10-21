@@ -39010,6 +39010,21 @@ function _s2cHochladen(body, name, fortschritt) {
     x.send(body);
   });
 }
+// Diagnose (Volker 21.10.: Seite hing bei ~23 %): längste Blockade seit der letzten Abfrage, lange
+// Aufgaben (longtask), Speicher des Tabs – geht mit jeder Statusabfrage ins Protokoll des Dienstes.
+function _s2cDiag(lauf) {
+  const d = lauf.diag || (lauf.diag = { max: 0, last: performance.now(), lt: [], uhr: null, obs: null });
+  if (!d.uhr) {
+    d.uhr = setInterval(() => { const t = performance.now(); d.max = Math.max(d.max, t - d.last); d.last = t; }, 100);
+    try { d.obs = new PerformanceObserver(l => { for (const e of l.getEntries()) d.lt.push(Math.round(e.duration)); }); d.obs.observe({ entryTypes: ['longtask'] }); } catch (_) {}
+  }
+  const m = performance.memory;
+  const s = 'blk=' + Math.round(d.max) + ' lt=' + d.lt.slice(-6).join('/') + (m ? ' heap=' + Math.round(m.usedJSHeapSize / 1048576) + '/' + Math.round(m.jsHeapSizeLimit / 1048576) : '') +
+    ' objs=' + objects.length + ' undo=' + undoStack.length + ' vis=' + document.visibilityState;
+  d.max = 0; d.lt = [];
+  return s;
+}
+function _s2cDiagStopp(lauf) { const d = lauf && lauf.diag; if (d) { clearInterval(d.uhr); try { d.obs && d.obs.disconnect(); } catch (_) {} } }
 async function _s2cStart(obj, datei) {
   const m = document.getElementById('s2c-modal');
   _s2cZeigen([]);
@@ -39022,7 +39037,7 @@ async function _s2cStart(obj, datei) {
   const lauf = _s2c = { obj, abgebrochen: false, id: null };
   const balken = lauf.balken = _s2cBalken(lauf);
   const ende = (text, fehler) => {
-    balken.stopp(fehler ? 'fehler' : 'fertig');
+    balken.stopp(fehler ? 'fehler' : 'fertig'); _s2cDiagStopp(lauf);
     stat.textContent = text; if (fehler) stat.style.color = '#dc2626'; else stat.style.color = '';
     document.getElementById('s2c-ab').style.display = 'none';
     document.getElementById('s2c-zu').style.display = '';
@@ -39044,7 +39059,7 @@ async function _s2cStart(obj, datei) {
     while (!lauf.abgebrochen) {
       await new Promise(r => setTimeout(r, 1000));
       if (lauf.abgebrochen) return;
-      const s = await (await fetch('/api/scan2cad/auftrag/' + lauf.id)).json().catch(() => ({ status: 'fehler', fehler: 'Verbindung verloren' }));
+      const s = await (await fetch('/api/scan2cad/auftrag/' + lauf.id + '?d=' + encodeURIComponent(_s2cDiag(lauf)))).json().catch(() => ({ status: 'fehler', fehler: 'Verbindung verloren' }));
       if (s.zeilen) { _s2cZeigen(s.zeilen); balken.aus(s.zeilen); }
       if (s.status === 'wartet') stat.innerHTML = 'Wartet – Platz ' + s.platz + ' in der Warteschlange …<span id="s2c-proz"></span>';
       else if (s.status === 'laeuft') stat.innerHTML = 'Rechnet … ' + Math.round(s.sekunden) + ' s<span id="s2c-proz"></span>';
@@ -39089,7 +39104,7 @@ window.addEventListener('pagehide', () => {
 });
 function _s2cAbbrechen() {
   const l = _s2c;
-  if (l) { l.abgebrochen = true; if (l.balken) l.balken.stopp(); if (l.id) fetch('/api/scan2cad/abbrechen/' + l.id, { method: 'POST' }).catch(() => {}); }
+  if (l) { l.abgebrochen = true; if (l.balken) l.balken.stopp(); _s2cDiagStopp(l); if (l.id) fetch('/api/scan2cad/abbrechen/' + l.id, { method: 'POST' }).catch(() => {}); }
   _s2c = null;
   document.getElementById('s2c-modal').classList.remove('show');
   notify('Scan → CAD abgebrochen', 'w');
@@ -69979,8 +69994,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.239';
+const VOLME3D_VERSION = '1.18.240';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.240', date:'2026-10-21', changes:[
+    ['🔎','<b>Scan → CAD: Messung für die Fehlersuche.</b> Während der Umwandlung meldet die Seite dem Server mit, ob sie gerade stockt und wie viel Speicher sie braucht – damit sich das Hängen bei großen Scans aufklären lässt.'],
+  ]},
   { version:'1.18.239', date:'2026-10-21', changes:[
     ['📊','<b>Scan → CAD mit Ladebalken.</b> Das Fenster zeigt jetzt einen Balken mit Prozent: beim Hochladen nach übertragenen Bytes, beim Rechnen Schritt für Schritt (Erkennen, Ausrichten, Drehteil, Prisma, Freiform …) und beim Bauen des Körpers bis 100 % (Volker 21.10.).'],
     ['🧹','<b>Scan → CAD: keine verwaisten Aufträge mehr.</b> Wer die Seite neu lädt oder schließt, während der Server rechnet, bricht den Auftrag jetzt ab – vorher rechnete er weiter und der nächste Versuch stand auf „Platz 2“.'],

@@ -159,7 +159,8 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "V3DScanDienst/1"
 
     def log_message(self, fmt, *args):
-        if "/health" not in (args[0] if args else ""):
+        zeile = args[0] if args else ""
+        if "/health" not in zeile and not (zeile.startswith("GET /auftrag/") and "?d=" in zeile):
             sys.stderr.write("%s %s\n" % (time.strftime("%H:%M:%S"), fmt % args))
 
     def _json(self, code, d):
@@ -186,6 +187,9 @@ class Handler(BaseHTTPRequestHandler):
             if a is None:
                 return self._json(404, {"fehler": "Auftrag unbekannt oder abgelaufen."})
             a["abfrage"] = time.time()
+            diag = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("d")
+            if diag:          # Diagnose der Seite (Blockaden, Speicher) – nur ins Protokoll
+                sys.stderr.write("%s diag %s %s %s\n" % (time.strftime("%H:%M:%S"), aid[:8], a["status"], diag[0][:300]))
             aus = {"status": a["status"], "platz": _platz(aid), "zeilen": list(a["zeilen"]),
                    "sekunden": round(time.time() - (a.get("start") or a["angelegt"]), 1)}
             if a["status"] == "fertig":

@@ -425,6 +425,7 @@ class Handler(BaseHTTPRequestHandler):
         """POST /api/scan2cad/auftrag (Netz als Rohdaten, Kopf X-Name), GET /api/scan2cad/auftrag/<id>,
         POST /api/scan2cad/abbrechen/<id> (-> DELETE). Rechnen dauert, die Abfragen sind kurz."""
         rest = self.path.split('?', 1)[0][len('/api/scan2cad'):] or '/'
+        query = ('?' + self.path.split('?', 1)[1]) if '?' in self.path else ''
         body, headers = None, {}
         if method == 'POST':
             n = int(self.headers.get('Content-Length', 0) or 0)
@@ -434,7 +435,7 @@ class Handler(BaseHTTPRequestHandler):
                 method, rest, body = 'DELETE', '/auftrag/' + rest[len('/abbrechen/'):], None
         try:
             conn = http.client.HTTPConnection('127.0.0.1', SCAN2CAD_PORT, timeout=120)
-            conn.request(method, rest, body=body, headers=headers)
+            conn.request(method, rest + (query if method == 'GET' else ''), body=body, headers=headers)
             r = conn.getresponse()
             data = r.read()
             status = r.status
