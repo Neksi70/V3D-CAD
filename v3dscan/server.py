@@ -815,6 +815,22 @@ def skizze_befehl(was, d):
                                   "geschlossen": bool(d.get("geschlossen", False)), "ketten": [], "schnitt": []})
         sk_feat.skizze_draht(z)                       # prueft, ob sich eine Kurve bilden laesst
         return {"sid": z["id"]}
+    if was == "uebergang":
+        # Blend Curve: tangentiale Verbindung zwischen den Enden zweier Skizzen-Kurven
+        def ende(sid, welches):
+            z = p.skizze_holen(sid)
+            P = np.asarray(_kurve_punkte(sk_feat.skizze_draht(z), 400), float)
+            if welches == "anfang":
+                return P[0], P[0] - P[1]
+            return P[-1], P[-1] - P[-2]
+        a, ta = ende(d["sid_a"], d.get("ende_a", "ende"))
+        b, tb = ende(d["sid_b"], d.get("ende_b", "anfang"))
+        if np.linalg.norm(b - a) < 1e-6:
+            raise Fehler("Die beiden Enden liegen aufeinander.")
+        Q = sk_feat.uebergangskurve(a, ta, b, tb, zahl(d, "staerke", 1.0))      # dicht: Spline-Enden treffen die Tangente
+        z = p.skizze_hinzufuegen({"art": "3d", "punkte3d": np.round(Q, 5).tolist(), "glatt": True, "geschlossen": False,
+                                  "ketten": [], "schnitt": [], "quelle": {"uebergang": [d["sid_a"], d["sid_b"]]}})
+        return {"sid": z["id"]}
     if was == "neu":
         E = _ebene_aus(d)
         skz = {"ebene": sk.ebene_json(E), "ketten": [], "schnitt": [], "info": {"art": "leer"},

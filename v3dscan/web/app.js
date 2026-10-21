@@ -3669,6 +3669,7 @@ function v10Fuellen() {
   selectFuellen($('#e3Skizze'), d3);
   for (const id of ['#pjSkizze', '#wiSkizze']) selectFuellen($(id), d2);
   selectFuellen($('#rfSkizze'), alle.map((z) => [z.meta.id, z.meta.name]));
+  for (const id of ['#blA', '#blB']) selectFuellen($(id), alle.map((z) => [z.meta.id, z.meta.name]));
   const ko = [...S.koerper.values()].map((k) => [`k${k.meta.id}`, `Körper „${k.meta.name}“`]);
   selectFuellen($('#fuQuelle'), [...ko, ...d3.map(([i, n]) => [`s${i}`, `3D-Skizze „${n}“`])]);
   const scans = S.zustand ? S.zustand.scans : [];
@@ -4210,6 +4211,11 @@ const AKTIONEN = {
   } },
   invertieren: { text: 'Auswahl umkehren', taste: 'Ctrl+I', fn: auswahlUmkehren },
   optionen: { text: 'Optionen (Navigation, Auto-Sicherung)', fn: optionenOeffnen },
+  blAnwenden: { text: 'Übergangskurve', fn: async () => {
+    await api('skizze/uebergang', { sid_a: Number($('#blA').value), ende_a: $('#blEndeA').value, sid_b: Number($('#blB').value),
+      ende_b: $('#blEndeB').value, staerke: Number($('#blStaerke').value) || 1 }, 'Erzeuge Übergangskurve…');
+    meldung('Übergangskurve als 3D-Skizze erzeugt.', 'ok');
+  } },
   geVorschau: { text: 'Grundkörper: Vorschau', fn: () => geAusfuehren(true) },
   geAnwenden: { text: 'Grundkörper per Eingabe', fn: () => geAusfuehren(false) },
   rkAnwenden: { text: 'Referenz aus Körperfläche', fn: async () => {

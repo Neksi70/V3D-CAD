@@ -15,6 +15,8 @@ import time
 import urllib.error
 import urllib.request
 
+import numpy as np
+
 HIER = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HIER, ".."))
 sys.path.insert(0, HIER)
@@ -77,9 +79,19 @@ def main():
         a = holen("/api/skizze/iges", {"sid": sid})
         iges = base64.b64decode(a["iges"]).decode("ascii", "replace")
         pruefe(len(iges) > 500 and " 100" in iges and " 110" in iges, "Skizze als IGES (Linien 110 + Kreisbögen 100)")
+        # Uebergangskurve zwischen zwei 3D-Skizzen
+        sa = holen("/api/skizze/3d", {"punkte": [[0, 0, 0], [10, 0, 0], [20, 0, 0]], "auf_scan": False})["sid"]
+        sb = holen("/api/skizze/3d", {"punkte": [[40, 10, 0], [40, 20, 0], [40, 30, 0]], "auf_scan": False})["sid"]
+        a = holen("/api/skizze/uebergang", {"sid_a": sa, "ende_a": "ende", "sid_b": sb, "ende_b": "anfang"})
+        z = holen("/api/skizze/holen", {"sid": a["sid"]})["skizze"]
+        K = np.asarray(z["kurve"], float)
+        t0 = (K[1] - K[0]) / np.linalg.norm(K[1] - K[0])
+        t1 = (K[-1] - K[-2]) / np.linalg.norm(K[-1] - K[-2])
+        pruefe(np.allclose(K[0], [20, 0, 0], atol=1e-3) and np.allclose(K[-1], [40, 10, 0], atol=1e-3)
+               and t0 @ [1, 0, 0] > 0.99 and t1 @ [0, 1, 0] > 0.99,
+               "Übergangskurve: (20,0,0) → (40,10,0), tangential an beiden Enden (%.3f / %.3f)" % (t0 @ [1, 0, 0], t1 @ [0, 1, 0]))
         # Flaechen-Fit nach Toleranz auf einer welligen Flaeche
         from kern.wolke import Scan, ausgeben
-        import numpy as np
         u, w = np.meshgrid(np.linspace(0, 60, 120), np.linspace(0, 40, 80))
         X = np.c_[u.ravel(), w.ravel(), (3 * np.sin(u / 6) * np.cos(w / 9)).ravel()]
         with tempfile.TemporaryDirectory() as tmp:
