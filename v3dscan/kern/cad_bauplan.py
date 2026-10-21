@@ -245,10 +245,13 @@ def bauplan(projekt, k):
             raise NichtUebersetzbar("Kein Verlauf")
         vollstaendig = True
     except NichtUebersetzbar as x:
-        hinweise.append("Nicht als Bauplan übertragbar: %s – der Körper kommt als STEP (ohne Verlauf)." % x)
-        daten = kp.exportieren([k.shape], "step")
+        hinweise.append("Nicht als Bauplan übertragbar: %s – der Körper kommt als fester Körper (ohne Verlauf)." % x)
+        # Als fertiges Netz statt STEP: V3D CAD liest STEP mit OCCT im Haupt-Thread und vernetzt dort selbst
+        # (3-MB-Freiform-STEP = 32 s, Browser „Seite reagiert nicht“, Volker 21.10.). Sehnenfehler hier
+        # ~0,04 % der Diagonale – feiner als V3D CADs eigene 0,2 mm. Wer B-Rep braucht: STEP-Export in V3D Scan.
+        daten = kp.stl_daten([k.shape], fein=False)
         befehle = [{"befehl": "file.import", "params": {
-            "name": "%s.step" % k.name, "base64": base64.b64encode(daten).decode("ascii")}, "als": "k"}]
+            "name": "%s.stl" % k.name, "base64": base64.b64encode(daten).decode("ascii")}, "als": "k"}]
         vollstaendig = False
     return {"format": "v3dscan-bauplan", "version": 1, "koerper": k.name, "befehle": befehle,
             "hinweise": hinweise, "vollstaendig": vollstaendig,

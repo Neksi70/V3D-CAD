@@ -85,7 +85,7 @@ def main():
         holen("/api/feature/schale", {"kid": k5, "dicke": 1})
         b = holen("/api/koerper/bauplan", {"kid": k5})
         pruefe(not b["vollstaendig"] and b["befehle"][0]["befehl"] == "file.import" and "schale" in " ".join(b["hinweise"]),
-               "nicht übersetzbar (Schale) → STEP mit Hinweis: %s" % b["hinweise"])
+               "nicht übersetzbar (Schale) → fester Körper (STL) mit Hinweis: %s" % b["hinweise"])
     finally:
         prozess.terminate()
         prozess.wait(10)

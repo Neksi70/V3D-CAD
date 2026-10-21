@@ -38902,7 +38902,7 @@ async function _bauplanDatei(file) {
     (r.abweichung != null ? ' (' + (r.abweichung >= 0 ? '+' : '') + (100 * r.abweichung).toFixed(2).replace('.', ',') + ' % zu V3D Scan)' : '') : '';
   const warn = !r.vollstaendig || (r.abweichung != null && Math.abs(r.abweichung) > 0.02);
   notify((r.vollstaendig ? 'Bauplan gebaut: ' + r.schritte + ' Schritte, Skizzen im Verlauf änderbar' :
-    'Als fester Körper (STEP) übernommen – ' + (r.hinweise[0] || 'kein Verlauf')) + vol, warn ? 'w' : 'ok');
+    'Als fester Körper übernommen (ohne Verlauf)') + vol, warn ? 'w' : 'ok');
 }
 // 🪄 Scan → CAD direkt in V3D CAD: Netz → Dienst v3dscan/cad_dienst.py (über /api/scan2cad) →
 // Bauplan → v3dApi.bauplan. Derselbe Rechenkern wie die EXE V3D Scan; der Weg über die EXE
@@ -38926,6 +38926,35 @@ function _scan2cad() {
     _s2cStart(neu[0]);
   };
   inp.click();
+}
+// Binär-STL direkt aus den Puffern (mm, Z oben) – _buildStlBlob legt je Dreieck ein Objekt an,
+// bei Scans mit Hunderttausenden Dreiecken spürbar. Lage egal: der Körper wird danach an den Scan gesetzt.
+function _s2cStl(obj) {
+  const teile = [];
+  obj.updateMatrixWorld(true);
+  obj.traverse(m => { if (m.isMesh && !m.userData.isEdgeLines && m.geometry && m.geometry.attributes.position) teile.push(m); });
+  let n = 0;
+  for (const m of teile) n += (m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count) / 3 | 0;
+  if (!n) return null;
+  const buf = new ArrayBuffer(84 + 50 * n), dv = new DataView(buf);
+  dv.setUint32(80, n, true);
+  const v = new THREE.Vector3(), M = new THREE.Matrix4();
+  let off = 84;
+  for (const m of teile) {
+    M.makeRotationX(Math.PI / 2).multiply(m.matrixWorld);          // Editor (Y oben) → Welt (Z oben)
+    const pos = m.geometry.attributes.position, idx = m.geometry.index;
+    const k = (idx ? idx.count : pos.count) / 3 | 0;
+    for (let t = 0; t < k; t++) {
+      off += 12;                                                   // Normale 0 – der Dienst rechnet sie neu
+      for (let e = 0; e < 3; e++) {
+        v.fromBufferAttribute(pos, idx ? idx.getX(3 * t + e) : 3 * t + e).applyMatrix4(M);
+        dv.setFloat32(off, v.x * 10, true); dv.setFloat32(off + 4, v.y * 10, true); dv.setFloat32(off + 8, v.z * 10, true);
+        off += 12;
+      }
+      off += 2;
+    }
+  }
+  return new Blob([buf]);
 }
 function _s2cZeigen(zeilen) {
   const ol = document.getElementById('s2c-list');
@@ -38957,8 +38986,8 @@ async function _s2cStart(obj, datei) {
   try {
     let body, name;
     if (obj) {
-      const r = _buildStlBlob([obj]); if (!r) { ende('Nichts zu übertragen.', true); return; }
-      body = r.blob; name = (obj.userData.name || 'scan').replace(/[^\w.\- ]+/g, '_') + '.stl';
+      body = _s2cStl(obj); if (!body) { ende('Nichts zu übertragen.', true); return; }
+      name = (obj.userData.name || 'scan').replace(/[^\w.\- ]+/g, '_') + '.stl';
     } else { body = datei; name = datei.name; }
     const resp = await fetch('/api/scan2cad/auftrag', { method: 'POST', body, headers: { 'X-Name': encodeURIComponent(name).replace(/%20/g, ' ') } });
     const j = await resp.json().catch(() => ({}));
@@ -69896,8 +69925,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.237';
+const VOLME3D_VERSION = '1.18.238';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.238', date:'2026-10-21', changes:[
+    ['🛠','<b>Scan → CAD: Seite reagiert nicht mehr.</b> Wurde aus dem Scan eine Freiform, kam der Körper als STEP-Datei zurück, und V3D CAD hat sie über eine halbe Minute am Stück eingelesen – der Browser meldete „Seite reagiert nicht“ (Volker 21.10.). Jetzt kommt der Körper fertig vernetzt und ist in einem Augenblick da; auch Baupläne aus V3D Scan ohne Verlauf öffnen sich so. Der Scan wird außerdem schneller hochgeladen.'],
+  ]},
   { version:'1.18.237', date:'2026-10-21', changes:[
     ['🪄','<b>Scan → CAD mit einem Klick – direkt in V3D CAD.</b> Gescanntes Teil laden (oder auswählen) und in der Leiste Import auf „🪄 Scan→CAD“ tippen: V3D CAD bereinigt und richtet den Scan aus, erkennt Drehteil, Prisma mit Stufen und Bohrungen oder Freiform und baut daraus einen echten CAD-Körper mit Skizzen im Verlauf – Maße danach änderbar. Der Körper steht an der Stelle des Scans, der Scan wird zum Vergleichen ausgeblendet. Dauert meist 1–2 Minuten; ein Schritt rückgängig. Der Weg über das Programm V3D Scan (Bauplan speichern → Bauplan öffnen) bleibt.'],
   ]},
