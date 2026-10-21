@@ -35,6 +35,10 @@ def modell(ketten):
         vorher_b = None
         for i, e in enumerate(E):
             t = e["typ"]
+            if t == "punkt":
+                q = neuer_punkt(e["a"])
+                els[(k, i)] = {"typ": t, "a": q, "b": q}
+                continue
             if t == "kreis":
                 els[(k, i)] = {"typ": t, "m": neuer_punkt(e["mitte"]), "r": len(rad)}
                 rad.append(float(e["r"]))
@@ -145,6 +149,12 @@ def residuen(x, M, bedingungen):
             m = 0.5 * (p + q) - a
             res.append(m[0] * u[1] - m[1] * u[0])          # Mitte liegt auf der Achse
             res.append((q - p) @ u)                          # Verbindung steht senkrecht
+        elif art == "deckungsgleich":
+            res += list(_p(x, punkt_index(M, c["p"])) - _p(x, punkt_index(M, c["q"])))
+        elif art == "auf_linie":
+            a, u = _p(x, e["a"]), _richtung(x, e)
+            q = _p(x, punkt_index(M, c["p"])) - a
+            res.append(q[0] * u[1] - q[1] * u[0])
         elif art == "auf_kreis":
             res.append(np.linalg.norm(_p(x, punkt_index(M, c["p"])) - _p(x, e["m"])) - _r(x, M, e["r"]))
         else:
@@ -223,7 +233,9 @@ def zurueck(ketten, M, x):
         for i, e in enumerate(kette["elemente"]):
             d = M["els"][(k, i)]
             e = dict(e)
-            if d["typ"] == "kreis":
+            if d["typ"] == "punkt":
+                e["a"] = e["b"] = _p(x, d["a"]).tolist()
+            elif d["typ"] == "kreis":
                 e["mitte"] = _p(x, d["m"]).tolist()
                 e["r"] = float(_r(x, M, d["r"]))
             else:
@@ -377,8 +389,12 @@ def text(c):
     namen = {"waagrecht": "waagrecht", "senkrecht": "senkrecht", "parallel": "parallel", "rechtwinklig": "rechtwinklig",
              "gleich": "gleich", "tangential": "tangential", "konzentrisch": "konzentrisch", "fix": "fest",
              "symmetrisch": "symmetrisch", "laenge": "Länge", "radius": "Radius", "abstand": "Abstand",
-             "winkel": "Winkel", "punkt_abstand": "Punktabstand", "auf_kreis": "auf Kreis"}
-    t = namen.get(c["art"], c["art"]) + " " + el(c.get("e") or c["p"])
+             "winkel": "Winkel", "punkt_abstand": "Punktabstand", "auf_kreis": "auf Kreis",
+             "deckungsgleich": "deckungsgleich", "auf_linie": "auf Linie"}
+    punktbezug = c["art"] in ("fix", "symmetrisch", "punkt_abstand", "deckungsgleich", "auf_kreis", "auf_linie")
+    t = namen.get(c["art"], c["art"]) + " " + el(c["p"] if punktbezug and "p" in c else (c.get("e") or c["p"]))
+    if punktbezug and c["art"] in ("auf_kreis", "auf_linie"):
+        t += " ↔ " + el(c["e"])
     if "f" in c:
         t += " ↔ " + el(c["f"])
     if "q" in c:

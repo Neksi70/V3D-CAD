@@ -954,21 +954,26 @@ def skizze_befehl(was, d):
                 c["wert"] = zahl(d, "wert", 90 if art == "winkel" else 10)
             if not 0 <= el < len(ketten[i]["elemente"]):
                 raise Fehler("Element gibt es nicht (mehr).")
-            if art in ("fix", "symmetrisch", "punkt_abstand", "auf_kreis"):
+            if art in ("fix", "symmetrisch", "punkt_abstand", "auf_kreis", "deckungsgleich", "auf_linie"):
                 ende = "mitte" if ketten[i]["elemente"][el]["typ"] == "kreis" else d.get("ende", "a")
                 c["p"] = [i, el, ende]
                 if art == "fix":
                     c["wo"] = ketten[i]["elemente"][el][ende]
-                if art in ("symmetrisch", "punkt_abstand"):
-                    c["q"] = [bk, int(b if b not in (None, "") else el), d.get("ende2", "b")]
+                if art in ("symmetrisch", "punkt_abstand", "deckungsgleich"):
+                    qi = int(b if b not in (None, "") else el)
+                    ende2 = "mitte" if ketten[bk]["elemente"][qi]["typ"] == "kreis" else d.get("ende2", "b")
+                    c["q"] = [bk, qi, ende2]
                     c.pop("f", None)
                 if art == "symmetrisch":
                     ach = d.get("achse") or {}
                     if "element" not in ach:
                         raise Fehler("Für „symmetrisch“ eine Linie als Achse wählen.")
                     c["achse"] = [int(ach.get("kette", i)), int(ach["element"])]
-                if art == "auf_kreis":
+                if art in ("auf_kreis", "auf_linie"):
+                    if b in (None, ""):
+                        raise Fehler("Als Bezug den Kreis bzw. die Linie angeben.")
                     c["e"] = [bk, int(b)]
+                    c.pop("f", None)
             if art in ("parallel", "rechtwinklig", "abstand", "winkel", "gleich", "tangential", "konzentrisch") \
                     and "f" not in c:
                 raise Fehler("Als Bezug ein zweites Element wählen.")

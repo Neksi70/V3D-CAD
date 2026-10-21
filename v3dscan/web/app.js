@@ -1019,7 +1019,7 @@ leinwand.addEventListener('pointerup', (ev) => {
   const [x, y] = lokalePos(ev);
   if (Math.hypot(x - klickStart[0], y - klickStart[1]) > 4) return;
   klickStart = null;
-  if (WF.haupt && WF.haupt.id === 'w-netz-rand') { randKlick(x, y); return; }
+  if (document.querySelector('#wfInhalt #w-netz-rand')) { randKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-kanten') { kanteKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-schale') { flaecheKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-messen') { messKlick(x, y); return; }
@@ -2290,7 +2290,39 @@ function sk3d(E, s, t) {
   return new THREE.Vector3(E.ursprung[0] + s * E.u[0] + t * E.v[0], E.ursprung[1] + s * E.u[1] + t * E.v[1],
     E.ursprung[2] + s * E.u[2] + t * E.v[2]);
 }
+function skBsplineBasis(t, m) {
+  // gleiche Basis wie kern/skizze.py _bspline_basis (kubisch, eingespannt, gleichmäßige Knoten)
+  const p = 3, k = [0, 0, 0];
+  for (let i = 0; i <= m - p; i++) k.push(i / (m - p));
+  k.push(1, 1, 1);
+  t = Math.min(Math.max(t, 0), 1 - 1e-12);
+  let N = [];
+  for (let i = 0; i < k.length - 1; i++) N.push(k[i] <= t && t < k[i + 1] ? 1 : 0);
+  for (let q = 1; q <= p; q++) {
+    const neu = [];
+    for (let i = 0; i < k.length - 1 - q; i++) {
+      const a = k[i + q] - k[i], b = k[i + q + 1] - k[i + 1];
+      neu.push((a > 0 ? (t - k[i]) / a * N[i] : 0) + (b > 0 ? (k[i + q + 1] - t) / b * N[i + 1] : 0));
+    }
+    N = neu;
+  }
+  return N.slice(0, m);
+}
 function skDiskret(el) {
+  if (el.typ === 'punkt') {
+    // kleines Kreuz (Konstruktionspunkt)
+    const [x, y] = el.a, d = 0.6;
+    return [[x - d, y], [x + d, y], [x, y], [x, y - d], [x, y + d]];
+  }
+  if (el.typ === 'spline' && el.pole) {
+    const pts = [];
+    for (let i = 0; i <= 80; i++) {
+      const B = skBsplineBasis(i / 80, el.pole.length);
+      pts.push([0, 1].map((k) => B.reduce((s, b, j) => s + b * el.pole[j][k], 0)));
+    }
+    pts[0] = el.pole[0]; pts[80] = el.pole[el.pole.length - 1];
+    return pts;
+  }
   if (el.typ === 'linie') return [el.a, el.b];
   const m = el.mitte, r = el.r;
   if (el.typ === 'kreis') {
@@ -2554,7 +2586,7 @@ function skElementeZeichnen() {
       txt.innerHTML = `<span class="nr">${ki + 1}.${ei + 1}</span>`;
       txt.append(v.texte[ki][ei] + (el.achse ? ` (${el.achse})` : '') + (el.typ !== 'linie' && el.nenn ? ' · Nennmaß' : ''));
       z.appendChild(txt);
-      if (el.typ !== 'linie') {
+      if (el.typ === 'bogen' || el.typ === 'kreis') {
         const r = document.createElement('input');
         r.type = 'number'; r.step = '0.1'; r.min = '0.01'; r.value = String(+(el.typ === 'kreis' ? 2 * el.r : el.r).toFixed(3));
         r.title = el.typ === 'kreis' ? 'Durchmesser' : 'Radius';
@@ -3603,7 +3635,7 @@ async function trennen() {
 
 // --- Skizzen-Editor (v1.0) ------------------------------------------------------------------------
 S.skzKlick = null;      // {art, punkte: [[s,t]…], n}
-const SKZ_PUNKTE = { linie: 2, rechteck: 2, kreis: 2, kreis3: 3, bogen: 3, langloch: 2, sechseck: 2, polylinie: 99, spline: 99 };
+const SKZ_PUNKTE = { punkt: 1, linie: 2, rechteck: 2, kreis: 2, kreis3: 3, bogen: 3, langloch: 2, sechseck: 2, polylinie: 99, spline: 99 };
 function skEbeneAktuell() { return S.skVorschau ? S.skVorschau.daten.ebene : null; }
 function ebenePunkt(x, y, E) {
   const r = new THREE.Raycaster();
@@ -3683,7 +3715,8 @@ async function skeAusfuehren() {
   const bezug = bz ? bz[1] : null;
   const bezug_kette = bz ? bz[0] : kette;
   const wert = Number(String($('#skeWert').value).replace(',', '.'));
-  const zwei = ['parallel', 'rechtwinklig', 'gleich', 'tangential', 'konzentrisch', 'abstand', 'winkel', 'symmetrisch'];
+  const zwei = ['parallel', 'rechtwinklig', 'gleich', 'tangential', 'konzentrisch', 'abstand', 'winkel', 'symmetrisch',
+    'deckungsgleich', 'auf_linie', 'auf_kreis', 'punkt_abstand'];
   if (zwei.includes(art) && bezug === null) throw new Error('Bezug angeben (Nr. oder Kontur.Element).');
   let j;
   if (art === 'ecke') j = await api('skizze/ecke', { ...skZiel(), kette, element, r: wert || 1 }, 'Runde Ecke…');
@@ -3695,8 +3728,8 @@ async function skeAusfuehren() {
   } else if (['laenge', 'winkel', 'abstand'].includes(art)) {
     j = await api('skizze/' + art, { ...skZiel(), kette, element, bezug, bezug_kette, wert }, 'Löse Bedingungen…');
   } else {
-    const d = { ...skZiel(), kette, element, art, bezug, bezug_kette };
-    if (art === 'radius') d.wert = wert;
+    const d = { ...skZiel(), kette, element, art, bezug, bezug_kette, ende: $('#skeEnde').value, ende2: $('#skeEnde2').value };
+    if (art === 'radius' || art === 'punkt_abstand') d.wert = wert;
     if (art === 'symmetrisch') {
       // Ende des gewählten Elements ↔ Anfang des Bezugs, gespiegelt an der Achse
       const ach = skNr($('#skeAchse').value, kette);

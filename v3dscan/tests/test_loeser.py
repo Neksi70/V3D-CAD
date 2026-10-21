@@ -134,8 +134,30 @@ def dienst():
         holen("/api/skizze/zeichnen", {"art": "linie", "punkte": [[60, 10], [70, 10]]})
         a = holen("/api/skizze/verlaengern", {"kette": 2, "element": 0})
         pruefe(a["skizze"]["ketten"][2]["elemente"][0]["b"] == [90, 10], "Linie bis zur Rechteckseite verlängert")
-        a = holen("/api/skizze/trennen", {"kette": 1, "element": 0, "t": 0.25})
-        pruefe(a["texte"][1][:2] == ["Linie 10.00 mm", "Linie 30.00 mm"], "Rechteckseite bei ¼ getrennt: %s" % a["texte"][1])
+        # v1.3: Punkt als Skizzenelement
+        holen("/api/skizze/neu", {"ebene": {"art": "welt", "name": "xy", "versatz": 0}})
+        holen("/api/skizze/zeichnen", {"art": "rechteck", "punkte": [[0, 0], [40, 30]]})
+        a = holen("/api/skizze/zeichnen", {"art": "punkt", "punkte": [[12, 8]]})
+        pruefe(a["skizze"]["ketten"][1].get("hilfe") and a["texte"][1] == ["Punkt (12.00; 8.00)"], "Punkt gezeichnet (Hilfs-Kontur)")
+        a = holen("/api/skizze/bedingung", {"kette": 1, "element": 0, "art": "auf_linie", "bezug": 2, "bezug_kette": 0})
+        pt = a["skizze"]["ketten"][1]["elemente"][0]["a"]
+        y_oben = a["skizze"]["ketten"][0]["elemente"][2]["a"][1]
+        pruefe(abs(pt[1] - y_oben) < 1e-6, "Punkt auf obere Linie gezogen: %s" % pt)
+        a = holen("/api/skizze/bedingung", {"kette": 1, "element": 0, "art": "punkt_abstand", "bezug": 0, "bezug_kette": 0,
+                                            "ende2": "a", "wert": 20})
+        pt = np.array(a["skizze"]["ketten"][1]["elemente"][0]["a"])
+        ecke = np.array(a["skizze"]["ketten"][0]["elemente"][0]["a"])
+        pruefe(abs(np.linalg.norm(pt - ecke) - 20) < 1e-6, "Punktabstand 20 mm zur Ecke, weiter auf der Linie")
+        sid = holen("/api/skizze/uebernehmen", {})["sid"]
+        a = holen("/api/feature/extrudieren", {"sid": sid, "modus": "laenge", "laenge": 5, "operation": "neu"})
+        pruefe("koerper" in a, "Skizze mit Punkt extrudierbar (Punkt zählt nicht zum Profil)")
+        pruefe("POINT" in holen("/api/skizze/dxf", {"sid": sid})["dxf"], "DXF enthält POINT")
+        holen("/api/skizze/neu", {"ebene": {"art": "welt", "name": "xy", "versatz": 0}})
+        holen("/api/skizze/zeichnen", {"art": "rechteck", "punkte": [[50, 0], [90, 30]]})
+        holen("/api/skizze/zeichnen", {"art": "linie", "punkte": [[60, 10], [70, 10]]})
+        a = holen("/api/skizze/verlaengern", {"kette": 1, "element": 0})
+        a = holen("/api/skizze/trennen", {"kette": 0, "element": 0, "t": 0.25})
+        pruefe(a["texte"][0][:2] == ["Linie 10.00 mm", "Linie 30.00 mm"], "Rechteckseite bei ¼ getrennt: %s" % a["texte"][0])
     finally:
         prozess.terminate()
         prozess.wait(10)

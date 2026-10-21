@@ -22,6 +22,8 @@ def _kante(el, E):
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
     from OCP.GC import GC_MakeArcOfCircle, GC_MakeSegment
     from OCP.gp import gp_Ax2, gp_Circ, gp_Dir
+    if el["typ"] == "punkt":
+        return None                                   # Konstruktionspunkt: keine Kante
     if el["typ"] == "linie":
         a, b = np.asarray(el["a"]), np.asarray(el["b"])
         if np.linalg.norm(b - a) < 1e-7:

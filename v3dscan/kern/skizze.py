@@ -754,6 +754,8 @@ def element_lesen(d):
 
 
 def kette_text(el):
+    if el["typ"] == "punkt":
+        return "Punkt (%.2f; %.2f)" % (float(el["a"][0]), float(el["a"][1]))
     if el["typ"] == "spline":
         return "Spline (%d Pole)" % len(el["pole"])
     if el["typ"] == "linie":
@@ -765,6 +767,8 @@ def kette_text(el):
 
 def diskret(el, schritt_grad=5.0):
     """Element -> 2D-Punktfolge (Anzeige, Flaeche, Innen-Test)."""
+    if el["typ"] == "punkt":
+        return np.array([el["a"]], float)
     if el["typ"] == "linie":
         return np.array([el["a"], el["b"]], float)
     if el["typ"] == "spline":
@@ -846,7 +850,7 @@ def element_entfernen(kette, i):
     -> neue Kette oder None (Kette leer)."""
     els = [dict(e) for e in kette["elemente"]]
     el = els[i]
-    if el["typ"] == "kreis":
+    if el["typ"] in ("kreis", "punkt"):
         return None
     vor, nach = _nachbarn(kette, i)
     if not kette["geschlossen"] and (vor is None or nach is None):
@@ -973,6 +977,9 @@ def zeichnen(art, punkte, wert=None):
         return {"geschlossen": False, "elemente": [_lin(P[0], P[1])]}
     if art == "spline":
         return spline_durch(P)
+    if art == "punkt":
+        # Konstruktionspunkt: eigene Hilfs-Kontur, zaehlt nie zum Profil, dient Bedingungen/Massen als Bezug
+        return {"geschlossen": False, "hilfe": True, "elemente": [{"typ": "punkt", "a": P[0], "b": P[0]}]}
     if art == "polylinie":
         zu = len(P) > 2 and np.linalg.norm(P[0] - P[-1]) < 1e-9
         if zu:
@@ -1012,7 +1019,10 @@ def zeichnen(art, punkte, wert=None):
 
 
 def kette_json(k):
-    return {"geschlossen": bool(k["geschlossen"]), "elemente": [element_json(e) for e in k["elemente"]]}
+    aus = {"geschlossen": bool(k["geschlossen"]), "elemente": [element_json(e) for e in k["elemente"]]}
+    if k.get("hilfe"):
+        aus["hilfe"] = True
+    return aus
 
 
 # --- Spline (Freiformkurve) ---------------------------------------------------------------------------
@@ -1396,7 +1406,10 @@ def dxf(skz):
         z.extend([str(code), ("%.6f" % wert) if isinstance(wert, float) else str(wert)])
     for k in skz["ketten"]:
         for e in (element_lesen(x) for x in k["elemente"]):
-            if e["typ"] == "linie":
+            if e["typ"] == "punkt":
+                z.extend(["0", "POINT", "8", "0"])
+                p(10, float(e["a"][0])); p(20, float(e["a"][1]))
+            elif e["typ"] == "linie":
                 z.extend(["0", "LINE", "8", "0"])
                 p(10, float(e["a"][0])); p(20, float(e["a"][1])); p(11, float(e["b"][0])); p(21, float(e["b"][1]))
             elif e["typ"] == "kreis":
