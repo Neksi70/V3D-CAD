@@ -14086,7 +14086,7 @@ function _featLabel(f, k) {
   if (f.typ === 'praegen') return `〰 Prägung ${k + 1} · ${f.p.mode === 'cut' ? 'vertieft' : 'erhaben'} ${({ v: 'V', r: 'rund', q: 'Rechteck' })[f.p.prof] || ''} ${mmS(f.p.w)}×${mmS(f.p.d)} mm`;
   if (f.typ === 'folgen') return `⤳ Folgen ${k + 1} · ${f.op === 'cut' ? 'Abziehen' : f.op === 'join' ? 'Anfügen' : f.op === 'isect' ? 'Schnittmenge' : 'Körper'}`;
   if (f.typ === 'loft') return `⤧ Loft · ${f.rings.length} Profile${f.path ? ' · entlang Pfad' : ''}${f.guides ? ' · ' + f.guides.length + ' Führung' + (f.guides.length > 1 ? 'en' : '') : ''}${f.smooth ? ' · glatt' : ''}`;
-  if (f.typ === 'sweep') return `↝ Pfad-Skizze ${k + 1} · ${f.op && f.op !== 'new' ? ({ join: 'Anfügen', cut: 'Abziehen', isect: 'Schnittmenge' })[f.op] + ' · ' : ''}${f.closed ? 'Ring' : 'offen'}${f.len ? ' ' + String(f.len).replace('.', ',') + ' mm' : ''}`;
+  if (f.typ === 'sweep') return `↝ Pfad-Skizze ${k + 1} · ${f.op && f.op !== 'new' ? ({ join: 'Anfügen', cut: 'Abziehen', isect: 'Schnittmenge' })[f.op] + ' · ' : ''}${f.closed ? (f.rise ? 'Wendel ' + (f.turns || 1) + ' Wdg.' : 'Ring') : 'offen'}${f.len ? ' ' + String(f.len).replace('.', ',') + ' mm' : ''}${f.rise ? ' · ↗ ' + String(f.rise).replace('.', ',') + ' mm' : ''}`;
   if (f.typ === 'gewinde') { const s = f.p.size === 'eigen' ? 'Ø' + String(f.p.d).replace('.', ',') : f.p.size; return `🔩 Gewinde ${s}×${String(f.p.pitch).replace('.', ',')}${f.cyl.inner ? ' innen' : ' außen'}`; }
   const mm = String(Math.round(Math.abs(f.ab[1] - f.ab[0]) * 100) / 10).replace('.', ',');
   return `✏ Skizze ${k + 1} · ${f.op === 'cut' ? 'Abziehen' : f.op === 'join' ? 'Anfügen' : f.op === 'isect' ? 'Schnittmenge' : 'Körper'} ${mm} mm`;
@@ -14908,34 +14908,124 @@ function _swpPlanFromEnts(lage){
   return { prof, path: pts, closed, legacy, lage: lage || 'auf', shift, info: { w: maxU - minU, h: maxV - minV, hohl: prof.some(r => r.holes.length), n: prof.length, len } };
 }
 
-// Körper bauen (lokale Skizzen-Koordinaten: x = u, y = Höhe, z = v)
-function _swpGeo(prof, path, closed){
-  const P = [];
+// Pfad mit Anstieg (1.18.226): rise = Höhe am Ende (Units), turns = Windungen bei
+// geschlossenem Pfad (→ Wendel, dann offen), ease = weich (flacher Anfang/Ende).
+// Liefert die 3D-Punkte {x, y, z} (x = u, z = v) und ob der Pfad geschlossen bleibt.
+function _swpPath3(path, closed, opt){
+  opt = opt || {};
+  const rise = +opt.rise || 0, turns = Math.max(1, Math.round(+opt.turns || 1)), ease = !!opt.ease;
+  let P = [];
   for (const q of path) if (!P.length || Math.hypot(q.u - P[P.length - 1].u, q.v - P[P.length - 1].v) > 1e-5) P.push({ u: q.u, v: q.v });
   if (closed && P.length > 2 && Math.hypot(P[0].u - P[P.length - 1].u, P[0].v - P[P.length - 1].v) < 1e-4) P.pop();
-  const M = P.length; if (M < 2 || (closed && M < 3)) throw new Error('Der Pfad ist zu kurz');
-  const nSeg = closed ? M : M - 1, T = [];
-  for (let i = 0; i < nSeg; i++){ const a = P[i], b = P[(i + 1) % M], L = Math.hypot(b.u - a.u, b.v - a.v); T.push({ u: (b.u - a.u) / L, v: (b.v - a.v) / L }); }
-  // je Pfadpunkt die Querrichtung (rechts in Laufrichtung), an Ecken um 1/cos(α/2) gestreckt
-  const R = [];
-  for (let j = 0; j < M; j++){
-    const ti = closed ? T[(j - 1 + M) % M] : (j > 0 ? T[j - 1] : null), to = closed ? T[j] : (j < M - 1 ? T[j] : null);
-    let b = ti && to ? { u: ti.u + to.u, v: ti.v + to.v } : (ti || to);
-    const bl = Math.hypot(b.u, b.v);
-    if (bl < 1e-6) throw new Error('Der Pfad kehrt an einer Stelle um');
-    b = { u: b.u / bl, v: b.v / bl };
-    const c = ti && to ? b.u * ti.u + b.v * ti.v : 1;
-    if (c < 0.2) throw new Error('Der Pfad knickt an einer Ecke zu scharf (mehr als 155°)');
-    R.push({ u: -b.v / c, v: b.u / c });
+  if (P.length < 2 || (closed && P.length < 3)) throw new Error('Der Pfad ist zu kurz');
+  let cl = closed;
+  if (Math.abs(rise) > 1e-6){
+    if (closed){ const one = P.slice(); P = []; for (let t = 0; t < turns; t++) P.push(...one); P.push({ ...one[0] }); cl = false; }
+    {   // lange Stücke unterteilen: für die weiche S-Kurve und damit die Eck-Verdrehung sich über das Stück verteilt
+      let L = 0; for (let i = 1; i < P.length; i++) L += Math.hypot(P[i].u - P[i - 1].u, P[i].v - P[i - 1].v);
+      // An Ecken Abstand halten (Gehrungsweite rmax·tan(θ/2)), sonst ragt die Gehrung über den nächsten Ring
+      const mx = L / 96, Q = [P[0]], rmax = +opt.rmax || 0, reach = P.map((q, i) => {
+        if (i === 0 || i === P.length - 1 || !rmax) return 0;
+        const a = P[i - 1], b = P[i + 1], l1 = Math.hypot(q.u - a.u, q.v - a.v), l2 = Math.hypot(b.u - q.u, b.v - q.v);
+        const c = ((q.u - a.u) * (b.u - q.u) + (q.v - a.v) * (b.v - q.v)) / (l1 * l2);
+        return c > 1 - 1e-9 ? 0 : rmax * Math.sqrt((1 - c) / (1 + c)) * 1.25 + 1e-4; });
+      for (let i = 1; i < P.length; i++){ const a = P[i - 1], b = P[i], l = Math.hypot(b.u - a.u, b.v - a.v), ra = reach[i - 1], rb = reach[i], w = l - ra - rb;
+        const ts = [];
+        if (w > 1e-6){ if (ra > 0) ts.push(ra); const m = Math.ceil(w / mx); for (let k = 1; k < m; k++) ts.push(ra + w * k / m); if (rb > 0) ts.push(l - rb); }
+        for (const t of ts) if (t > 1e-6 && t < l - 1e-6) Q.push({ u: a.u + (b.u - a.u) * t / l, v: a.v + (b.v - a.v) * t / l });
+        Q.push(b); }
+      P = Q;
+    }
   }
+  const acc = [0]; for (let i = 1; i < P.length; i++) acc.push(acc[i - 1] + Math.hypot(P[i].u - P[i - 1].u, P[i].v - P[i - 1].v));
+  const L = acc[acc.length - 1] || 1;
+  const f = x => ease ? x * x * (3 - 2 * x) : x;
+  return { X: P.map((q, i) => ({ x: q.u, y: cl ? 0 : rise * f(acc[i] / L), z: q.v })), closed: cl, turns: closed && Math.abs(rise) > 1e-6 ? turns : 0 };
+}
+// Körper bauen (lokale Skizzen-Koordinaten: x = u, y = Höhe, z = v). Der Querschnitt
+// steht senkrecht zum (ggf. ansteigenden) Pfad; quer bleibt waagerecht. An jeder Ecke
+// wird er exakt auf die Gehrungsebene (Normale = d_ein + d_aus) geschoben.
+function _swpGeo(prof, path, closed, opt){
+  let rmax = 0; for (const r of prof) for (const q of r.outer) rmax = Math.max(rmax, Math.hypot(q.s, q.h));
+  const pp = _swpPath3(path, closed, { ...(opt || {}), rmax }), X = pp.X, cl = pp.closed, M = X.length;
+  const nSeg = cl ? M : M - 1, D = [], R = [], U = [];
+  const V = (x, y, z) => new THREE.Vector3(x, y, z);
+  for (let i = 0; i < nSeg; i++){ const a = X[i], b = X[(i + 1) % M];
+    const d = V(b.x - a.x, b.y - a.y, b.z - a.z); if (d.length() < 1e-9) throw new Error('Der Pfad hat eine Stelle ohne Länge');
+    d.normalize(); const h = Math.hypot(d.x, d.z);
+    if (h < 0.05) throw new Error('Der Pfad steigt zu steil (fast senkrecht)');
+    const r = V(-d.z / h, 0, d.x / h);                  // quer, waagerecht (rechts in Laufrichtung)
+    D.push(d); R.push(r); U.push(new THREE.Vector3().crossVectors(r, d).normalize());   // „oben“ senkrecht zum Pfad
+  }
+  // Rahmen je Pfadpunkt: an Ecken liegt er IN der Gehrungsebene (Normale n = d_ein + d_aus).
+  // Beide Röhren-Rahmen werden mit der kleinsten Drehung (d → n) in die Ebene gebracht und
+  // gemittelt; der Querschnitt wird in Richtung e (Neigung der Röhre gegen die Ebene) um 1/cos
+  // gestreckt → die Gehrung ist für beide Röhren verzerrungsfrei. Flach ist das die bekannte
+  // 2D-Gehrung. Steigt der Pfad, verdreht sich ein aufrechter Querschnitt an jeder Ecke
+  // zwangsläufig ein wenig (bei 18° Steigung und 90°-Ecke ~18°) — die Verdrehung wird hälftig
+  // auf die beiden anschließenden Stücke verteilt (deren Wände sind dann leicht verwunden).
+  const Y = V(0, 1, 0), F = [], qa = new THREE.Quaternion(), qb = new THREE.Quaternion();
+  for (let j = 0; j < M; j++){
+    const ii = cl ? (j - 1 + M) % M : j - 1, io = cl ? j % M : (j < M - 1 ? j : -1);
+    if (ii < 0 || io < 0){ const i = io >= 0 ? io : ii; F.push({ r: R[i], u: U[i], e: null, k: 1, n: D[i] }); continue; }
+    const n = D[ii].clone().add(D[io]);
+    if (n.length() < 1e-6) throw new Error('Der Pfad kehrt an einer Stelle um');
+    n.normalize();
+    const c = n.dot(D[ii]); if (c < 0.2) throw new Error('Der Pfad knickt an einer Ecke zu scharf (mehr als 155°)');
+    qa.setFromUnitVectors(D[ii], n); qb.setFromUnitVectors(D[io], n);
+    const r = R[ii].clone().applyQuaternion(qa).add(R[io].clone().applyQuaternion(qb));
+    r.addScaledVector(n, -r.dot(n));
+    if (r.length() < 1e-6) throw new Error('Der Pfad verdreht sich an einer Ecke zu stark');
+    r.normalize(); const u = new THREE.Vector3().crossVectors(r, n).normalize();
+    const e = D[ii].clone().addScaledVector(n, -c);
+    F.push({ r, u, e: e.length() > 1e-9 ? e.normalize() : null, k: 1 / c, n });
+  }
+  // Verdrehung auf gerade Läufe verteilen: In einem Lauf (gleiche Richtung) zwischen zwei Ecken
+  // dreht der Querschnitt gleichmäßig von der Lage an der einen Ecke zu der an der anderen,
+  // statt die ganze Verdrehung in den Wänden direkt an der Ecke zu sammeln.
+  // Ecke = Knick in der Draufsicht (eine reine Steigungsänderung verdreht nichts)
+  const hz = d => { const l = Math.hypot(d.x, d.z); return { x: d.x / l, z: d.z / l }; };
+  const segIn = j => cl ? (j - 1 + M) % M : j - 1, segOut = j => cl ? j % M : (j < M - 1 ? j : -1);
+  const isC = []; for (let j = 0; j < M; j++){ const ii = segIn(j), io = segOut(j);
+    if (ii < 0 || io < 0){ isC.push(true); continue; } const a = hz(D[ii]), b = hz(D[io]); isC.push(a.x * b.x + a.z * b.z < 1 - 1e-9); }
+  const rollAt = (j, i) => {   // Verdrehwinkel des Rahmens an Pfadpunkt j, gesehen aus Stück i (um D[i] gegen R[i]/U[i])
+    const f = F[j], o = f.r.clone(); if (f.e) o.addScaledVector(f.e, (f.k - 1) * o.dot(f.e));
+    o.addScaledVector(D[i], -o.dot(D[i]));
+    return Math.atan2(o.dot(U[i]), o.dot(R[i]));
+  };
+  if (isC.some(x => !x) && isC.some(x => x)){
+    const starts = []; for (let j = 0; j < M; j++) if (isC[j] && (cl || j < M - 1)) starts.push(j);
+    for (const ja of starts){
+      let jb = ja, len = 0; const run = [];
+      do { const a = X[jb], b = X[(jb + 1) % M]; len += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z); jb = (jb + 1) % M; run.push([jb, len]); } while (!isC[jb] && jb !== ja);
+      const ra = rollAt(ja, segOut(ja)), rb = rollAt(jb, segIn(jb));
+      let dr = rb - ra; while (dr > Math.PI) dr -= 2 * Math.PI; while (dr < -Math.PI) dr += 2 * Math.PI;
+      // nur im fein unterteilten Mittelteil drehen; die Stücke direkt an den Ecken (Gehrungsweite,
+      // dort nicht unterteilbar) bleiben unverdreht → dort exakte Prismen
+      const inner = run.slice(0, -1), l0 = inner.length ? inner[0][1] : 0, l1 = inner.length ? inner[inner.length - 1][1] : 0;
+      for (const [j, l] of inner){
+        const t = l1 - l0 > 1e-9 ? (l - l0) / (l1 - l0) : 0.5;
+        const f = F[j], q = new THREE.Quaternion().setFromAxisAngle(f.n, -(ra + dr * t));   // n × r = −u → Winkel andersherum
+        F[j] = { ...f, r: f.r.clone().applyQuaternion(q), u: f.u.clone().applyQuaternion(q) };
+      }
+    }
+  }
+  const pt = (j, s, h) => {
+    const f = F[j], b = X[j], o = f.r.clone().multiplyScalar(s).addScaledVector(f.u, h);
+    if (f.e) o.addScaledVector(f.e, (f.k - 1) * o.dot(f.e));
+    return [b.x + o.x, b.y + o.y, b.z + o.z];
+  };
   // Querschnitt darf sich in Kurven/Ecken nicht überschlagen
-  let sMin = Infinity, sMax = -Infinity;
-  for (const r of prof) for (const q of r.outer){ sMin = Math.min(sMin, q.s); sMax = Math.max(sMax, q.s); }
+  let sMin = Infinity, sMax = -Infinity, hMin = Infinity, hMax = -Infinity;
+  for (const r of prof) for (const q of r.outer){ sMin = Math.min(sMin, q.s); sMax = Math.max(sMax, q.s); hMin = Math.min(hMin, q.h); hMax = Math.max(hMax, q.h); }
   for (let i = 0; i < nSeg; i++){ const j2 = (i + 1) % M;
-    for (const s of [sMin, sMax]){
-      const du = (P[j2].u + s * R[j2].u) - (P[i].u + s * R[i].u), dv = (P[j2].v + s * R[j2].v) - (P[i].v + s * R[i].v);
-      if (du * T[i].u + dv * T[i].v < 1e-5) throw new Error('Der Querschnitt ist für eine Kurve oder Ecke des Pfades zu breit — Pfad weicher (größerer Radius) oder Querschnitt schmaler zeichnen');
+    for (const s of [sMin, sMax]) for (const h of [hMin, hMax]){
+      const a = pt(i, s, h), b = pt(j2, s, h);
+      if ((b[0] - a[0]) * D[i].x + (b[1] - a[1]) * D[i].y + (b[2] - a[2]) * D[i].z < 1e-5) throw new Error('Der Querschnitt ist für eine Kurve oder Ecke des Pfades zu breit — Pfad weicher (größerer Radius) oder Querschnitt schmaler zeichnen');
     } }
+  // Wendel: Windungen dürfen sich nicht berühren
+  if (pp.turns > 1 && Math.abs(+opt.rise) / pp.turns <= (hMax - hMin) + 1e-4)
+    throw new Error('Die Windungen überlappen sich — Höhe gesamt muss größer sein als Windungen × Querschnittshöhe (' + String(Math.round(pp.turns * (hMax - hMin) * 100) / 10).replace('.', ',') + ' mm)');
   const ar = l => { let a = 0; for (let i = 0; i < l.length; i++){ const p = l[i], q = l[(i + 1) % l.length]; a += p.s * q.h - q.s * p.h; } return a / 2; };
   const clean = l => { const o = []; for (const q of l) if (!o.length || Math.hypot(q.s - o[o.length - 1].s, q.h - o[o.length - 1].h) > 1e-6) o.push(q);
     if (o.length > 2 && Math.hypot(o[0].s - o[o.length - 1].s, o[0].h - o[o.length - 1].h) < 1e-6) o.pop(); return o; };
@@ -14945,14 +15035,14 @@ function _swpGeo(prof, path, closed){
     const hs = (r.holes || []).map(clean).filter(h => h.length >= 3).map(h => (ar(h) > 0 ? h.reverse() : h));
     const ring = [o, ...hs], offs = []; let nP = 0; for (const l of ring){ offs.push(nP); nP += l.length; }
     const base = pos.length / 3;
-    for (let j = 0; j < M; j++) for (const l of ring) for (const q of l) pos.push(P[j].u + q.s * R[j].u, q.h, P[j].v + q.s * R[j].v);
+    for (let j = 0; j < M; j++) for (const l of ring) for (const q of l) pos.push(...pt(j, q.s, q.h));
     // Wände: Umriss gegen den Uhrzeigersinn (Normale der Querschnittsebene = −Laufrichtung) → (a,d,b) zeigt nach außen
     for (let j = 0; j < nSeg; j++){ const j2 = (j + 1) % M;
       ring.forEach((l, li) => { const n = l.length;
         for (let i = 0; i < n; i++){ const i2 = (i + 1) % n;
           const a = base + j * nP + offs[li] + i, b = base + j * nP + offs[li] + i2, c = base + j2 * nP + offs[li] + i2, d = base + j2 * nP + offs[li] + i;
           idx.push(a, d, b, b, d, c); } }); }
-    if (!closed){   // Deckel: Anfang zeigt gegen, Ende in Laufrichtung
+    if (!cl){   // Deckel: Anfang zeigt gegen, Ende in Laufrichtung
       const flat = ring.flat(), tri = THREE.ShapeUtils.triangulateShape(o.map(q => new THREE.Vector2(q.s, q.h)), hs.map(h => h.map(q => new THREE.Vector2(q.s, q.h))));
       for (const t of tri){
         const [p0, p1, p2] = t.map(k => flat[k]);
@@ -14971,6 +15061,8 @@ function _swpGeo(prof, path, closed){
   g.computeBoundingBox(); g.computeBoundingSphere();
   return g;
 }
+// Anstiegs-Optionen aus den Fenster-/Verlaufswerten (mm → Units)
+function _swpOpt(p){ return { rise: (parseFloat(String(p.rise || 0).replace(',', '.')) || 0) / 10, turns: parseInt(p.turns) || 1, ease: !!p.ease }; }
 
 // Panel: Vorschau + Operation
 function _skSweep(){
@@ -14998,14 +15090,16 @@ function _swpResolve(pl){
   }
   if (p.op === 'hole' || p.op === 'new') return { op: p.op, target: null };
   // Proben entlang der Pfadmitte: im Querschnitt (halbe Höhe) und knapp unter seiner Unterkante
-  const P = pl.path, step = Math.max(1, Math.floor(P.length / 24)), sh = pl.shift || 0, H = pl.info.h;
-  const probe = y => { for (let i = 0; i < P.length; i += step){ const o = _skxBodyAt(new THREE.Vector3(P[i].u, y, P[i].v)); if (o) return o; } return null; };
+  const sh = pl.shift || 0, H = pl.info.h;
+  let P; try { P = _swpPath3(pl.path, pl.closed, _swpOpt(p)).X.map(q => ({ u: q.x, v: q.z, y: q.y })); } catch (e){ P = pl.path.map(q => ({ ...q, y: 0 })); }
+  const step = Math.max(1, Math.floor(P.length / 24));
+  const probe = y => { for (let i = 0; i < P.length; i += step){ const o = _skxBodyAt(new THREE.Vector3(P[i].u, y + P[i].y, P[i].v)); if (o) return o; } return null; };
   const mid = probe(sh + H / 2), below = (pl.lage || 'auf') === 'auf' ? probe(sh - 0.02) : null;
   const auto = mid ? { op: 'cut', target: mid } : below ? { op: 'join', target: below } : { op: 'new', target: null };
   if (p.op === 'auto' || !p.op) return { ...auto, auto: true };
   // sonst ein gewählter Körper — aber nur, wenn er den Weg überhaupt berührt (Hüllquader)
   const box = new THREE.Box3(), half = pl.info.w / 2 + 0.01;
-  for (const q of P) for (const y of [sh - 0.01, sh + H + 0.01]) box.expandByPoint(_skToWorld(new THREE.Vector3(q.u, y, q.v)));
+  for (const q of P) for (const y of [sh - 0.01, sh + H + 0.01]) box.expandByPoint(_skToWorld(new THREE.Vector3(q.u, y + q.y, q.v)));
   box.expandByScalar(half);
   const near = o => { try { return new THREE.Box3().setFromObject(o).intersectsBox(box); } catch (e){ return false; } };
   const tgt = mid || below || probe(sh + H + 0.02) || selectedObjs.find(o => _skxBodies().includes(o) && near(o)) || null;
@@ -15016,7 +15110,7 @@ function _swpUpdate(){
   const el = _swp.panel, pl = _swp.plan = _swpPlanFromEnts(_swp.p.lage), mm = x => String(Math.round(x * 100) / 10).replace('.', ',');
   if (_swp.prev){ _sk.group.remove(_swp.prev); _swp.prev.geometry.dispose(); _swp.prev = null; }
   let err = pl.err || null, geo = null, r = null;
-  if (!err){ try { geo = _swpGeo(pl.prof, pl.path, pl.closed); } catch (e){ err = e.message || String(e); } }
+  if (!err){ try { geo = _swpGeo(pl.prof, pl.path, pl.closed, _swpOpt(_swp.p)); } catch (e){ err = e.message || String(e); } }
   if (geo){
     r = _swp.res = _swpResolve(pl);
     const col = r.op === 'cut' || r.op === 'hole' ? 0xef4444 : r.op === 'join' ? 0x22c55e : r.op === 'isect' ? 0xa855f7 : 0x3b82f6;
@@ -15042,7 +15136,10 @@ function _swpUpdate(){
       <span onclick="_swpClose()" style="cursor:pointer;color:var(--dim);font-size:15px" title="Zurück zur Skizze (Esc)">✕</span></div>
     ${pl.err ? '' : `<div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:5px 8px;margin-bottom:8px;line-height:1.45">
       Querschnitt ${mm(pl.info.w)} × ${mm(pl.info.h)} mm${pl.info.hohl ? ' · <b>hohl</b>' : ''}${pl.info.n > 1 ? ' · ' + pl.info.n + ' Umrisse' : ''}<br>
-      Pfad ${pl.closed ? '<b>geschlossen</b> (Ring)' : 'offen'} · ${mm(pl.info.len)} mm lang${pl.legacy ? '<br><span style="color:var(--dim)">ohne Hilfslinie: offene Linienkette als Pfad</span>' : ''}</div>`}
+      Pfad ${pl.closed ? ((+_swp.p.rise || 0) ? '<b>Wendel</b> (' + (parseInt(_swp.p.turns) || 1) + ' Wdg.)' : '<b>geschlossen</b> (Ring)') : 'offen'} · ${mm(pl.info.len)} mm${pl.closed && (+_swp.p.rise || 0) ? ' je Windung' : ' lang'}${(+_swp.p.rise || 0) ? ' · ↗ ' + String(_swp.p.rise).replace('.', ',') + ' mm' : ''}${pl.legacy ? '<br><span style="color:var(--dim)">ohne Hilfslinie: offene Linienkette als Pfad</span>' : ''}</div>`}
+    ${pl.err ? '' : `<div class="vrow"><label title="${pl.closed ? 'Geschlossener Pfad mit Höhe wird eine Wendel (Spirale): so viele Windungen, bis die Höhe erreicht ist' : 'Der Pfad steigt bis zum Ende um diese Höhe an (negativ = fällt) — Rampe, Kabelkanal über eine Stufe'}">${pl.closed ? 'Höhe gesamt' : 'Anstieg'}</label><input type="number" step="1" value="${_swp.p.rise || 0}" oninput="_swp.p.rise=this.value" onchange="_swpUpdate()" style="width:62px"><span class="vu">mm</span>
+      ${pl.closed ? `<span class="vu" style="margin-left:8px">×</span><input type="number" min="1" max="50" step="1" value="${_swp.p.turns || 1}" oninput="_swp.p.turns=this.value" onchange="_swpUpdate()" title="Windungen" style="width:44px"><span class="vu">Wdg.</span>`
+        : `<label style="display:flex;gap:4px;align-items:center;margin-left:8px;cursor:pointer" title="Weich: Anfang und Ende laufen flach aus (S-Kurve) statt mit einem Knick"><input type="checkbox" ${_swp.p.ease ? 'checked' : ''} onchange="_swpSet('ease',this.checked)">weich</label>`}</div>`}
     <div class="vrow"><label title="Wo der Querschnitt zur Skizzenebene liegt">Lage</label><div class="vbg" style="flex:1">${lb('auf', 'Auf', 'Steht mit der Unterkante auf der Ebene — Leiste, Steg, Rand auf einer Fläche')}${lb('ein', 'Eingesenkt', 'Hängt mit der Oberkante an der Ebene, ragt in die Fläche hinein — Nut, Kabelkanal, Rinne (mit Abziehen)')}${lb('mitte', 'Mittig', 'Halb über, halb unter der Ebene')}</div></div>
     ${ops.length ? `<div class="vrow"><label>Operation</label><select onchange="_swpSet('op',this.value)" style="flex:1">
       ${ops.map(v => `<option value="${v}"${(ed ? r.op : op) === v ? ' selected' : ''}>${v === 'auto' ? 'Automatisch' : _SWP_OPN[v]}</option>`).join('')}</select></div>` : ''}
@@ -15063,7 +15160,7 @@ function _swpFeatMesh(f){
   const keep = _sk.ents; _sk.ents = _featClone(f.ents);
   let pl; try { pl = _swpPlanFromEnts(f.lage); } finally { _sk.ents = keep; }
   if (pl.err) throw new Error(pl.err);
-  const m = new THREE.Mesh(_swpGeo(pl.prof, pl.path, pl.closed));
+  const m = new THREE.Mesh(_swpGeo(pl.prof, pl.path, pl.closed, _swpOpt(f)));
   m.applyMatrix4(new THREE.Matrix4().fromArray(f.frame)); m.updateMatrixWorld(true);
   return m;
 }
@@ -15080,7 +15177,8 @@ async function _swpApply(){
   if (_swp.busy || !_swp.open) return;
   const lage = _swp.p.lage || 'auf';
   const pl = _swp.plan || _swpPlanFromEnts(lage); if (pl.err){ notify(pl.err, 'w'); return; }
-  let geo; try { geo = _swpGeo(pl.prof, pl.path, pl.closed); } catch (e){ notify(e.message || String(e), 'w'); return; }
+  const ro = _swpOpt(_swp.p), rise = { rise: Math.round(ro.rise * 1000) / 100, turns: ro.turns, ease: ro.ease };
+  let geo; try { geo = _swpGeo(pl.prof, pl.path, pl.closed, ro); } catch (e){ notify(e.message || String(e), 'w'); return; }
   const r = _swpResolve(pl);
   if (['cut', 'join', 'isect'].includes(r.op) && !r.target){ geo.dispose(); notify(r.op === 'cut' ? 'Kein Körper zum Abziehen getroffen — „Eingesenkt“ wählen oder die Skizze auf die Fläche legen (▱ Auf Fläche)' : r.op === 'isect' ? 'Kein Körper für die Schnittmenge berührt' : 'Kein Körper zum Anfügen berührt', 'w'); return; }
   _skcIds();
@@ -15091,7 +15189,7 @@ async function _swpApply(){
     const o = r.target, k = _sk.editSwp.k;
     if (!o){ notify('Teil nicht mehr da', 'e'); return; }
     const H = _featClone(o.userData.feat), f = H.list[k];
-    f.ents = ents; f.cons = cons; f.frame = _featChain(o, k).invert().multiply(frameW).elements.slice(); f.closed = pl.closed; f.len = lenMM; f.lage = lage; f.op = r.op;
+    f.ents = ents; f.cons = cons; f.frame = _featChain(o, k).invert().multiply(frameW).elements.slice(); f.closed = pl.closed; f.len = lenMM; f.lage = lage; f.op = r.op; Object.assign(f, rise);
     geo.dispose(); _swp.busy = true;
     try {
       _swpClose(true); saveUndo(); exitSketchMode();
@@ -15103,7 +15201,7 @@ async function _swpApply(){
     return;
   }
   const hole = r.op === 'hole';
-  const fNeu = { typ: 'sweep', ents, cons, frame: frameW.elements.slice(), op: hole ? 'new' : r.op, lage, closed: pl.closed, len: lenMM };
+  const fNeu = { typ: 'sweep', ents, cons, frame: frameW.elements.slice(), op: hole ? 'new' : r.op, lage, closed: pl.closed, len: lenMM, ...rise };
   const start = r.target ? _featStart(r.target) : null;
   _swp.busy = true;
   try {
@@ -15158,7 +15256,7 @@ function _featEditSweep(id, k){
   _skSetFrameM(_featChain(o, k).multiply(new THREE.Matrix4().fromArray(f.frame)));
   _sk.ents = _featClone(f.ents); _sk.cons = _featClone(f.cons || []); _sk.pending = []; _skcIds(); _skRender(); _skcPanel();
   _sk.editSwp = { id, k };
-  _swp.p = { op: f.op || 'new', lage: f.lage || 'auf' }; _swp.fromEdit = true;
+  _swp.p = { op: f.op || 'new', lage: f.lage || 'auf', rise: f.rise || 0, turns: f.turns || 1, ease: !!f.ease }; _swp.fromEdit = true;
   notify(`Pfad-Skizze von „${o.userData.name}“: Querschnitt oder Pfad (┄ Hilfslinie) ändern, dann „↝ Entlang Pfad…“ — das Teil rechnet sich neu`, 'ok');
 }
 // Hilfslinie: neue Elemente als Pfad zeichnen — oder gewählte Elemente umschalten
@@ -69326,8 +69424,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.226';
+const VOLME3D_VERSION = '1.18.227';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.227', date:'2026-10-21', changes:[
+    ['↗','<b>Entlang Pfad: der Pfad kann ansteigen.</b> Im Fenster „↝ Entlang Pfad…“ gibst du einen <b>Anstieg</b> in mm ein – der Pfad steigt bis zum Ende so weit an (Rampe, Kabelkanal über eine Stufe, Handlauf). Mit <b>weich</b> laufen Anfang und Ende flach aus. Ein <b>geschlossener</b> Pfad mit Höhe wird eine <b>Wendel</b>: Höhe gesamt × Windungen, z. B. ein Spiralgang um ein Sechseck. Der Querschnitt steht senkrecht zum ansteigenden Pfad und bleibt aufrecht; Ecken sind weiter Gehrungen. Überlappende Windungen und zu steile Pfade meldet das Fenster.'],
+  ]},
   { version:'1.18.226', date:'2026-10-21', changes:[
     ['🦴','<b>Stützfinnen: Stabilisierungsrippen von Hand.</b> <b>🦴 Rippe anklicken</b> stellt eine Rippe genau an die senkrechte Seite, die du anklickst. Schon beim Überfahren zeigt eine blaue Vorschau, wie hoch sie wird. Weit oben geklickt läuft sie über die ganze Höhe, weiter unten endet sie auf Klickhöhe. Sie hält ein schlankes, hohes Teil mit Zinken seitlich fest, damit es beim Drucken nicht wackelt. Geht es an der Stelle nicht, steht dabei, warum.'],
     ['💪','<b>Stützfinnen: Festigkeit nach Zug oder Hebel.</b> Ein Druckteil ist quer zu den Schichten am schwächsten. Unter <b>💪 Festigkeit</b> sagst du, wie das Teil belastet wird: <b>Zug</b> (es wird auseinandergezogen, z. B. Öse oder Lasche) oder <b>Hebel</b> (es wird gebogen, z. B. Haken oder Halter), dazu die Kraftrichtung und beim Hebel den Hebelarm. Pfeile zeigen beides am Teil, die Bewertung sagt Gut, Teils oder Schwach. <b>💪 Stärkste druckbare Lage</b> dreht das Teil so, dass die Last entlang der Schichten läuft, aber nur in Lagen, die gut druckbar bleiben.'],
@@ -71326,6 +71427,12 @@ function _svgSnapDetect(svgMesh, mouseEvent) {
     // flach heften — ein flaches Motiv liegt auf einer Wölbung nur in der Mitte auf.
     // Nur auf wirklich GEWÖLBTEN Flächen: Der Deckel eines Rohrs oder die Wand eines
     // ungleich skalierten Quaders lösen „Kuppel"/„oval" aus, sind aber eben.
+    // Für rund gehalten, aber nur rundlich (Vierkant mit dicken Rundungen, ovale Dose)?
+    // Dann über die Motivbreite den Radius nachmessen — schwankt er, lieber um die
+    // Kanten legen: um einen Zylinder gewickelt schwebte das Motiv auf der einen
+    // Seite vor der Wand und steckte auf der anderen zu tief (Josys „Vase“ 20.10.:
+    // Radius 61,6 an den Flächen, 82,4 an den Ecken — „dann sind Strahlen weg“).
+    if (wrap && Math.abs(nW.y) < 0.3 && _svgWickelUnrund(hit, svgMesh, wrap)) wrap = null;
     const umlaufWand = !wrap && Math.abs(nW.y) < 0.3 && _svgUmlaufNoetig(hit, svgMesh, nW);
     const schmieg = !wrap && !umlaufWand && (kuppel || (!probe && _svgWrapReason === 'oval')) && !_svgSnapIstEben(hit, svgMesh);
     // Eckig mit runden Kanten (Dose, Vierkant-Gefäß): Die Wand steht senkrecht, ist
@@ -73947,6 +74054,39 @@ function _svgUmlaufAbbilden(src, U) {
     out[i * 3 + 2] = p0[1] + (p1[1] - p0[1]) * tz;
   }
   return out;
+}
+
+// Ist der Querschnitt über die Motivbreite wirklich rund? Strahlen von außen auf
+// die Wickelachse in Winkelschritten über die halbe Motivbreite (+10 %); weicht der
+// Wandradius um mehr als 3 % vom Radius am Treffer ab, taugt kein Zylinder.
+// Facetten eines grob vernetzten Zylinders (36 Segmente: 0,4 %) bleiben darunter.
+function _svgWickelUnrund(hit, svgMesh, probe) {
+  const g = svgMesh.geometry;
+  if (!g || !probe || !(probe.R > 1e-4)) return false;
+  if (!g.boundingBox) g.computeBoundingBox();
+  const sz = g.boundingBox.getSize(new THREE.Vector3());
+  const ud = svgMesh.userData, w0 = ud._svgWrap || ud._svgSchmieg;
+  const halbW = w0 && w0.s ? _svgWrapHalfWidth(ud, w0.s, 0)
+              : Math.max(sz.x * Math.abs(svgMesh.scale.x), sz.z * Math.abs(svgMesh.scale.z)) / 2;
+  const a = probe.axisDir.clone().normalize();
+  const c0 = probe.axisPt.clone().addScaledVector(a, hit.point.clone().sub(probe.axisPt).dot(a));
+  const e1 = hit.point.clone().sub(c0); if (e1.lengthSq() < 1e-10) return false;
+  const R = e1.length(); e1.normalize();
+  const e3 = new THREE.Vector3().crossVectors(a, e1).normalize();
+  const phiMax = Math.min(Math.PI * 0.9, halbW * 1.1 / R);
+  const rc = new THREE.Raycaster();
+  let abw = 0, n = 0;
+  for (let k = -6; k <= 6; k++) {
+    if (!k) continue;
+    const phi = phiMax * k / 6;
+    const d = e1.clone().multiplyScalar(Math.cos(phi)).addScaledVector(e3, Math.sin(phi));
+    rc.set(c0.clone().addScaledVector(d, R * 3 + 1), d.clone().negate());
+    const h = rc.intersectObject(hit.object, true).find(x => x.face && !x.object.userData.isEdgeLines);
+    if (!h) continue;
+    const r = h.point.clone().sub(c0); r.addScaledVector(a, -r.dot(a));
+    abw = Math.max(abw, Math.abs(r.length() - R) / R); n++;
+  }
+  return n >= 4 && abw > 0.03;
 }
 
 // Läuft die senkrechte Wand innerhalb der Motivbreite seitlich in eine Rundung
@@ -81852,7 +81992,7 @@ function _fillHoles(mesh) {
     const h0 = p.lage === 'ein' ? -U(h) : p.lage === 'mitte' ? -U(h) / 2 : 0;
     const outer = kind === 'rect' ? rect(U(w), U(h), h0) : circ(U(w), h0 + U(w) / 2);
     const holes = wall > 0 ? [kind === 'rect' ? rect(U(w - 2 * wall), U(h - 2 * wall), h0 + U(wall)) : circ(U(w - 2 * wall), h0 + U(w) / 2)] : [];
-    let geo; try { geo = _swpGeo([{ outer, holes }], pa.map(q => ({ u: q[0] / S, v: -q[1] / S })), !!p.closed); } catch (e) { fail(e.message || String(e)); }
+    let geo; try { geo = _swpGeo([{ outer, holes }], pa.map(q => ({ u: q[0] / S, v: -q[1] / S })), !!p.closed, { rise: (+p.rise || 0) / S, turns: +p.turns || 1, ease: !!p.ease }); } catch (e) { fail(e.message || String(e)); }
     const mesh = _swpMakeMesh(geo, !!p.hole, p.name ? String(p.name) : null);
     if (p.color && !p.hole) { mesh.userData.color = p.color; mesh.material.color.set(p.color); }
     mesh.position.y = (+p.z || 0) / S;
@@ -82661,7 +82801,7 @@ function _fillHoles(mesh) {
     'revolve': { doc: '{profile: [[r, z], …] mm (r = Abstand zur Achse ≥ 0, z = Höhe), center?: [x,y] mm, wall?: mm (aushöhlen), hole?, name?, color?} — Rotationskörper um die senkrechte Achse (Vase, Knauf, Becher). Profil auf der Achse beginnen und enden lassen (erster und letzter Punkt r = 0); wall macht daraus einen Becher (Boden zu, oben offen)', fn(p) {
       return revolve(p);
     } },
-    'sketch.sweep': { doc: '{path: [[x,y], …] mm (Pfad auf der Bauplatte; Ecken aus geraden Stücken werden Gehrungen), closed?: bool (geschlossener Pfad = Ring), section: {kind: rect|circle, width: mm (quer zum Pfad; Kreis = Ø), height?: mm (rect, Standard = width), wall?: mm (hohl: Rohr/Kanal mit dieser Wandstärke)}, z?: mm (Bezugshöhe, Standard 0), lage?: auf|ein|mitte (Querschnitt steht auf z / hängt unter z = Nut / mittig; Standard auf), hole?: bool, name?, color?} — Nut in ein Teil: lage ein, z = Oberseite, hole true, dann bool.subtract. Querschnitt entlang eines Pfades ziehen: Kabelkanal mit Ecke, Leitung, Ring um ein Sechseck. Der Querschnitt sitzt quer mittig auf dem Pfad und steht mit der Unterkante auf z. Zu enge Kurven für die Breite werden abgelehnt', fn(p) {
+    'sketch.sweep': { doc: '{path: [[x,y], …] mm (Pfad auf der Bauplatte; Ecken aus geraden Stücken werden Gehrungen), closed?: bool (geschlossener Pfad = Ring), section: {kind: rect|circle, width: mm (quer zum Pfad; Kreis = Ø), height?: mm (rect, Standard = width), wall?: mm (hohl: Rohr/Kanal mit dieser Wandstärke)}, z?: mm (Bezugshöhe, Standard 0), lage?: auf|ein|mitte (Querschnitt steht auf z / hängt unter z = Nut / mittig; Standard auf), rise?: mm (Pfad steigt bis zum Ende um so viel; bei closed = Gesamthöhe einer Wendel), turns?: Windungen (nur closed + rise), ease?: bool (weicher Anstieg, flacher Anfang/Ende), hole?: bool, name?, color?} — Nut in ein Teil: lage ein, z = Oberseite, hole true, dann bool.subtract. Querschnitt entlang eines Pfades ziehen: Kabelkanal mit Ecke, Leitung, Ring um ein Sechseck. Der Querschnitt sitzt quer mittig auf dem Pfad und steht mit der Unterkante auf z. Zu enge Kurven für die Breite werden abgelehnt', fn(p) {
       return sweep(p);
     } },
     'body.shell': { doc: '{id, thickness: mm, open?: top|bottom|+x|-x|+y|-y oder Liste (Standard top)} — aushöhlen: Wand nach innen, die genannten Seiten bleiben offen (OCCT). Grenzen wie body.fillet: Grundkörper, ungedreht, vor Bool. Runden geht davor oder danach', async fn(p) {
