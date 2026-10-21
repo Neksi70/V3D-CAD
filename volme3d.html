@@ -39355,11 +39355,12 @@ async function _bigMeshGate(geos, filename) {
 // stl/obj liefern EINE Geometrie, 3MF evtl. mehrere Teile.
 async function _importMeshFile(buf, filename, showDialog) {
   const ext = (filename.split('.').pop() || '').toLowerCase();
-  if (ext === '3mf') return _importThreeMF(buf, filename, { ask: true });
+  const schon = _libIsSimplified(buf, ext);   // schon vereinfacht → nicht noch einmal fragen/vereinfachen
+  if (ext === '3mf') return _importThreeMF(buf, filename, { ask: !schon });
   let geo;
   try { geo = ext === 'obj' ? _parseOBJ(new TextDecoder().decode(buf)) : parseSTL(buf); }
   catch (err) { notify('Import Fehler: ' + err.message, 'e'); return false; }
-  const r = await _bigMeshGate([geo], filename);
+  const r = schon ? { geos: [geo], simplified: false } : await _bigMeshGate([geo], filename);
   if (!r) return false;
   // vereinfachte Geometrie passt nicht mehr zu den rohen STL-Bytes → nicht mitgeben
   _addImportedGeo(r.geos[0], filename, ext !== 'obj', (ext === 'stl' && !r.simplified) ? buf : null, showDialog);
@@ -69279,7 +69280,9 @@ async function _stlThumbPump(){
   // zwischen zwei Vorschauen dem Browser Luft lassen (Klicks/Scrollen bleiben flüssig)
   // Zeitlimit je Bild: hängt eins (Helfer antwortet nicht, Worker weg), läuft die
   // Schlange trotzdem weiter — sonst bleiben alle folgenden Karten Eieruhren.
-  while(_stlThumbPending.length){ const f=_stlThumbPending.shift();
+  while(_stlThumbPending.length){
+    while(_stlOpening) await new Promise(r=>setTimeout(r,300));   // Öffnen hat Vorrang
+    const f=_stlThumbPending.shift(); if(!f) break;
     if(!_stlFiles.includes(f)) continue;   // Liste inzwischen neu geladen → veralteter Eintrag
     let to; const guard=new Promise(r=>{ to=setTimeout(()=>{ console.warn('[thumb] Zeitlimit:',f.path); f._thumbTimedOut=true; r(); }, 120000); });
     try{ await Promise.race([_stlThumbOne(f), guard]); }catch(e){}
@@ -69418,8 +69421,22 @@ async function _stlMakeThumb(f){
   }
   return null;
 }
+// Solange eine Datei geöffnet wird: weitere Klicks ignorieren (ein zweiter Klick startete
+// denselben Riesen-Import doppelt → doppelter Speicher → Absturz) und Vorschaubilder/
+// Groß-Prüfung pausieren (die liefen sonst im selben Moment und ließen die Seite sekundenlang
+// stehen; Volker 21.10. „hängt sich auf, wenn ich eine große Datei anklicke").
+let _stlOpening=false;
 async function _stlOpenInScene(idx){
   const f=_stlFiles[idx]; if(!f) return;
+  if(_stlOpening){ notify('Moment – „'+_stlOpening+'“ wird noch geöffnet …','i'); return; }
+  _stlOpening=f.name;
+  const btns=[...document.querySelectorAll('[onclick="_stlOpenInScene('+idx+')"]')], alt=btns.map(b=>b.innerHTML);
+  btns.forEach(b=>{ b.innerHTML='⏳ Wird geöffnet …'; b.disabled=true; });
+  if(f.size>8e6) notify('„'+f.name+'“ wird geöffnet ('+(f.size/1048576).toFixed(0)+' MB) …','i');
+  try{ await _stlOpenInScene2(f); }
+  finally{ _stlOpening=false; btns.forEach((b,i)=>{ b.innerHTML=alt[i]; b.disabled=false; }); }
+}
+async function _stlOpenInScene2(f){
   const ext=(f.name.split('.').pop()||'').toLowerCase();
   try{
     const buf=await _stlReadBytes(f);
@@ -69598,7 +69615,7 @@ async function _stlAutoCheck() {
       if (!_stlChkCandidate(f)) continue;
       // erst die Vorschaubilder fertig werden lassen: beide lesen über den Helfer, der
       // nur eine Anfrage nach der anderen bedient — sonst warten die Bilder minutenlang
-      while (_stlThumbBusy || _stlThumbPending.length) await new Promise(r => setTimeout(r, 1000));
+      while (_stlThumbBusy || _stlThumbPending.length || _stlOpening) await new Promise(r => setTimeout(r, 1000));
       if (!_stlFiles.includes(f)) continue;
       const key = 'chk|' + f.path + '|' + f.size;
       let done = null; try { done = await _stlIdbGet('kv', key); } catch (e) {}
@@ -69616,6 +69633,7 @@ async function _stlChkOne(f, key) {
   const ext = _stlExt(f.name), fmt = n => Math.round(n).toLocaleString('de');
   _stlChkStatus('🔍 Prüfe „' + f.name + '“ …');
   const buf = await _stlReadBytes(f);
+  if (_libIsSimplified(buf, ext)) { await _stlIdbSet('kv', key, 'vereinfacht'); return; }   // schon von V3D CAD vereinfacht
   // Teile als Dreieckslisten (mm) — Lesen im Worker, wo es geht
   let parts;
   if (ext === 'stl') {
@@ -69646,11 +69664,28 @@ async function _stlChkOne(f, key) {
   if (document.getElementById('stllib-modal').classList.contains('show')) _stlRenderGrid();
   notify('🔻 „' + f.name + '“ vereinfacht: ' + fmt(before) + ' → ' + fmt(after) + ' Dreiecke (≤ ' + String(BIGMESH_TOL_MM).replace('.', ',') + ' mm). Original liegt im Ordner „Original“.', 'ok');
 }
+// Hat V3D CAD diese Datei schon vereinfacht? Steht IN der Datei (STL-Kopf, OBJ-Kopfzeile,
+// 3MF-Eintrag Metadata/V3D-vereinfacht.txt) — gilt also in jedem Browser. Ohne den Vermerk
+// wurde eine schon vereinfachte Datei in einem frischen Browser ein zweites Mal vereinfacht
+// (Kopf-Scan 858k → 378k Dreiecke) und würde mit jeder Runde gröber.
+const LIB_SIMPLIFIED_MARK = 'V3D CAD vereinfacht';
+function _libIsSimplified(buf, ext) {
+  try {
+    const u8 = new Uint8Array(buf);
+    if (ext === 'stl') return String.fromCharCode.apply(null, u8.subarray(0, LIB_SIMPLIFIED_MARK.length)) === LIB_SIMPLIFIED_MARK;
+    if (ext === 'obj') return String.fromCharCode.apply(null, u8.subarray(0, LIB_SIMPLIFIED_MARK.length + 2)) === '# ' + LIB_SIMPLIFIED_MARK;
+    if (ext === '3mf' && typeof fflate !== 'undefined') {   // nur Verzeichnis lesen, nichts entpacken
+      let found = false; fflate.unzipSync(u8, { filter: fl => { if (fl.name === 'Metadata/V3D-vereinfacht.txt') found = true; return false; } });
+      return found;
+    }
+  } catch (e) {}
+  return false;
+}
 // Schreiber für die Bibliothek: parts = [{name, r:{vpos, idx}}] in mm
 function _libWriteSTL(parts) {
   const n = parts.reduce((s, p) => s + p.r.idx.length / 3, 0);
   const buf = new ArrayBuffer(84 + n * 50), dv = new DataView(buf);
-  const head = 'V3D CAD vereinfacht'; for (let i = 0; i < head.length; i++) dv.setUint8(i, head.charCodeAt(i));
+  const head = LIB_SIMPLIFIED_MARK; for (let i = 0; i < head.length; i++) dv.setUint8(i, head.charCodeAt(i));
   dv.setUint32(80, n, true); let o = 84;
   for (const { r } of parts) {
     const v = r.vpos, ix = r.idx;
@@ -69680,10 +69715,11 @@ function _libWrite3MF(parts) {
   o.push('</resources>\n<build>' + parts.map((p, i) => '<item objectid="' + (i + 1) + '"/>').join('') + '</build>\n</model>\n');
   const ct = '<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>';
   const rels = '<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>';
-  return fflate.zipSync({ '[Content_Types].xml': fflate.strToU8(ct), '_rels/.rels': fflate.strToU8(rels), '3D/3dmodel.model': fflate.strToU8(o.join('')) }, { level: 6 });
+  return fflate.zipSync({ '[Content_Types].xml': fflate.strToU8(ct), '_rels/.rels': fflate.strToU8(rels), '3D/3dmodel.model': fflate.strToU8(o.join('')),
+    'Metadata/V3D-vereinfacht.txt': fflate.strToU8(LIB_SIMPLIFIED_MARK + ' mit ' + BIGMESH_TOL_MM + ' mm Toleranz, ' + new Date().toISOString().slice(0, 10) + '\n') }, { level: 6 });
 }
 function _libWriteOBJ(parts) {
-  const o = ['# V3D CAD vereinfacht\n']; let base = 1;
+  const o = ['# ' + LIB_SIMPLIFIED_MARK + '\n']; let base = 1;
   for (const p of parts) {
     const v = p.r.vpos, ix = p.r.idx;
     o.push('o ' + String(p.name).replace(/\s+/g, '_') + '\n');
@@ -70123,8 +70159,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.244';
+const VOLME3D_VERSION = '1.18.245';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.245', date:'2026-10-21', changes:[
+    ['📚','<b>Große Dateien in der Bibliothek öffnen, ohne dass die Seite hängt.</b> Nach dem Klick auf „Öffnen“ zeigt der Knopf sofort „⏳ Wird geöffnet …“; ein zweiter Klick startet den Import nicht mehr doppelt (das verdoppelte den Speicher). Vorschaubilder und die Prüfung großer Dateien pausieren, solange eine Datei geöffnet wird.'],
+    ['🛡️','<b>Vereinfachte Dateien werden nie ein zweites Mal vereinfacht.</b> V3D CAD vermerkt das jetzt in der Datei selbst – vorher wurde eine schon vereinfachte Datei in einem anderen Browser noch einmal verkleinert und wäre mit jeder Runde gröber geworden. Solche Dateien öffnen ohne erneute Nachfrage.'],
+  ]},
   { version:'1.18.244', date:'2026-10-21', changes:[
     ['🧹','<b>Keine Striche mehr nach dem Durchbruch.</b> Wurde ein Schriftzug als <b>Durchbruch</b> aus einem Bauteil abgezogen (z. B. der Name im Handyständer), zogen sich danach oft schwarze Striche von den Buchstaben bis zu den Ecken der Fläche – und der Slicer druckte sie mit. Ursache: Das Schrift-Netz enthielt Dreiecke ohne Fläche, deshalb lief die Rechnung über einen Ausweichweg, der große Flächen in lange Splitter zerlegt. Jetzt ist die Schrift sauber vernetzt, der Abzug läuft über die schnelle Hauptrechnung (Sekundenbruchteile statt Minuten), und übrig gebliebene Splitter werden entfernt (danke Ralf für das Video).'],
   ]},
