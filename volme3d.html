@@ -23230,6 +23230,7 @@ async function _geoGc() {
 }
 setTimeout(() => { (window.requestIdleCallback || (f => setTimeout(f, 0)))(() => _geoGc().catch(e => console.warn('[geo-voll] Aufräumen übersprungen:', e))); }, 30000);
 
+const _geoUndoSnap = new WeakMap();   // JSON-Cache-Eintrag → {__snap} für Rückgängig (nie ins JSON!)
 function _cachedGeoJSON(geo, modus){
   // .v3d-Datei: gespeicherte Fassung + volles Netz eingebettet (Base64-Paket)
   if (modus === 'datei') {
@@ -23245,11 +23246,14 @@ function _cachedGeoJSON(geo, modus){
     const nT = posC ? (geo.index ? geo.index.count : posC.count) / 3 : 0;
     if (nT > 400000) {
       const e = _geoJsonCache.get(geo);
-      if (e && e.__undoSnapData) return e.__undoSnapData;
+      // eigener Zwischenspeicher (am JSON-Eintrag e als Schlüssel → gleiche Invalidierung).
+      // Früher hing der Schnappschuss AM gespeicherten JSON — das Auto-Speichern schrieb
+      // dann bis zu 341 MB mit und der Tab stürzte ab (Volker 21.10., mehrere Scans).
+      if (e && _geoUndoSnap.has(e)) return _geoUndoSnap.get(e);
       const snap = _geoSnapMake(geo.type === 'BufferGeometry' ? geo : new THREE.BufferGeometry().copy(geo));
       if (snap) {
         const data = { __snap: snap };
-        if (e) e.__undoSnapData = data;
+        if (e) _geoUndoSnap.set(e, data);
         return data;
       }
     }
@@ -41606,6 +41610,7 @@ async function _fsSaveDesign(id, data, thumb, name, silent, packedIn) {
     const now  = Date.now();
     // Schon gepackt (dsSaveDesign)? Dann nicht ein zweites Mal stringify+gzip —
     // bei Scans kostete das jeweils ~2 s Stillstand pro Auto-Speichern
+    if (packedIn == null && !_jsonOf(data)) return;   // Szene zu groß für JSON → nicht in die Cloud
     const packed = packedIn != null ? packedIn : _dsCompress(_jsonOf(data));
     if (packed.length > 900000) {
       if (silent) console.warn('[Firestore] Design zu groß (' + packed.length + ' B) — nur lokal gespeichert');
@@ -41674,7 +41679,17 @@ function dsThumb(id)    { return localStorage.getItem(_dsThumbKey(id)) || ''; }
 // Derselbe Schnappschuss wird beim Auto-Speichern mehrfach gebraucht (Browser-Speicher,
 // Cloud, Versionsverlauf) — einmal in JSON wandeln statt dreimal (Riesen-Szenen: Sekunden)
 const _jsonMemo = new WeakMap();
-function _jsonOf(data) { let j = _jsonMemo.get(data); if (j === undefined) { j = JSON.stringify(data); _jsonMemo.set(data, j); } return j; }
+// Zu groß für einen Text (> ~512 Mio. Zeichen) → '' statt Ausnahme: das Auto-Speichern
+// darf die Seite nie mitreißen; die Aufrufer speichern dann eben nicht.
+function _jsonOf(data) {
+  let j = _jsonMemo.get(data);
+  if (j === undefined) {
+    try { j = JSON.stringify(data); }
+    catch (e) { console.warn('[Speichern] Szene zu groß für JSON:', e.message); j = ''; }
+    _jsonMemo.set(data, j);
+  }
+  return j;
+}
 function dsSaveDesign(id, data, thumb, name, silent, packedIn) {
   const idx = _dsIdx();
   const existing = idx.find(d => d.id === id);
@@ -41692,7 +41707,7 @@ function dsSaveDesign(id, data, thumb, name, silent, packedIn) {
   // komprimieren (Holzschwein nach Reparieren: 36 MB JSON, 1,7 s gzip — zweimal
   // pro Auto-Speichern, und am Ende passte es doch nirgends hinein).
   const json = _jsonOf(data);
-  if (json.length > _DS_JSON_MAX) {
+  if (!json || json.length > _DS_JSON_MAX) {
     console.warn('[Speichern] Design zu groß für Browser-Speicher/Cloud (' + (json.length / 1e6).toFixed(0) + ' MB JSON) — nur Sicherung/Datei');
     if (!silent) notify('Dieses Design ist zu groß für den Browser-Speicher. Bitte mit Strg+S als Datei speichern.', 'w', 9000);
     return false;
@@ -41713,7 +41728,7 @@ let _dsAsyncKette = Promise.resolve();
 const _dsGeloescht = new Set();
 function dsSaveDesignAsync(id, data, thumb, name) {
   const json = _jsonOf(data);
-  if (typeof fflate === 'undefined' || typeof fflate.gzip !== 'function' || typeof Worker === 'undefined' || json.length > _DS_JSON_MAX)
+  if (!json || typeof fflate === 'undefined' || typeof fflate.gzip !== 'function' || typeof Worker === 'undefined' || json.length > _DS_JSON_MAX)
     return Promise.resolve(dsSaveDesign(id, data, thumb, name, true));
   const job = () => new Promise(res => {
     fflate.gzip(fflate.strToU8(json), { level: 6 }, (err, gz) => {
@@ -42018,6 +42033,7 @@ async function _bakSnapshot(id, data, force, extra){
     const now = Date.now(), newest = list.find(b => !b.pinned) || null;
     if (!force && newest && now - newest.ts < _BAK_MIN_GAP) return;
     const json = _jsonOf(data);
+    if (!json) return;   // zu groß für JSON → keine Sicherung (Datei speichern mit Strg+S)
     if (list.length && list[0].json === json) {   // unverändert → kein neuer Stand (höchstens festhalten)
       if (extra && extra.pinned) { list[0].pinned = true; list[0].name = extra.name || list[0].name || ''; await _bakWrite(id, list); }
       return;
@@ -70066,8 +70082,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.242';
+const VOLME3D_VERSION = '1.18.243';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.243', date:'2026-10-21', changes:[
+    ['🐛','<b>Absturz mit mehreren großen Modellen behoben.</b> Wer zwei oder mehr große Modelle (z. B. Scans) in der Szene hatte und dann weiterarbeitete, brachte die Seite zum Absturz. Ursache: Ein interner Rückgängig-Schnappschuss des großen Netzes wurde beim automatischen Speichern versehentlich mitgeschrieben – bis zu 340 MB alle 30 Sekunden. Jetzt bleibt er im Speicher, wo er hingehört: Im nachgestellten Fall braucht die Seite rund 190 MB statt 1,85 GB.'],
+  ]},
   { version:'1.18.242', date:'2026-10-21', changes:[
     ['📚','<b>Bibliothek: keine hängenden Eieruhren mehr, und sie merkt sich die Vorschaubilder.</b> Nach dem Scrollen blieben Vorschaubilder als Eieruhr stehen, weil sie nur für gerade sichtbare Karten angestoßen wurden. Jetzt arbeitet die Bibliothek alle der Reihe nach ab, die sichtbaren zuerst, und ein hängender Auftrag hält die anderen nicht mehr auf. Gespeicherte Vorschaubilder sind beim nächsten Öffnen sofort da (30 Bilder in gut einer Sekunde); neu berechnet werden nur neue oder geänderte Dateien.'],
     ['🛡️','<b>Vereinfachen schützt jetzt Modelle, die nicht in Millimetern gezeichnet sind.</b> Eine Datei in Metern wurde mit festen 0,01 „mm“ fast vollständig zusammengefaltet. Die Toleranz ist jetzt zusätzlich auf 0,02 % der Modellgröße begrenzt. Wer eine so geschrumpfte Datei in der Bibliothek hat: das Original liegt im Ordner „Original“.'],

@@ -59,6 +59,9 @@ try {
 
   // 3. Import 500k ohne Reduktion
   await pg.setInputFiles('#fimport', STL);
+  // seit 1.18.233 fragt der Import ab 300k Dreiecken nach — hier geht es ums volle Netz
+  await pg.waitForFunction(() => document.getElementById('bigmesh-modal').classList.contains('show'), null, { timeout: 60000 });
+  await pg.click('#bigmesh-orig');
   await pg.waitForFunction(() => objects.length >= 1 && document.getElementById('sz-decim-row').style.display !== 'none', null, { timeout: 300000 });
   const imp = await pg.evaluate(async () => {
     document.getElementById('sz-decim-chk').checked = false; _confirmSize(); await new Promise(r => setTimeout(r, 300));
