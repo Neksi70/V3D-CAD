@@ -34,6 +34,10 @@ OCCT_PORT = 3001
 OCCT_TIMEOUT = 600   # Booleans mit vielen Tools (Wabenmuster) brauchen Minuten
 _OCCT_CTX = ssl._create_unverified_context()
 
+# „🪄 Scan → CAD“: Rechenkern von V3D Scan als Dienst (v3dscan/cad_dienst.py,
+# HTTP 127.0.0.1:3014, eigene Python-Umgebung). /api/scan2cad/<rest> -> /<rest>.
+SCAN2CAD_PORT = 3014
+
 # ── KI-Generierung (Hugging Face ZeroGPU, kostenlos) ──────────────────
 # Text→Bild ueber den FLUX.1-schnell-Space, Bild→3D ueber den offiziellen
 # tencent/Hunyuan3D-2-Space. Kein API-Key beim Nutzer mehr: der Server
@@ -417,6 +421,36 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(msg)
 
+    def _proxy_scan2cad(self, method):
+        """POST /api/scan2cad/auftrag (Netz als Rohdaten, Kopf X-Name), GET /api/scan2cad/auftrag/<id>,
+        POST /api/scan2cad/abbrechen/<id> (-> DELETE). Rechnen dauert, die Abfragen sind kurz."""
+        rest = self.path.split('?', 1)[0][len('/api/scan2cad'):] or '/'
+        body, headers = None, {}
+        if method == 'POST':
+            n = int(self.headers.get('Content-Length', 0) or 0)
+            body = self.rfile.read(n) if n else b''
+            headers['X-Name'] = self.headers.get('X-Name', 'scan.stl')
+            if rest.startswith('/abbrechen/'):
+                method, rest, body = 'DELETE', '/auftrag/' + rest[len('/abbrechen/'):], None
+        try:
+            conn = http.client.HTTPConnection('127.0.0.1', SCAN2CAD_PORT, timeout=120)
+            conn.request(method, rest, body=body, headers=headers)
+            r = conn.getresponse()
+            data = r.read()
+            status = r.status
+            conn.close()
+        except Exception as e:
+            status = 502
+            data = json.dumps({'fehler': 'Scan → CAD ist gerade nicht erreichbar (' + str(e) + ').'}).encode()
+        if method == 'POST' and rest == '/auftrag' and status == 200:
+            v3d_nutzung.erfassen(self._session(), 'scan2cad', 'auftrag', 0, True)
+        self.send_response(status)
+        self._cors()
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def _occt_wait(self, conn):
         """Holt die Backend-Antwort und achtet dabei auf den Browser.
         Rueckgabe (resp, data) oder None, wenn der Browser aufgelegt hat.
@@ -616,6 +650,11 @@ class Handler(BaseHTTPRequestHandler):
             if not self._need_session():
                 return
             self._proxy_occt('POST', self._session())
+            return
+        if self.path.startswith('/api/scan2cad/'):
+            if not self._need_session():
+                return
+            self._proxy_scan2cad('POST')
             return
         if self.path == '/api/nutzung':
             if not self._need_session():
@@ -852,6 +891,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == '/occt-health':
             self._proxy_occt('GET')
+            return
+
+        if path.startswith('/api/scan2cad/'):
+            if not self._need_session():
+                return
+            self._proxy_scan2cad('GET')
             return
 
         if path == '/api/version':

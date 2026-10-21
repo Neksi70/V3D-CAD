@@ -359,7 +359,17 @@ def _abschnitte(s, k, lo, hi, diag, n=40):
         bezug = q[(i + j) // 2]
         unten = lo if i == 0 else grenze(hs[i], hs[i - 1], bezug, True)
         oben = hi if j == len(hs) - 1 else grenze(hs[j], hs[j + 1], bezug, False)
-        stufen.append([unten, oben, (hs[i] + hs[j]) / 2, hs[i], hs[j]])
+        stufen.append([unten, oben, (hs[i] + hs[j]) / 2, hs[i], hs[j], bezug])
+    # gleiches Profil auf beiden Seiten einer Luecke = oertliches Merkmal quer zur Achse (Querbohrung,
+    # Nut), das die Schnitte stoert -> ein Abschnitt durch; erkannte Bohrungen zieht das Ergaenzen ab
+    zusammen = [stufen[0]]
+    for st in stufen[1:]:
+        a = zusammen[-1]
+        if _gleich(a[5], st[5], diag):
+            zusammen[-1] = [a[0], st[1], a[2] if a[4] - a[3] >= st[4] - st[3] else st[2], a[3], st[4], a[5]]
+        else:
+            zusammen.append(st)
+    stufen = zusammen
     # benachbarte Abschnitte direkt aneinander legen (keine Spalte durch die Halbierung)
     for a, b in zip(stufen, stufen[1:]):
         if b[0] - a[1] < 0.02 * (hi - lo):
@@ -386,16 +396,18 @@ def kandidat_prisma(s, P, k, elemente, tol, meldung, budget):
         return None
     # Grenzen auf erkannte Ebenen einrasten
     ebenen = _ebene_hoehen(elemente, k)
-    for st in stufen:
-        for i in (0, 1):
-            # Halbierung kann an einer Planflaeche nicht greifen (Schnitt dort = Splitter) -> bis 2 Schnittabstaende,
-            # aber nie ueber die gemessen gleichen Schnitte hinein (unten <= erster, oben >= letzter)
-            nah = [h for h in ebenen if abs(h - st[i]) < 2.0 * (hi - lo) / 41 + 3 * tol
-                   and (h <= st[3] + tol if i == 0 else h >= st[4] - tol)]
+    for n, st in enumerate(stufen):
+        # Halbierung greift an einer Planflaeche nicht (Schnitt dort = Splitter). Grenze = naechste erkannte
+        # Querebene zwischen dem letzten gleichen Schnitt und dem Nachbarabschnitt bzw. dem Scanende -
+        # nie in die gemessen gleichen Schnitte hinein
+        unten_frei = stufen[n - 1][4] if n else lo - 3 * tol
+        oben_frei = stufen[n + 1][3] if n + 1 < len(stufen) else hi + 3 * tol
+        for i, (von_h, bis_h) in enumerate(((unten_frei, st[3] + tol), (st[4] - tol, oben_frei))):
+            nah = [h for h in ebenen if von_h <= h <= bis_h]
             if nah:
                 st[i] = min(nah, key=lambda h: abs(h - st[i]))
     schritte, shape = [], None
-    for unten, oben, mitte, _, _ in stufen:
+    for unten, oben, mitte, _, _, _ in stufen:
         if oben - unten < 2 * tol:
             continue
         skz, mitte = _skizze_passend(s, k, unten, oben, mitte, tol)
