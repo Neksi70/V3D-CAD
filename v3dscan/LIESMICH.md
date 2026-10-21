@@ -2,10 +2,35 @@
 
 Windows-Programm zum Nachbearbeiten von 3D-Scans (Punktwolken), gedacht für
 Exporte aus Revo Scan (Revopoint MIRACO/POP) und CrealityScan (PiKa).
-Stand 1.3.0 = Netzrand bearbeiten (Bucht füllen, Brücke, Rand glätten, Zacken entfernen, Rand verlängern) und Punkt als Skizzenelement; 1.2.0 = Freiform-Editor (Ecken/Kanten/Vierecke wählen, Extrudieren, Brücke, Verschmelzen, Schleife, Pinsel-Glätten), Auswahl (Pinsel, Kreis, Linie, Zauberstab, Vergrößern/Verkleinern, Verbergen), Skizze (Klick-Spline, Trennen, Verlängern, IGES), E57-Import, Auto-Sicherung, Navigationsschemata, Ansichtswürfel, Bauplan für V3D CAD, Grundkörper per Eingabe, Referenz aus Körperfläche, Übergangskurve, Netz an 3D-Skizze teilen, G1 an Ecken verbessert; 1.1.0 = eigener Skizzen-Bedingungs-Löser (gekoppelte Bedingungen + Maße, gespeichert) und Rückfallebene für Boolesche Operationen (Reparatur, Toleranz, Plausibilität); 1.0.0 = Funktionsumfang nach QuickSurface 8 (Vergleich: docs/quicksurface-vergleich.md): Menüband KONSTRUKTION/SKIZZE/CAD/FLÄCHEN/FREIFORM/ANALYSE, Skizzen-Editor, Flächenwerkzeuge, Freiform von Hand, parametrischer Verlauf, STL/STEP/PTX; davor 0.9: Messen, Symmetrie-/Referenzebenen, Mehrfachschnitt, Loft/Sweep/Rohr, Abwickeln (SVG), glatte (G1) Freiform + Käfig von Hand, Zebra/Formschräge + Freiform (automatische Flächen, Fläche aus Auswahl, Beschneiden, Aufdicken) + Körper-Werkzeuge (Verknüpfen, Verschieben/Kopie, Spiegeln, Muster, Schale) + Querschnitt-Skizze → Extrudieren/Drehen → Runden/Fasen (MODELL, Etappen D/E) + Abweichung Scan ↔ Körper (Etappe F) + Oberfläche nach Arbeitsschritten (Design-X-Vorbild, siehe docs/designx-bauplan.md) +
+Stand 1.4.0 = **Scan → CAD mit einem Klick** (START → 🪄, bzw. großer Knopf im leeren Projekt: Datei wählen, Rest läuft allein; `kern/automatik.py`, siehe unten); 1.3.0 = Netzrand bearbeiten (Bucht füllen, Brücke, Rand glätten, Zacken entfernen, Rand verlängern) und Punkt als Skizzenelement; 1.2.0 = Freiform-Editor (Ecken/Kanten/Vierecke wählen, Extrudieren, Brücke, Verschmelzen, Schleife, Pinsel-Glätten), Auswahl (Pinsel, Kreis, Linie, Zauberstab, Vergrößern/Verkleinern, Verbergen), Skizze (Klick-Spline, Trennen, Verlängern, IGES), E57-Import, Auto-Sicherung, Navigationsschemata, Ansichtswürfel, Bauplan für V3D CAD, Grundkörper per Eingabe, Referenz aus Körperfläche, Übergangskurve, Netz an 3D-Skizze teilen, G1 an Ecken verbessert; 1.1.0 = eigener Skizzen-Bedingungs-Löser (gekoppelte Bedingungen + Maße, gespeichert) und Rückfallebene für Boolesche Operationen (Reparatur, Toleranz, Plausibilität); 1.0.0 = Funktionsumfang nach QuickSurface 8 (Vergleich: docs/quicksurface-vergleich.md): Menüband KONSTRUKTION/SKIZZE/CAD/FLÄCHEN/FREIFORM/ANALYSE, Skizzen-Editor, Flächenwerkzeuge, Freiform von Hand, parametrischer Verlauf, STL/STEP/PTX; davor 0.9: Messen, Symmetrie-/Referenzebenen, Mehrfachschnitt, Loft/Sweep/Rohr, Abwickeln (SVG), glatte (G1) Freiform + Käfig von Hand, Zebra/Formschräge + Freiform (automatische Flächen, Fläche aus Auswahl, Beschneiden, Aufdicken) + Körper-Werkzeuge (Verknüpfen, Verschieben/Kopie, Spiegeln, Muster, Schale) + Querschnitt-Skizze → Extrudieren/Drehen → Runden/Fasen (MODELL, Etappen D/E) + Abweichung Scan ↔ Körper (Etappe F) + Oberfläche nach Arbeitsschritten (Design-X-Vorbild, siehe docs/designx-bauplan.md) +
 Körper (Grundkörper aus Bereich, Vereinen/Abziehen, STEP/IGES) + Punktwolke (Grundgerüst, Bereinigen, Zusammenführen) + Scan→CAD Etappe 1
 (Netzbearbeitung), Etappe 2 (Ausrichten am Koordinatensystem), Etappe 3 (Geometrieerkennung). Ziel: Scan → Geometrieerkennung → parametrisches CAD → STEP/IGES,
 Geometriekern dafür wird OpenCASCADE (OCP) – Entscheidung des Users 14.09.2026 (Variante A).
+
+## Scan → CAD mit einem Klick (1.4.0)
+`kern/automatik.py`, Befehl `assistent/start` (Fortschritt ohne Sperre: GET `/api/assistent/stand`). Ablauf:
+1. Bereinigen: Ausreißer (statistisch, σ 3) + Inseln < 3 % (nur Punktwolken); Tisch nur, wenn seine Ebene in
+   beiden Richtungen ≥ 1,3× so weit reicht wie das Objekt.
+2. Ausrichten: Formerkennung auf 60 000-Punkte-Stichprobe (nur Ebene/Zylinder/Kegel, ≥ 2 %). Umlaufender
+   Zylinder/Kegel mit > 25 % der Punkte, um dessen Achse der Scan symmetrisch ist → Achse = Z; sonst größte Ebene =
+   Boden + größte Seitenwand = X/Y; sonst Hauptachsen. Ursprung unten Mitte.
+3. Kandidaten: **Drehteil** (Symmetrietest: um 57°/141° gedrehter Scan liegt auf sich selbst, Median-Abstand
+   ≤ 1,6 × Punktabstand → Schnitt durch die Achse, größte Kontur drehen); **Prisma** je Achse Z/X/Y (40 Querschnitte,
+   Folgen von ≥ 3 gleichen Schnitten = Abschnitt, gleich = Konturzahl + Fläche ± 1,2 % + Box ± 1 % der Diagonale,
+   einzelne Ausreißer-Schnitte übersprungen; Grenzen per Halbierung, auf erkannte Ebenen eingerastet; je Abschnitt
+   Skizze aus dem Mittelschnitt → Extrusion, vereint); beim besten Prisma erkannte Kugeln/Kegel/Zapfen/Bohrungen dazu
+   bzw. ab, wenn der mittlere Fehler um ≥ 2 % sinkt; **Freiform** (automatische Flächen) nur, wenn das Beste > 2,5 ×
+   Ziel ist, und sie gewinnt nur bei < 0,6 × Fehler.
+4. Bewertung: p95 Scan → Körper + ½ × p90 Körper → Scan („Zusatzmaterial“, erfundene Flächen). Ziel = max(0,25 mm;
+   0,4 % der Diagonale; 4 × Rauschen) → „sehr gut“ / „brauchbar“ (≤ 2,5 × Ziel) / „grob“.
+Ergebnis = normaler Körper mit Verlauf (Skizzen änderbar) → STEP/IGES/Bauplan wie bisher; alles rückgängig machbar.
+Tests: `tests/test_automatik.py` (Testteil, Drehteil, L-Winkel, Torus = Drehteil, Knolle = Freiform; je zufällig
+gedreht, 0,02 mm Rauschen; p95 0,03–0,05 mm, Volumen ±0,12 %), `tests/test_oberflaeche_assistent.py`.
+- **Falle Querschnitt in einer Planfläche:** Tausende Splitter → `_ordnen` war quadratisch (Grad je Kette neu,
+  Minuten je Schnitt) → CSR + numpy; Automatik verwirft Schnitte mit > 60 Konturen.
+- **Falle Umfang als Merkmal:** grobe Netze/Zickzack der Punktwolke ändern den Umfang je Höhe um 15 % → Box statt Umfang.
+- **Falle p95 beim Ergänzen:** kleine Formen (Kegel) bewegen das 95-%-Quantil nicht mehr → mittlerer Fehler (gekappt).
+- Bauplan: Kegel mit senkrechter Achse → `revolve` (V3D CAD hat keinen freien Kegelstumpf).
 
 ## Aufbau
 - `kern/` Rechenkern in Python mit Open3D + numpy

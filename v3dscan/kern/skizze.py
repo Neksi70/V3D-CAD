@@ -212,6 +212,11 @@ def _ordnen(P, abstand):
         nachbar.append(np.asarray(idx))
     frei = np.ones(len(Q), bool)
     linien, zu = [], []
+    # Nachbarlisten flach (CSR), damit der Grad aller offenen Punkte in einem numpy-Schritt geht
+    # (vorher Python-Doppelschleife je Kette: quadratisch, Schnitt in einer Planflaeche = Minuten)
+    flach = np.concatenate(nachbar) if nachbar else np.zeros(0, np.int64)
+    anfang = np.r_[0, np.cumsum([len(x) for x in nachbar])[:-1]].astype(np.int64)
+    leer = np.array([len(x) == 0 for x in nachbar])
 
     def lauf(start, richtung=None):
         weg = [start]
@@ -241,7 +246,9 @@ def _ordnen(P, abstand):
 
     while frei.any():
         offen = np.nonzero(frei)[0]
-        grad = np.array([sum(frei[x] for x in nachbar[i]) for i in offen])
+        g_alle = np.add.reduceat(frei[flach].astype(np.int64), anfang) if len(flach) else np.zeros(len(Q), np.int64)
+        g_alle[leer] = 0
+        grad = g_alle[offen]
         start = offen[np.argmin(grad)]
         frei[start] = False
         vor = lauf(start)

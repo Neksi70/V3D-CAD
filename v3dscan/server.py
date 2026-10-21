@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
-FASSUNG = "1.3.0"
+FASSUNG = "1.4.0"
 HIER = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, "frozen", False):
     HIER = getattr(sys, "_MEIPASS", HIER)
@@ -38,6 +38,7 @@ from kern import koerper as kp  # noqa: E402
 from kern import loeser  # noqa: E402
 from kern import sicherung as sich  # noqa: E402
 from kern import cad_bauplan  # noqa: E402
+from kern import automatik  # noqa: E402
 from kern import koordinaten as ko  # noqa: E402
 from kern import netz as nz  # noqa: E402
 from kern import features as sk_feat  # noqa: E402
@@ -53,6 +54,7 @@ sperre = threading.Lock()
 letzter_puls = [0.0]
 vorschau_cache = {}
 netz_vorschau = {}          # id -> (schluessel, Scan, bericht)
+assistent_stand = {"laeuft": False, "zeilen": [], "start": 0.0}   # Fortschritt "Scan -> CAD", ohne Sperre lesbar
 
 
 class Fehler(Exception):
@@ -265,6 +267,24 @@ def befehl(name, d):
         if not 0 <= idx < len(s):
             raise Fehler("Punkt nicht gefunden.")
         return {"maske": maske_b64(wz.verbunden(s, idx, zahl(d, "abstand")))}
+    if name == "assistent/start":
+        sid = d.get("id")
+        if sid is None:
+            sichtbar = [s for s in p.scans.values() if s.sichtbar] or list(p.scans.values())
+            if not sichtbar:
+                raise Fehler("Erst einen Scan öffnen.")
+            sid = sichtbar[-1].id
+        assistent_stand.update(laeuft=True, zeilen=[], start=time.time())
+        vorschau_cache.clear()
+        netz_vorschau.clear()
+        try:
+            erg = automatik.scan_zu_cad(p, int(sid), freiform=bool(d.get("freiform", True)),
+                                        fortschritt=assistent_stand["zeilen"].append)
+        except automatik.Abbruch as ex:
+            raise Fehler(str(ex))
+        finally:
+            assistent_stand["laeuft"] = False
+        return erg
     if name == "koerper/bauplan":
         return cad_bauplan.bauplan(p, p.koerper_holen(d["kid"]))
     if name == "sicherung/liste":
@@ -1844,6 +1864,9 @@ class Handler(BaseHTTPRequestHandler):
             if pfad == "/api/puls":
                 letzter_puls[0] = time.time()
                 return self._senden(200, {"ok": True, "fassung": FASSUNG})
+            if pfad == "/api/assistent/stand":
+                return self._senden(200, {"laeuft": assistent_stand["laeuft"], "zeilen": list(assistent_stand["zeilen"]),
+                                          "sekunden": round(time.time() - assistent_stand["start"], 1)})
             if pfad == "/api/zustand":
                 with sperre:
                     return self._senden(200, dict(projekt.zustand(), fassung=FASSUNG,

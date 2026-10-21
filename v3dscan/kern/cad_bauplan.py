@@ -124,10 +124,19 @@ def _grundkoerper(par):
         return {"type": "sphere", "size": [2 * r] * 3, "center": list(map(float, par["mitte"]))}
     a = np.asarray(par["achse"], float)
     a = a / np.linalg.norm(a)
-    if abs(abs(a[2]) - 1) > 1e-6 or par["art"] != "zylinder":
+    if abs(abs(a[2]) - 1) > 1e-6 or par["art"] not in ("zylinder", "kegel"):
         raise NichtUebersetzbar("Grundkörper %s mit schräger Achse" % par["art"])
     b = np.asarray(par["basis"], float)
     h = float(par["hoehe"])
+    if par["art"] == "kegel":
+        # V3D CAD hat keinen Kegelstumpf mit freien Radien -> Drehprofil um die (senkrechte) Achse
+        z0, z1 = float(b[2]), float(b[2] + a[2] * h)
+        r0, r1 = float(par["r_min"]), float(par["r_max"])
+        if z1 < z0:
+            z0, z1, r0, r1 = z1, z0, r1, r0
+        return {"befehl": "revolve", "params": {
+            "profile": [[0.0, round(z0, 6)], [round(r0, 6), round(z0, 6)], [round(r1, 6), round(z1, 6)],
+                        [0.0, round(z1, 6)]], "center": [round(float(b[0]), 6), round(float(b[1]), 6)]}}
     mitte = b + a * h / 2
     r = float(par["radius"])
     return {"type": "cylinder", "size": [2 * r, 2 * r, h], "center": [float(x) for x in mitte]}
@@ -171,7 +180,8 @@ def bauplan(projekt, k):
                 if t == "drehung":
                     b = {"befehl": "revolve", "params": _drehung(e, projekt.skizze_holen(e["skizze"]))}
                 else:
-                    b = {"befehl": "shape.add", "params": _grundkoerper(e["parameter"])}
+                    gk = _grundkoerper(e["parameter"])
+                    b = gk if "befehl" in gk else {"befehl": "shape.add", "params": gk}
                 if not da or op == "neu":
                     b["als"] = "k"
                     befehle.append(b)

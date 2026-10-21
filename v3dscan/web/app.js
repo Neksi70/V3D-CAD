@@ -4296,6 +4296,10 @@ async function dateienImportieren(dateien) {
       });
     });
   }
+  if (asNachImport) {
+    asNachImport = false;
+    if (S.zustand.scans.length) await sicher(assistent);
+  }
 }
 
 function herunterladen(url) {
@@ -4307,6 +4311,7 @@ function herunterladen(url) {
   a.remove();
 }
 
+$('#dateiWahl').addEventListener('cancel', () => { asNachImport = false; });
 $('#dateiWahl').addEventListener('change', (ev) => {
   const d = [...ev.target.files];
   ev.target.value = '';
@@ -4630,6 +4635,17 @@ const AKTIONEN = {
     meldung(j.vollstaendig ? `Bauplan mit ${j.befehle.length} Schritten gespeichert (parametrisch in V3D CAD).`
       : j.hinweise.join(' '), j.vollstaendig ? 'ok' : 'warnung');
   } },
+  assistent: { text: 'Scan → CAD (1 Klick)', fn: assistent },
+  asZu: { text: '', fn: () => $('#assistentDialog').close() },
+  asStep: { text: 'STEP speichern', fn: () => { if (asLetztes) S.koerperAktiv = asLetztes.koerper; koerperExport('step'); } },
+  asBauplan: { text: 'Bauplan für V3D CAD', fn: () => { if (asLetztes) S.koerperAktiv = asLetztes.koerper; return AKTIONEN.koerperBauplan.fn(); } },
+  asAbweichung: { text: 'Abweichung zeigen', fn: async () => {
+    $('#assistentDialog').close();
+    werkzeugOeffnen('w-koerper-abw', $('[data-wf=w-koerper-abw]'));
+    kaFuellen();
+    if (asLetztes) $('#kaKoerper').value = String(asLetztes.koerper);
+    await kaZeigen();
+  } },
   koerperStep: { text: 'Körper als STEP exportieren', fn: () => koerperExport('step') },
   koerperIges: { text: 'Körper als IGES exportieren', fn: () => koerperExport('iges') },
   koerperStl: { text: 'Körper als STL exportieren', fn: () => koerperExport('stl') },
@@ -4638,6 +4654,80 @@ const AKTIONEN = {
   tastenZu: { text: '', fn: () => $('#tastenDialog').close() },
   tastenStandard: { text: '', fn: () => { localStorage.removeItem('v3dscan.tasten'); tastenLaden(); tastenTabelle(); } },
 };
+
+// ---------------------------------------------------------------------------
+// Scan -> CAD mit einem Klick (Server: assistent/start, Fortschritt GET assistent/stand)
+// ---------------------------------------------------------------------------
+let asNachImport = false;
+$('#assistentDialog').addEventListener('cancel', (ev) => { if ($('#asZu').disabled) ev.preventDefault(); });
+let asLetztes = null;
+function asSchritteZeigen(zeilen, laeuft) {
+  const ol = $('#asSchritte');
+  ol.innerHTML = '';
+  zeilen.forEach((z, i) => {
+    const li = document.createElement('li');
+    li.textContent = z.trim();
+    if (/^\s|^\+/.test(z)) li.className = 'unter';
+    if (laeuft && i === zeilen.length - 1) li.classList.add('laeuft');
+    ol.appendChild(li);
+  });
+  ol.scrollTop = ol.scrollHeight;
+}
+async function assistent() {
+  if (S.beschaeftigt) return;
+  if (!S.zustand.scans.length) { asNachImport = true; $('#dateiWahl').click(); return; }
+  const dlg = $('#assistentDialog');
+  for (const b of ['asStep', 'asBauplan', 'asAbweichung']) $(`[data-aktion="${b}"]`).hidden = true;
+  $('#asErgebnis').hidden = true;
+  $('#asSchritte').innerHTML = '<li class="laeuft">Starte</li>';
+  $('#asZu').disabled = true;
+  if (!dlg.open) dlg.showModal();
+  let fertig = false;
+  const abfragen = async () => {
+    try {
+      const j = await (await fetch('/api/assistent/stand')).json();
+      if (!fertig) asSchritteZeigen(j.zeilen.length ? j.zeilen : ['Starte'], true);
+    } catch { /* Dienst rechnet, nächste Runde */ }
+  };
+  const uhr = setInterval(abfragen, 700);
+  S.beschaeftigt = true;
+  try {
+    const j = await api('assistent/start', { id: S.aktiv ?? undefined, freiform: true });
+    fertig = true;
+    asLetztes = j;
+    asSchritteZeigen(j.protokoll, false);
+    const klasse = { 'sehr gut': 'gut', brauchbar: 'mittel', grob: 'grob' }[j.urteil] || 'mittel';
+    const g = j.guete;
+    $('#asErgebnis').innerHTML = `<div class="urteil ${klasse}">${j.art} – ${j.urteil}</div>
+      <table>
+        <tr><td>Körper</td><td>${j.name}${j.parametrisch ? ' (mit Verlauf, Skizzen änderbar)' : ' (Freiform-Flächen)'}</td></tr>
+        <tr><td>95 % der Scanpunkte</td><td>≤ ${g.p95.toFixed(3)} mm am Körper</td></tr>
+        <tr><td>Median</td><td>${g.median.toFixed(3)} mm</td></tr>
+        <tr><td>Zusatzmaterial</td><td>${g.extra.toFixed(3)} mm <small>(Körperstellen ohne Scan dahinter, 90 %)</small></td></tr>
+        <tr><td>Dauer</td><td>${j.dauer.toLocaleString('de-DE')} s</td></tr>
+      </table>
+      ${j.urteil === 'grob' ? '<p class="hilfe">Grob: Der Scan passt zu keiner einfachen Bauart. Abweichung ansehen und Stellen von Hand nacharbeiten (SKIZZE/CAD), oder Scan vervollständigen.</p>' : ''}`;
+    $('#asErgebnis').hidden = false;
+    for (const b of ['asStep', 'asBauplan', 'asAbweichung']) $(`[data-aktion="${b}"]`).hidden = false;
+    S.koerperAktiv = j.koerper;
+    for (const k of S.koerper.values()) koerperDarstellung(k);
+    koerperListeZeichnen(); verlaufZeichnen();
+    einpassen();
+    konsole(`Scan → CAD: ${j.art}, ${j.urteil} (p95 ${g.p95.toFixed(3)} mm)`, 'ok');
+  } catch (e) {
+    fertig = true;
+    await abfragen();
+    const li = document.createElement('li');
+    li.className = 'fehler';
+    li.textContent = '✕ ' + (e.message || e);
+    $('#asSchritte').appendChild(li);
+    konsole('Scan → CAD: ' + (e.message || e), 'fehler');
+  } finally {
+    clearInterval(uhr);
+    S.beschaeftigt = false;
+    $('#asZu').disabled = false;
+  }
+}
 
 let tasten = {};
 function tastenLaden() {
