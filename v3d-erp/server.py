@@ -22,6 +22,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bericht
+import erechnung
 import erp
 import finanzen
 import seed
@@ -158,7 +159,7 @@ class H(BaseHTTPRequestHandler):
                     with SPERRE:
                         erg = fn(benutzer=benutzer, q=q, body=body, **{k: int(v) if v.isdigit() else v for k, v in t.groupdict().items()})
                     if isinstance(erg, dict) and "__datei" in erg:
-                        kopf = {"Content-Disposition": f"inline; filename*=UTF-8''{urllib.parse.quote(erg['name'])}"}
+                        kopf = {"Content-Disposition": f"{'attachment' if erg.get('anhang') else 'inline'}; filename*=UTF-8''{urllib.parse.quote(erg['name'])}"}
                         if erg.get("sandbox"):
                             kopf["Content-Security-Policy"] = "sandbox"
                         return self._senden(200, erg["__datei"], erg["typ"], kopf)
@@ -484,6 +485,37 @@ def r_weiter(bid, body, benutzer, **_):
 def r_beleg_loeschen(bid, benutzer, **_):
     erp.beleg_loeschen(DB, bid, benutzer)
     return {"ok": True}
+
+# ---------------------------------------------------------------- Beleg-PDF / E-Rechnung
+@route("GET", "/api/belege/(?P<bid>\\d+)/pdf")
+def r_beleg_pdf(bid, **_):
+    pdf, name = bericht.beleg_pdf(DB, bid)
+    return {"__datei": pdf, "typ": "application/pdf", "name": name}
+
+
+@route("GET", "/api/belege/(?P<bid>\\d+)/xrechnung")
+def r_xrechnung(bid, **_):
+    xml, name = erechnung.xrechnung(DB, bid)
+    return {"__datei": xml.encode() if isinstance(xml, str) else xml, "typ": "application/xml; charset=utf-8", "name": name, "anhang": True}
+
+
+@route("GET", "/api/belege/(?P<bid>\\d+)/zugferd")
+def r_zugferd(bid, **_):
+    pdf, name = erechnung.zugferd(DB, bid)
+    return {"__datei": pdf, "typ": "application/pdf", "name": name, "anhang": True}
+
+
+@route("POST", "/api/erechnung/einlesen")
+def r_erechnung_einlesen(body, benutzer, **_):
+    import base64
+    try:
+        daten = base64.b64decode(body.get("daten") or "", validate=True)
+    except Exception:
+        raise erp.Fehler("Datei konnte nicht gelesen werden.")
+    if not daten:
+        raise erp.Fehler("Leere Datei.")
+    return erechnung.einlesen(DB, (body.get("name") or "")[:200], daten, benutzer)
+
 
 
 @route("GET", "/api/op")

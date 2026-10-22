@@ -261,6 +261,17 @@ async function api(pfad, opt={}){
   if (!r.ok){ toast(d.fehler || 'Fehler', true); const f = new Error(d.fehler); f.gezeigt = true; throw f; }
   return d;
 }
+async function herunterladen(pfad, was){
+  const r = await fetch('api/'+pfad, {credentials:'same-origin'});
+  if (r.status === 401) return zeigeLogin();
+  if (!r.ok){ const d = await r.json().catch(()=>({})); const t = d.fehler || 'Fehler';
+    if (t.startsWith('Für die E-Rechnung fehlt noch:'))
+      return dialog(was + ' nicht möglich', 'Pflichtangaben fehlen', `<p>${esc(t)}</p><p class="hinweis">Firmendaten unter Einstellungen → Firma, Kundendaten in der Adresse ergänzen.</p>`, [['Schließen','']]);
+    return toast(t, true); }
+  const name = decodeURIComponent((r.headers.get('Content-Disposition')||'').split("''")[1] || 'datei');
+  const url = URL.createObjectURL(await r.blob()); const a = document.createElement('a'); a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000); toast(was + ' erstellt: ' + name);
+}
 let tt; function toast(t, fehler){ const e=$('#toast'); e.textContent=t; e.classList.toggle('fehler',!!fehler); e.classList.add('on'); clearTimeout(tt); tt=setTimeout(()=>e.classList.remove('on'), fehler?5000:3500); }
 
 function zeigeLogin(){
@@ -623,11 +634,22 @@ async function seiteBank(){
 async function seiteBelege(bereich, sel){
   const arten = G.belegarten.filter(x=>x.bereich===bereich);
   M().innerHTML = `<div class="kopfzeile"><h1>${bereich==='VK'?'Verkaufsbelege':'Einkaufsbelege'}</h1><span class="sp"></span>
+    ${bereich==='EK'?'<button class="btn" id="erEin" title="XRechnung (XML) oder ZUGFeRD-PDF eines Lieferanten als Rechnungseingang übernehmen">E-Rechnung einlesen</button><input type="file" id="erDatei" accept=".xml,.pdf,application/xml,text/xml,application/pdf" hidden>':''}
     <div class="menue" id="neuM"><button class="btn pri">Neu ▾</button><div class="ddl">${arten.map(a=>`<button data-a="${a.code}">${esc(a.name)}</button>`).join('')}</div></div></div>
     <div class="card"><div class="filter"><input id="fs" placeholder="Suchen: Nummer, Name, Betreff, Projekt"><select id="fa"><option value="">Alle Belegarten</option>${arten.map(a=>`<option value="${a.code}">${esc(a.name)}</option>`).join('')}</select>
     <select id="fst"><option value="">Alle Status</option><option value="entwurf">Entwurf</option><option value="verarbeitet">Verarbeitet</option></select></div>
     <div class="liste"><table><thead><tr><th>Belegart</th><th>Nummer</th><th>Datum</th><th>${bereich==='VK'?'Kunde':'Lieferant'}</th><th>Betreff</th><th>Projekt</th><th class="r">Netto</th><th>Status</th></tr></thead><tbody id="bl"></tbody></table></div></div>`;
   menueAuf('#neuM', code => location.hash = '#/neu/'+code);
+  if ($('#erEin')){ $('#erEin').onclick = () => $('#erDatei').click();
+    $('#erDatei').onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+      if (f.size > 25e6) return toast('Datei zu groß (max. 25 MB).', true);
+      const daten = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result.split(',')[1]); fr.readAsDataURL(f); });
+      const erg = await api('erechnung/einlesen', {body:{name:f.name, daten}}).catch(()=>null); if (!erg) return;
+      const nb = erg.beleg;
+      dialog('E-Rechnung eingelesen', `${esc(erg.daten.syntax)} · Rechnung ${esc(erg.daten.nummer)} · ${eur(erg.daten.brutto)} €`,
+        `<p>Als Rechnungseingang (Entwurf) für <b>${esc(nb.adresse_kurz||'')}</b> angelegt. Bitte prüfen und verarbeiten.</p>${erg.hinweise.length?`<ul>${erg.hinweise.map(h=>`<li>${esc(h)}</li>`).join('')}</ul>`:''}`,
+        [['Schließen',''], ['Beleg öffnen','pri', () => location.hash = '#/beleg/'+nb.id]]); };
+  }
   const laden = async () => {
     const l = await api(`belege?bereich=${bereich}&suche=${encodeURIComponent($('#fs').value)}&belegart=${$('#fa').value}&status=${$('#fst').value}`);
     $('#bl').innerHTML = l.map(b=>`<tr class="klick" onclick="location.hash='#/beleg/${b.id}'"><td>${esc(ba(b.belegart).name)}</td><td>${esc(b.nummer||'(Entwurf)')}</td><td>${fmt(b.datum)}</td><td>${esc(b.adresse_kurz)}</td><td>${esc(b.betreff||'')}</td><td>${esc(b.projektnr||'')}</td><td class="r">${eur(b.netto)}</td><td><span class="pill st-${b.status}">${b.status}</span></td></tr>`).join('') || '<tr><td colspan="8" class="hinweis">Keine Belege.</td></tr>';
@@ -674,7 +696,7 @@ async function belegMaske(b){
     <div class="menue" id="nM"><button class="btn pri" data-ak="n">${ak('Neu','N')} ▾</button><div class="ddl">${G.belegarten.filter(x=>x.bereich===b.bereich).map(x=>`<button data-a="${x.code}">${esc(x.name)}</button>`).join('')}</div></div>
     <div class="menue" id="suM"><button class="btn pri" data-ak="u">S<u>u</u>chen ▾</button><div class="ddl"><button data-a="liste">Belegliste ${vk?'Verkauf':'Einkauf'}</button><button data-a="adresse">Belege dieses ${vk?'Kunden':'Lieferanten'}</button><button data-a="kette">Belege dieses Vorgangs</button></div></div>
     <span class="hinweis">Direktsuche:</span><input id="dSu" style="width:140px" placeholder="Belegnr.">
-    <div class="menue" id="bMn"><button class="btn" data-ak="b">${ak('Beleg','B')} ▾</button><div class="ddl"><button data-a="kopie" ${b.id?'':'disabled'}>Als neuen Beleg kopieren</button><button data-a="kette">Belegkette anzeigen</button><button data-a="adresse">${vk?'Kunde':'Lieferant'} öffnen</button>${b.projekt_id?'<button data-a="projekt">Projekt öffnen</button>':''}${!gesperrt&&b.id?'<button data-a="loeschen">Entwurf löschen</button>':''}</div></div>
+    <div class="menue" id="bMn"><button class="btn" data-ak="b">${ak('Beleg','B')} ▾</button><div class="ddl"><button data-a="kopie" ${b.id?'':'disabled'}>Als neuen Beleg kopieren</button><button data-a="kette">Belegkette anzeigen</button><button data-a="adresse">${vk?'Kunde':'Lieferant'} öffnen</button>${b.projekt_id?'<button data-a="projekt">Projekt öffnen</button>':''}${!gesperrt&&b.id?'<button data-a="loeschen">Entwurf löschen</button>':''}${b.id?'<button data-a="pdf">Als PDF öffnen</button>':''}${gesperrt&&['RE','GS'].includes(b.belegart)?'<button data-a="xrechnung">E-Rechnung XRechnung (XML)</button><button data-a="zugferd">E-Rechnung ZUGFeRD (PDF)</button>':''}</div></div>
     <div class="menue" id="pMn"><button class="btn" data-ak="p" ${gesperrt?'disabled':''}>${ak('Positionen','P')} ▾</button><div class="ddl"><button data-a="neu">Neue Position</button><button data-a="such">Artikel suchen und einfügen…</button><button data-a="text">Textposition</button><button data-a="leer">Leere Positionen entfernen</button></div></div>
     <button class="btn" id="bDok">D<u>o</u>kumente</button>
     <button class="btn" id="bMemo" data-ak="m">${ak('Memotext','M')}${b.memo?' ●':''}</button>
@@ -825,6 +847,8 @@ async function belegMaske(b){
     if (r==='kette') listeDialog('Belegkette', b.kette.length ? b.kette : [b]);
     if (r==='adresse'){ if(!adresseId) return toast('Erst Kunde/Lieferant wählen.', true); location.hash = `#/adressen/${vk?'kunde':'lieferant'}/${adresseId}`; }
     if (r==='projekt') location.hash = '#/projekt/' + b.projekt_id;
+    if (r==='pdf') window.open(`api/belege/${b.id}/pdf`, '_blank');
+    if (r==='xrechnung' || r==='zugferd') herunterladen(`belege/${b.id}/${r}`, r==='xrechnung' ? 'XRechnung' : 'ZUGFeRD-Rechnung');
     if (r==='loeschen'){ if(!confirm('Entwurf löschen?')) return; await api('belege/'+b.id,{method:'DELETE'}); toast('Entwurf gelöscht.'); location.hash='#/belege/'+b.bereich; } });
   if (!gesperrt) menueAuf('#pMn', r => {
     if (r==='neu'){ b.positionen.push({}); zeichne(); const z=$$('#pt .pA'); z[z.length-1]?.focus(); }

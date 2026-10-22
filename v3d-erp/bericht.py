@@ -436,3 +436,211 @@ def mahnung_pdf(db, mid):
     c.drawString(r, 38, "  ·  ".join(t for t in teile if t))
     c.save()
     return buf.getvalue(), f"{m['nummer']}_{m['kurz']}.pdf".replace(" ", "_")
+
+
+# ================================================================ Beleg als PDF (Rechnung, Angebot … – auch Grundlage für ZUGFeRD)
+_SCHRIFT = None
+
+
+def _schriften():
+    """DejaVu einbetten (PDF/A verlangt eingebettete Schriften; Helvetica wäre nur referenziert)."""
+    global _SCHRIFT
+    if _SCHRIFT is None:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        try:
+            pdfmetrics.registerFont(TTFont("DV", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
+            pdfmetrics.registerFont(TTFont("DV-B", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
+            _SCHRIFT = ("DV", "DV-B")
+        except Exception:
+            _SCHRIFT = ("Helvetica", "Helvetica-Bold")
+    return _SCHRIFT
+
+
+def beleg_pdf(db, bid, pdfa=False):
+    from reportlab.lib.pagesizes import A4 as A4H
+    N, F = _schriften()
+    b = erp.beleg_lesen(db, bid)
+    e = erp.einstellungen(db)
+    a = erp.adresse_lesen(db, b["adresse_id"])
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4H, pageCompression=1, initialFontName=N, initialFontSize=9)
+    bw, bh = A4H
+    r = 56
+    c.setTitle(f"{b['belegart_name']} {b['nummer'] or 'Entwurf'}")
+    c.setAuthor(e.get("firma_name") or "")
+    haupt = HexColor(e.get("farbe_haupt") or "#004aad")
+    logo = Bericht({"projektnr": "", "titel": ""}, e).logo
+    eur = lambda v: f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    menge = lambda v: f"{v:,.3f}".rstrip("0").rstrip(".").replace(",", "X").replace(".", ",").replace("X", ".") if v % 1 else f"{int(v):,}".replace(",", ".")
+    seite = [0]
+
+    def fuss():
+        c.setStrokeColor(LINIE)
+        c.line(r, 62, bw - r, 62)
+        spalten = [[e.get("firma_name"), e.get("strasse"), f"{e.get('plz', '')} {e.get('ort', '')}".strip()],
+                   [e.get("telefon") and "Tel. " + e["telefon"], e.get("email"), e.get("web")],
+                   [e.get("bank_name"), e.get("iban") and "IBAN " + e["iban"], e.get("bic") and "BIC " + e["bic"]],
+                   [e.get("geschaeftsfuehrer") and "GF: " + e["geschaeftsfuehrer"], e.get("handelsregister"), e.get("ust_id") and "USt-IdNr. " + e["ust_id"]]]
+        c.setFont(N, 6.8)
+        c.setFillColor(MUTE)
+        breite = (bw - 2 * r) / 4
+        for i, sp in enumerate(spalten):
+            for j, t in enumerate([x for x in sp if x]):
+                c.drawString(r + i * breite, 52 - j * 9, _kuerzen(c, t, breite - 6, N, 6.8))
+        c.drawRightString(bw - r, 70, f"Seite {seite[0]}")
+
+    def kopf_folgeseite():
+        c.setFont(N, 8.5)
+        c.setFillColor(MUTE)
+        c.drawString(r, bh - 50, f"{b['belegart_name']} {b['nummer'] or 'Entwurf'} vom {_de(b['datum'])} – Fortsetzung")
+        return bh - 80
+
+    def tabellenkopf(y):
+        c.setFillColor(HexColor("#eef1f6"))
+        c.rect(r, y - 5, bw - 2 * r, 16, stroke=0, fill=1)
+        c.setFillColor(TEXT)
+        c.setFont(F, 8.5)
+        c.drawString(r + 4, y, "Pos")
+        c.drawString(r + 30, y, "Bezeichnung")
+        c.drawRightString(r + 330, y, "Menge")
+        c.drawString(r + 336, y, "ME")
+        c.drawRightString(r + 420, y, "Einzelpreis €")
+        c.drawRightString(bw - r - 4, y, "Gesamt €")
+        return y - 17
+
+    def neue_seite():
+        fuss()
+        c.showPage()
+        seite[0] += 1
+        return tabellenkopf(kopf_folgeseite())
+
+    seite[0] = 1
+    if logo:
+        iw, ih = logo.getSize()
+        c.drawImage(logo, bw - r - iw * 46 / ih, bh - 40 - 46, iw * 46 / ih, 46, mask="auto")
+    else:
+        c.setFont(F, 15)
+        c.setFillColor(TEXT)
+        c.drawRightString(bw - r, bh - 60, e.get("firma_name") or "")
+    c.setFont(N, 7.2)
+    c.setFillColor(MUTE)
+    c.drawString(r, bh - 148, _kuerzen(c, " · ".join(x for x in [e.get("firma_name"), e.get("strasse"), f"{e.get('plz','')} {e.get('ort','')}".strip()] if x), 240, N, 7.2))
+    c.setStrokeColor(MUTE)
+    c.line(r, bh - 151, r + 240, bh - 151)
+    c.setFillColor(TEXT)
+    c.setFont(N, 10.5)
+    y = bh - 168
+    for z in [a["name1"], a.get("name2"), a.get("strasse"), f"{a.get('plz') or ''} {a.get('ort') or ''}".strip(), a.get("land") if a.get("land") not in (None, "", "DE") else None]:
+        if z:
+            c.drawString(r, y, z)
+            y -= 14
+    info = [("Nummer", b["nummer"] or "ENTWURF"), ("Datum", _de(b["datum"]))]
+    if b.get("kundennr"):
+        info.append(("Kundennr.", b["kundennr"]))
+    if b.get("lieferantennr"):
+        info.append(("Lieferantennr.", b["lieferantennr"]))
+    if b.get("ihre_referenz"):
+        info.append(("Ihr Lieferschein" if b["belegart"] == "WK" else "Ihre Bestellung" if b["bereich"] == "VK" else "Unsere Referenz", b["ihre_referenz"]))
+    if b.get("projektnr"):
+        info.append(("Projekt", b["projektnr"]))
+    if a.get("ust_id") and b["belegart"] in ("RE", "GS"):
+        info.append(("Ihre USt-IdNr.", a["ust_id"]))
+    iy = bh - 160
+    c.setFont(N, 8.8)
+    for k, v in info:
+        c.setFillColor(MUTE)
+        c.drawString(bw - r - 170, iy, k)
+        c.setFillColor(TEXT)
+        c.drawRightString(bw - r, iy, _kuerzen(c, str(v), 95, N, 8.8))
+        iy -= 13
+    y = min(y, iy) - 30
+    c.setFont(F, 14)
+    c.setFillColor(haupt)
+    c.drawString(r, y, f"{b['belegart_name']} {b['nummer'] or ''}".strip())
+    c.setFillColor(TEXT)
+    y -= 18
+    if b.get("betreff"):
+        c.setFont(F, 10)
+        c.drawString(r, y, _kuerzen(c, b["betreff"], bw - 2 * r, F, 10))
+        y -= 16
+
+    def absatz(text, y, groesse=9.5):
+        c.setFont(N, groesse)
+        for ab in (text or "").split("\n"):
+            z = ""
+            for w in ab.split():
+                if c.stringWidth(z + " " + w, N, groesse) > bw - 2 * r:
+                    c.drawString(r, y, z)
+                    y -= groesse + 4
+                    z = w
+                else:
+                    z = (z + " " + w).strip()
+            c.drawString(r, y, z)
+            y -= groesse + 4
+        return y
+
+    if b.get("kopftext"):
+        y = absatz(b["kopftext"], y) - 6
+    y = tabellenkopf(y)
+    for p in b["positionen"]:
+        text = p["text"] + (f"  (Rabatt {p['rabatt_pct']:g} %)" if p.get("rabatt_pct") else "")
+        zeilen_ = []
+        z = ""
+        for w in text.split():
+            if c.stringWidth(z + " " + w, N, 9) > 230:
+                zeilen_.append(z)
+                z = w
+            else:
+                z = (z + " " + w).strip()
+        zeilen_.append(z)
+        if p.get("charge_nr"):
+            zeilen_.append(f"Charge: {p['charge_nr']}")
+        hoehe = 12 * len(zeilen_) + 6
+        if y - hoehe < 110:
+            y = neue_seite()
+        c.setFont(N, 9)
+        c.setFillColor(TEXT)
+        c.drawString(r + 4, y, str(p["pos"]))
+        for i, t in enumerate(zeilen_):
+            c.setFillColor(MUTE if t.startswith("Charge:") else TEXT)
+            c.drawString(r + 30, y - i * 12, t)
+        c.setFillColor(TEXT)
+        c.drawRightString(r + 330, y, menge(p["menge"]))
+        c.drawString(r + 336, y, p["me"] or "")
+        c.drawRightString(r + 420, y, eur(p["einzelpreis"]))
+        c.drawRightString(bw - r - 4, y, eur(p["gesamt"]))
+        y -= hoehe
+        c.setStrokeColor(LINIE)
+        c.line(r, y + 8, bw - r, y + 8)
+    if y < 190:
+        y = neue_seite()
+    # Summen je Steuersatz
+    saetze = {}
+    for p in b["positionen"]:
+        saetze[p["steuer_pct"]] = saetze.get(p["steuer_pct"], 0) + p["gesamt"]
+    y -= 6
+    c.setFont(N, 9.5)
+    c.drawString(bw - r - 220, y, "Summe netto")
+    c.drawRightString(bw - r - 4, y, eur(b["netto"]) + " €")
+    for s, basis in sorted(saetze.items(), reverse=True):
+        y -= 14
+        c.drawString(bw - r - 220, y, f"zzgl. {s:g} % USt. auf {eur(basis)} €")
+        c.drawRightString(bw - r - 4, y, eur(round(basis * s / 100 + 1e-9, 2)) + " €")
+    y -= 18
+    c.setFont(F, 11)
+    c.drawString(bw - r - 220, y, "Gesamtbetrag")
+    c.drawRightString(bw - r - 4, y, eur(b["brutto"]) + " €")
+    y -= 26
+    op = erp.zeile(db.execute("SELECT faellig FROM offener_posten WHERE beleg_id=?", (bid,))) if b["status"] == "verarbeitet" else None
+    if b.get("zahlungsbed") and b["belegart"] in ("RE", "AN", "AB"):
+        y = absatz(f"Zahlungsbedingung: {b['zahlungsbed']}" + (f" – fällig am {_de(op['faellig'])}" if op else ""), y)
+    if b["belegart"] == "RE" and e.get("iban"):
+        y = absatz(f"Bitte überweisen Sie unter Angabe der Rechnungsnummer {b['nummer']} auf: IBAN {e['iban']}" + (f", BIC {e['bic']}" if e.get("bic") else ""), y)
+    if b["belegart"] in ("RE", "GS") and b.get("datum"):
+        y = absatz("Leistungsdatum entspricht dem Rechnungsdatum, soweit nicht anders angegeben.", y, 8.5)
+    if b.get("fusstext"):
+        y = absatz(b["fusstext"], y - 4)
+    fuss()
+    c.save()
+    return buf.getvalue(), f"{b['belegart_name'].split(' ')[0]}_{b['nummer'] or 'Entwurf'}.pdf".replace(" ", "_").replace("/", "-")

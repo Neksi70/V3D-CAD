@@ -385,14 +385,16 @@ def _belegart(db, code):
 
 
 def _summen(positionen):
-    netto = steuer = 0.0
+    """Netto je Position gerundet; Steuer je Steuersatz auf die Summe gerechnet und gerundet (EN 16931 / E-Rechnung)."""
+    netto, je_satz = 0.0, {}
     for p in positionen:
         g = round(float(p["menge"]) * float(p["einzelpreis"]) * (1 - float(p.get("rabatt_pct") or 0) / 100), 2)
         p["gesamt"] = g
         netto += g
-        steuer += g * float(p.get("steuer_pct", 19)) / 100
+        s = float(p.get("steuer_pct", 19))
+        je_satz[s] = je_satz.get(s, 0.0) + g
     netto = round(netto, 2)
-    steuer = round(steuer, 2)
+    steuer = round(sum(round(round(b, 2) * s / 100 + 1e-9, 2) for s, b in je_satz.items()), 2)
     return netto, steuer, round(netto + steuer, 2)
 
 
