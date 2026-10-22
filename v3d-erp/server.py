@@ -21,6 +21,7 @@ import urllib.parse
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import bericht
 import erp
 import seed
 
@@ -58,6 +59,8 @@ def token_pruefen(tok):
 
 
 ROUTEN = []
+# Was die Rolle „werkstatt“ (Tablet in der Produktion) darf – sonst nichts
+WERKSTATT_ERLAUBT = re.compile(r"^(GET /api/(ich|grundlagen|einstellungen|werkstatt)|POST /api/meilensteine/\d+/(erledigt|hinweis))$")
 
 
 def route(methode, muster):
@@ -123,6 +126,13 @@ class H(BaseHTTPRequestHandler):
             return self._senden(401, {"fehler": "Bitte anmelden."})
         if methode in ("POST", "DELETE") and self.headers.get("X-ERP") != "1":     # einfacher CSRF-Schutz
             return self._senden(403, {"fehler": "Ungültige Anfrage."})
+        if benutzer and pfad.startswith("/api/"):
+            with SPERRE:
+                r = DB.execute("SELECT rolle FROM benutzer WHERE login=?", (benutzer,)).fetchone()
+            if not r:
+                return self._senden(401, {"fehler": "Bitte anmelden."})
+            if r["rolle"] == "werkstatt" and not WERKSTATT_ERLAUBT.match(f"{methode} {pfad}"):
+                return self._senden(403, {"fehler": "Für das Werkstatt-Tablet nicht freigegeben."})
         for m, rx, fn in ROUTEN:
             t = rx.match(pfad)
             if m == methode and t:
@@ -130,6 +140,8 @@ class H(BaseHTTPRequestHandler):
                     body = self._body() if methode == "POST" else {}
                     with SPERRE:
                         erg = fn(benutzer=benutzer, q=q, body=body, **{k: int(v) if v.isdigit() else v for k, v in t.groupdict().items()})
+                    if isinstance(erg, dict) and "__datei" in erg:
+                        return self._senden(200, erg["__datei"], erg["typ"], {"Content-Disposition": f'inline; filename="{erg["name"]}"'})
                     return self._senden(200, erg)
                 except erp.Fehler as e:
                     return self._senden(400, {"fehler": str(e)})
@@ -189,6 +201,22 @@ def r_artikel_loeschen(aid, benutzer, **_):
 @route("POST", "/api/belege/(?P<bid>\\d+)/memo")
 def r_beleg_memo(bid, body, benutzer, **_):
     return erp.beleg_memo(DB, bid, body.get("memo"), benutzer)
+
+
+@route("GET", "/api/werkstatt")
+def r_werkstatt(q, **_):
+    return erp.werkstatt_liste(DB, q.get("bereich", ""))
+
+
+@route("POST", "/api/meilensteine/(?P<mid>\\d+)/hinweis")
+def r_hinweis(mid, body, benutzer, **_):
+    return erp.meilenstein_hinweis(DB, mid, body.get("text"), benutzer)
+
+
+@route("GET", "/api/projekte/(?P<pid>\\d+)/bericht.pdf")
+def r_bericht(pid, **_):
+    pdf, name = bericht.terminbericht(DB, pid)
+    return {"__datei": pdf, "typ": "application/pdf", "name": name}
 
 
 @route("GET", "/api/einstellungen")
@@ -302,7 +330,9 @@ def r_fixieren(pid, benutzer, **_):
 
 @route("POST", "/api/meilensteine/(?P<mid>\\d+)/erledigt")
 def r_ms_erledigt(mid, body, benutzer, **_):
-    return erp.meilenstein_erledigt(DB, mid, body.get("datum"), benutzer, bool(body.get("zuruecknehmen")))
+    p = erp.meilenstein_erledigt(DB, mid, body.get("datum"), benutzer, bool(body.get("zuruecknehmen")))
+    rolle = DB.execute("SELECT rolle FROM benutzer WHERE login=?", (benutzer,)).fetchone()["rolle"]
+    return {"ok": True} if rolle == "werkstatt" else p      # Werkstatt sieht keine Beträge/Belege
 
 
 @route("POST", "/api/meilensteine/(?P<mid>\\d+)/verschieben")

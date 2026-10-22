@@ -736,6 +736,41 @@ def meilenstein_verschieben(db, mid, neu_ende, grund, folge=True, bemerkung="", 
     return projekt_lesen(db, m["projekt_id"])
 
 
+# ---------------------------------------------------------------- Werkstatt (Tablet in der Produktion)
+WERKSTATT_PREFIX = "Werkstatt meldet"
+
+
+def werkstatt_liste(db, bereich=""):
+    """Offene Schritte aller laufenden Projekte – ohne Preise/Kundendaten außer Kurzname."""
+    sql = """SELECT m.id, m.pos, m.titel, m.verantwortlich, m.plan_start, m.plan_ende, m.zugesagt, m.ist_ende, m.ist_meilenstein,
+                    p.id projekt_id, p.projektnr, p.titel projekt_titel, a.kurz kunde_kurz
+             FROM meilenstein m JOIN projekt p ON p.id=m.projekt_id LEFT JOIN adresse a ON a.id=p.kunde_id
+             WHERE p.status<>'abgeschlossen' AND (m.ist_ende IS NULL OR m.ist_ende>=?)"""
+    par = [(_dt.date.today() - _dt.timedelta(days=1)).isoformat()]
+    if bereich:
+        sql += " AND m.verantwortlich=?"
+        par.append(bereich)
+    out = zeilen(db.execute(sql + " ORDER BY m.ist_ende IS NOT NULL, m.plan_ende, p.projektnr, m.pos", par))
+    for m in out:
+        m["status"], m["status_text"] = ms_status(m)
+    bereiche = [r["v"] for r in db.execute("""SELECT DISTINCT m.verantwortlich v FROM meilenstein m JOIN projekt p ON p.id=m.projekt_id
+                                              WHERE p.status<>'abgeschlossen' AND m.verantwortlich IS NOT NULL ORDER BY 1""")]
+    return {"schritte": out, "bereiche": bereiche}
+
+
+def meilenstein_hinweis(db, mid, text, benutzer=None):
+    text = (text or "").strip()
+    if not text:
+        raise Fehler("Bitte kurz beschreiben, was los ist.")
+    with transaktion(db):
+        m = db.execute("SELECT projekt_id, titel FROM meilenstein WHERE id=?", (mid,)).fetchone()
+        if not m:
+            raise Fehler("Schritt nicht gefunden.")
+        db.execute("INSERT INTO projekt_verlauf(projekt_id,zeit,benutzer,text) VALUES(?,?,?,?)",
+                   (m["projekt_id"], jetzt(), benutzer, f"{WERKSTATT_PREFIX} zu „{m['titel']}“: {text[:500]}"))
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------- Startseite
 def uebersicht(db):
     h = heute()
@@ -760,6 +795,8 @@ def uebersicht(db):
             if m["status"] in ("over", "risk"):
                 kritisch.append(dict(projekt_id=p["id"], projektnr=p["projektnr"], titel=m["titel"], status=m["status"],
                                      status_text=m["status_text"], plan_ende=m["plan_ende"]))
-    return dict(umsatz_monat=umsatz, umsatz_jahr=jahr, op_debitor=deb["s"], op_debitor_ueber=deb["u"],
+    meldungen = zeilen(db.execute("""SELECT v.zeit, v.benutzer, v.text, p.id projekt_id, p.projektnr FROM projekt_verlauf v JOIN projekt p ON p.id=v.projekt_id
+                                     WHERE v.text LIKE ? ORDER BY v.id DESC LIMIT 8""", (WERKSTATT_PREFIX + "%",)))
+    return dict(werkstatt_meldungen=meldungen, umsatz_monat=umsatz, umsatz_jahr=jahr, op_debitor=deb["s"], op_debitor_ueber=deb["u"],
                 op_kreditor=kred["s"], op_kreditor_ueber=kred["u"], entwuerfe=entwuerfe, meldebestand=melde,
                 projekte=projekte, kritisch=kritisch)

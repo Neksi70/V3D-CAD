@@ -208,6 +208,36 @@ class TestSucheLoeschen(Basis):
         self.assertIn("memo", cols)
 
 
+class TestWerkstattBericht(Basis):
+    def test_werkstatt_liste_und_meldung(self):
+        p = erp.projekt_speichern(self.db, dict(titel="Werkstatt-Test", kunde_id=self.kunde["id"], meilensteine=[
+            dict(titel="Fräsen", verantwortlich="Werkstatt", plan_start=d(-2), plan_ende=d(2)),
+            dict(titel="Prüfen", verantwortlich="QS", plan_start=d(3), plan_ende=d(4))]))
+        w = erp.werkstatt_liste(self.db)
+        self.assertEqual([m["titel"] for m in w["schritte"]], ["Fräsen", "Prüfen"])
+        self.assertEqual(w["bereiche"], ["QS", "Werkstatt"])
+        self.assertNotIn("brutto", w["schritte"][0])                       # keine Beträge
+        self.assertEqual(len(erp.werkstatt_liste(self.db, "QS")["schritte"]), 1)
+        erp.meilenstein_erledigt(self.db, w["schritte"][0]["id"], benutzer="werkstatt")
+        self.assertIsNotNone(erp.werkstatt_liste(self.db)["schritte"][-1]["ist_ende"])   # erledigt bleibt kurz sichtbar
+        with self.assertRaises(erp.Fehler):
+            erp.meilenstein_hinweis(self.db, w["schritte"][1]["id"], "  ")
+        erp.meilenstein_hinweis(self.db, w["schritte"][1]["id"], "Material fehlt", "werkstatt")
+        self.assertIn("Material fehlt", erp.uebersicht(self.db)["werkstatt_meldungen"][0]["text"])
+        p = erp.projekt_lesen(self.db, p["id"])
+        self.assertTrue(any("werkstatt" == v["benutzer"] for v in p["verlauf"]))
+
+    def test_terminbericht_pdf(self):
+        import bericht
+        ms = [dict(titel=f"Schritt {i}", plan_start=d(i * 3 - 30), plan_ende=d(i * 3 - 28), ist_meilenstein=i % 4 == 0) for i in range(40)]
+        p = erp.projekt_speichern(self.db, dict(titel="Großes Projekt mit Umlauten äöüß „Test“", kunde_id=self.kunde["id"], meilensteine=ms))
+        erp.meilenstein_verschieben(self.db, p["meilensteine"][12]["id"], d(20), "Kapazität Fertigung")
+        pdf, name = bericht.terminbericht(self.db, p["id"])
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        self.assertTrue(name.startswith("Terminbericht_P-"))
+        self.assertGreater(pdf.count(b"/Type /Page"), 2)                  # 40 Schritte → mehrere Seiten
+
+
 class TestSeed(unittest.TestCase):
     def test_testdaten_laufen_durch(self):
         with tempfile.TemporaryDirectory() as t:

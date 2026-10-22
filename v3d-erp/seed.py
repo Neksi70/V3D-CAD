@@ -8,11 +8,16 @@ def d(n):
     return (dt.date.today() + dt.timedelta(days=n)).isoformat()
 
 
+def benutzer_sicherstellen(db):
+    for login, name, rolle in [("demo", "Demo Benutzer", "admin"), ("werkstatt", "Werkstatt-Tablet", "werkstatt")]:
+        if not db.execute("SELECT 1 FROM benutzer WHERE login=?", (login,)).fetchone():
+            db.execute("INSERT INTO benutzer(login,name,pw_hash,rolle) VALUES(?,?,?,?)", (login, name, erp.pw_hash(login), rolle))
+
+
 def befuellen(db, benutzer="seed"):
+    benutzer_sicherstellen(db)
     if db.execute("SELECT 1 FROM adresse LIMIT 1").fetchone():
         return False
-    if not db.execute("SELECT 1 FROM benutzer WHERE login='demo'").fetchone():
-        db.execute("INSERT INTO benutzer(login,name,pw_hash,rolle) VALUES('demo','Demo Benutzer',?,'admin')", (erp.pw_hash("demo"),))
 
     # Kunden
     k1 = erp.adresse_speichern(db, dict(kurz="BEISPIELWERK", name1="Beispielwerk Nord AG", strasse="Musterallee 1", plz="20095",
