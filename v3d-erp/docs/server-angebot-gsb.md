@@ -45,6 +45,10 @@ Die Software (V3D ERP: Lizenz/Miete) und der Entwicklungsaufwand sind **nicht** 
 
 **Pflichtkontrolle vor Bestellung:** Betrag ☐ · Abrechnungsperiode ☐ · Laufzeit/Kündigung ☐ · Lieferzeit ☐ · Gewährleistung/Service-Level ☐
 
+## 4a. IT-Betreuung (neu, auf Wunsch GSB)
+Volme 3D kann zusätzlich die Arbeit des bisherigen IT-Betreuers übernehmen: Microsoft 365 (3 Benutzer, info@, anfrage@, auftrag@), Sicherheit/MFA, DNS/Mailzustellung, Datensicherung, auf Wunsch Arbeitsplätze und Netzwerk.
+Details, Übergabe-Checkliste und Vertragspunkte: `~/myfactory-analyse/gsb/konzept-m365-und-it.md`. Im Angebot als eigener Baustein (Pauschale/Monat + Stundensatz) neben dem Server-Wartungsvertrag.
+
 ## 5. Offene Fragen (aus der WhatsApp an Tommi)
 - Anzahl Benutzer, Microsoft 365 ja/nein, vorhandene Server/NAS/Firewall, Internetanschluss (feste IP?), Serverraum/Klima
 - Soll der Kundenlink zum Zeitstrahl über den GSB-Anschluss laufen oder über einen kleinen vorgeschalteten Cloud-Server?

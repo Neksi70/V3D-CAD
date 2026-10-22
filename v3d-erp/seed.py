@@ -9,6 +9,9 @@ def d(n):
 
 
 def benutzer_sicherstellen(db):
+    """Nur in einer leeren Datenbank Startbenutzer anlegen – danach Kennwörter mit benutzer.py verwalten."""
+    if db.execute("SELECT 1 FROM benutzer LIMIT 1").fetchone():
+        return
     for login, name, rolle in [("demo", "Demo Benutzer", "admin"), ("werkstatt", "Werkstatt-Tablet", "werkstatt")]:
         if not db.execute("SELECT 1 FROM benutzer WHERE login=?", (login,)).fetchone():
             db.execute("INSERT INTO benutzer(login,name,pw_hash,rolle) VALUES(?,?,?,?)", (login, name, erp.pw_hash(login), rolle))

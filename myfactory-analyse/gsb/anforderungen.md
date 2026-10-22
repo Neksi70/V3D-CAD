@@ -19,9 +19,12 @@ Umsatzübersicht, Umsatzvergleich Artikelgruppen, Fälligkeiten Kunden/Lieferant
 - Fallback ohne M365: IMAP/SMTP (Muster: V3D Mail, Zuordnung Mail → Adresse).
 - Datenschutz: Die App-Registrierung läuft im Tenant von GSB mit Admin-Zustimmung, die Daten bleiben auf dem GSB-Server. Grundlage ist der AVV.
 
+## Antworten Tommi (22.10.)
+- Zeitstrahl „genau richtig“; Produktion soll später auf eigenem Tablet/Rechner abhaken (umgesetzt: Rolle „werkstatt“); Kunde bekommt jederzeit PDF (umgesetzt: Terminbericht-PDF)
+- **Microsoft 365**: 3 persönliche Postfächer + info@ + anfrage@, bald auftrag@ → Konzept: `konzept-m365-und-it.md`
+- Administration macht bisher ein externer IT-Betreuer → **Volme 3D soll die IT-Betreuung übernehmen können** (Teil B im Konzept)
+
 ## Offene Fragen
-- Microsoft 365 / Exchange Online, lokaler Exchange oder anderer Mailanbieter?
-- Ein gemeinsames Postfach (info@) oder persönliche Postfächer? Wie viele Benutzer?
 - Typische Meilensteine eines Projekts? Wie bekommt der Kunde den Zeitstrahl heute? Wer pflegt die Termine?
 - ~~Wo soll das System laufen?~~ → **Entschieden 22.10.: läuft bei GSB im Haus auf einem Server, den Volker verkauft.**
 

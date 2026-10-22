@@ -7,7 +7,7 @@ const errs=[]; pg.on('pageerror', e=>errs.push('PAGE '+e.message)); pg.on('conso
 pg.on('dialog', d=>d.accept());
 const S = s => pg.locator('.seite.on ' + s);
 const out={};
-await pg.goto(B); await pg.fill('#lp','demo'); await pg.click('button.pri'); await pg.waitForSelector('.seite.on .kpis');
+await pg.goto(B); await pg.fill('#lu','demo'); await pg.fill('#lp','demo'); await pg.click('button.pri'); await pg.waitForSelector('.seite.on .kpis');
 out.tabs1 = await pg.locator('#tabs .rt').allInnerTexts();
 // Business-Suche
 await pg.fill('#bs','Schweiß'); await pg.waitForSelector('#bsErg.auf a');

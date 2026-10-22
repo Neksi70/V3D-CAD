@@ -59,6 +59,7 @@ def token_pruefen(tok):
 
 
 ROUTEN = []
+FEHLVERSUCHE = {}      # Anmeldesperre: Schlüssel → (Anzahl, letzter Versuch)
 # Was die Rolle „werkstatt“ (Tablet in der Produktion) darf – sonst nichts
 WERKSTATT_ERLAUBT = re.compile(r"^(GET /api/(ich|grundlagen|einstellungen|werkstatt)|POST /api/meilensteine/\d+/(erledigt|hinweis))$")
 
@@ -110,8 +111,21 @@ class H(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self._verteilen("DELETE")
 
+    def _cookie(self, wert, alter):
+        """Cookie nur für den eigenen Pfad; über HTTPS (Funnel) zusätzlich Secure."""
+        pfad = "/erp" if self.unter_erp else "/"
+        sicher = "; Secure" if self.headers.get("X-Forwarded-Proto", "") == "https" or self.unter_erp else ""
+        return f"erp={wert}; Path={pfad}; Max-Age={alter}; HttpOnly; SameSite=Strict{sicher}"
+
     def _verteilen(self, methode):
         url = urllib.parse.urlparse(self.path)
+        self.unter_erp = url.path == "/erp" or url.path.startswith("/erp/")
+        if url.path == "/erp":                         # ohne Schrägstrich würden relative api/-Aufrufe ins Leere gehen
+            self.send_response(301)
+            self.send_header("Location", "/erp/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         pfad = re.sub(r"^/erp", "", url.path) or "/"   # erlaubt Betrieb unter /erp hinter einem Proxy
         q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
         if methode == "GET" and pfad in ("/", "/index.html"):
@@ -120,7 +134,7 @@ class H(BaseHTTPRequestHandler):
         if pfad == "/api/login" and methode == "POST":
             return self._login()
         if pfad == "/api/logout":
-            return self._senden(200, {"ok": True}, kopf={"Set-Cookie": "erp=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"})
+            return self._senden(200, {"ok": True}, kopf={"Set-Cookie": self._cookie("", 0)})
         benutzer = self._benutzer()
         if pfad.startswith("/api/") and not benutzer:
             return self._senden(401, {"fehler": "Bitte anmelden."})
@@ -155,13 +169,24 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
         except Exception:
             return self._senden(400, {"fehler": "Ungültige Anfrage."})
+        login = str(d.get("login", ""))[:60]
+        # Hinter dem Funnel ist die Absender-IP immer 127.0.0.1 → Sperre je Benutzername (+ X-Forwarded-For)
+        quelle = (self.headers.get("X-Forwarded-For") or self.client_address[0]).split(",")[0].strip()
+        jetzt_ = time.time()
+        for k in (f"u:{login}", f"ip:{quelle}"):
+            sp = FEHLVERSUCHE.get(k)
+            if sp and sp[0] >= 10 and jetzt_ - sp[1] < 900:
+                return self._senden(429, {"fehler": "Zu viele Fehlversuche – bitte 15 Minuten warten."})
         with SPERRE:
-            u = DB.execute("SELECT * FROM benutzer WHERE login=?", (d.get("login", ""),)).fetchone()
+            u = DB.execute("SELECT * FROM benutzer WHERE login=?", (login,)).fetchone()
         if not u or not erp.pw_pruefen(d.get("passwort", ""), u["pw_hash"]):
+            for k in (f"u:{login}", f"ip:{quelle}"):
+                n, t0 = FEHLVERSUCHE.get(k, (0, jetzt_))
+                FEHLVERSUCHE[k] = (n + 1 if jetzt_ - t0 < 900 else 1, jetzt_)
             time.sleep(0.8)
             return self._senden(403, {"fehler": "Benutzer oder Kennwort falsch."})
-        return self._senden(200, {"ok": True, "name": u["name"]},
-                            kopf={"Set-Cookie": f"erp={token_machen(u['login'])}; Path=/; Max-Age={SITZUNG_STD*3600}; HttpOnly; SameSite=Strict"})
+        FEHLVERSUCHE.pop(f"u:{login}", None)
+        return self._senden(200, {"ok": True, "name": u["name"]}, kopf={"Set-Cookie": self._cookie(token_machen(u["login"]), SITZUNG_STD * 3600)})
 
 
 # ---------------------------------------------------------------- Routen

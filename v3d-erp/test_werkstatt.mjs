@@ -6,7 +6,7 @@ const out={}; const errs=[];
 // --- Büro: PDF
 let pg = await b.newPage({viewport:{width:1440,height:950}});
 pg.on('pageerror', e=>errs.push('PAGE '+e.message)); pg.on('dialog', d=>d.accept());
-await pg.goto(B); await pg.fill('#lp','demo'); await pg.click('button.pri'); await pg.waitForSelector('.seite.on .kpis');
+await pg.goto(B); await pg.fill('#lu','demo'); await pg.fill('#lp','demo'); await pg.click('button.pri'); await pg.waitForSelector('.seite.on .kpis');
 const pdf = await pg.evaluate(async()=>{ const r=await fetch('api/projekte/1/bericht.pdf'); const t=await r.arrayBuffer(); return [r.status, r.headers.get('content-type'), r.headers.get('content-disposition'), new TextDecoder().decode(new Uint8Array(t).slice(0,5))]; });
 out.pdf = pdf;
 await pg.close();
@@ -34,7 +34,7 @@ out.rechte = await pg.evaluate(async()=>{ const r1=await fetch('api/adressen'); 
 await ctx.close();
 // --- Büro sieht Meldung
 pg = await b.newPage({viewport:{width:1440,height:950}}); pg.on('pageerror', e=>errs.push('PAGE '+e.message));
-await pg.goto(B); await pg.fill('#lp','demo'); await pg.click('button.pri'); await pg.waitForSelector('.seite.on .kpis');
+await pg.goto(B); await pg.fill('#lu','demo'); await pg.fill('#lp','demo'); await pg.click('button.pri'); await pg.waitForSelector('.seite.on .kpis');
 out.buero = (await pg.locator('.seite.on .card', {hasText:'Meldungen aus der Werkstatt'}).innerText()).replace(/\n/g,' | ');
 await pg.screenshot({path:'/tmp/ws2.png'});
 console.log(JSON.stringify({errs, ...out}, null, 1));
