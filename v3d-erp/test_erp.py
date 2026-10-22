@@ -178,6 +178,36 @@ class TestEinstellungen(Basis):
             erp.einstellungen_speichern(self.db, dict(logo="javascript:alert(1)"))
 
 
+class TestSucheLoeschen(Basis):
+    def test_suche(self):
+        b = erp.beleg_verarbeiten(self.db, self.beleg("RE", self.kunde)["id"])["beleg"]
+        typen = {e["typ"] for e in erp.suche(self.db, "Test")}
+        self.assertTrue({"Adresse"} <= typen)
+        self.assertEqual(erp.suche(self.db, b["nummer"])[0]["ziel"], f"#/beleg/{b['id']}")
+        self.assertEqual(erp.suche(self.db, "x"), [])
+
+    def test_loeschen_nur_ohne_verwendung(self):
+        self.beleg("AN", self.kunde)
+        with self.assertRaises(erp.Fehler):
+            erp.adresse_loeschen(self.db, self.kunde["id"])
+        with self.assertRaises(erp.Fehler):
+            erp.artikel_loeschen(self.db, self.art["id"])
+        frei = erp.adresse_speichern(self.db, dict(name1="Weg damit", kunde={}))
+        erp.adresse_loeschen(self.db, frei["id"])
+        self.assertEqual(erp.adressen_liste(self.db, "Weg damit"), [])
+
+    def test_memo_auch_nach_verarbeiten(self):
+        b = erp.beleg_verarbeiten(self.db, self.beleg("AN", self.kunde)["id"])["beleg"]
+        erp.beleg_memo(self.db, b["id"], "Kunde ruft zurück")
+        self.assertEqual(erp.beleg_lesen(self.db, b["id"])["memo"], "Kunde ruft zurück")
+
+    def test_migration_alte_datenbank(self):
+        self.db.execute("CREATE TABLE IF NOT EXISTS x(y)")
+        erp.schema_anlegen(self.db)          # zweimal anlegen darf nichts kaputtmachen
+        cols = [r["name"] for r in self.db.execute("PRAGMA table_info(artikel)")]
+        self.assertIn("memo", cols)
+
+
 class TestSeed(unittest.TestCase):
     def test_testdaten_laufen_durch(self):
         with tempfile.TemporaryDirectory() as t:

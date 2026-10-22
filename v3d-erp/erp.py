@@ -31,6 +31,10 @@ def schema_anlegen(db):
         db.executescript(f.read())
     if not db.execute("SELECT 1 FROM belegart LIMIT 1").fetchone():
         grundlagen_anlegen(db)
+    # nachträglich hinzugekommene Spalten (bestehende Datenbanken)
+    for tab, sp in [("artikel", "memo"), ("beleg", "memo"), ("projekt", "memo")]:
+        if sp not in [r["name"] for r in db.execute(f"PRAGMA table_info({tab})")]:
+            db.execute(f"ALTER TABLE {tab} ADD COLUMN {sp} TEXT")
 
 
 def jetzt():
@@ -100,7 +104,7 @@ def grundlagen_anlegen(db):
 # ---------------------------------------------------------------- Einstellungen
 EINSTELLUNGEN = ["firma_name", "firma_zusatz", "strasse", "plz", "ort", "telefon", "email", "web", "ust_id", "steuernr",
                  "handelsregister", "geschaeftsfuehrer", "bank_name", "iban", "bic", "logo",
-                 "kopftext_vk", "fusstext_vk", "kopftext_ek", "fusstext_ek"]
+                 "kopftext_vk", "fusstext_vk", "kopftext_ek", "fusstext_ek", "farbe_haupt", "farbe_akzent", "betriebsstaette"]
 STANDARD_EINSTELLUNGEN = dict(
     firma_name="Muster Fertigung GmbH", firma_zusatz="Sondermaschinen · Vorrichtungen · Serienteile",
     strasse="Beispielstraße 1", plz="58089", ort="Hagen", telefon="02331 000000", email="info@muster-fertigung.example",
@@ -108,7 +112,8 @@ STANDARD_EINSTELLUNGEN = dict(
     geschaeftsfuehrer="Max Mustermann", bank_name="Musterbank Hagen", iban="DE00 0000 0000 0000 0000 00", bic="MUSTDEXXX",
     logo="", kopftext_vk="Vielen Dank für Ihre Anfrage. Gerne bieten wir Ihnen an:",
     fusstext_vk="Für Rückfragen stehen wir Ihnen gern zur Verfügung.", kopftext_ek="Wir bestellen zu den vereinbarten Bedingungen:",
-    fusstext_ek="Bitte bestätigen Sie uns Liefertermin und Preis.")
+    fusstext_ek="Bitte bestätigen Sie uns Liefertermin und Preis.",
+    farbe_haupt="#004aad", farbe_akzent="#f39200", betriebsstaette="1 - Zentrale")
 
 
 def einstellungen(db):
@@ -120,6 +125,10 @@ def einstellungen_speichern(db, d, benutzer=None):
     logo = d.get("logo") or ""
     if logo and (not logo.startswith("data:image/") or len(logo) > 700_000):
         raise Fehler("Logo bitte als Bild (PNG/JPG/SVG) bis ca. 500 KB.")
+    import re as _re
+    for k in ("farbe_haupt", "farbe_akzent"):
+        if d.get(k) and not _re.fullmatch(r"#[0-9a-fA-F]{6}", d[k]):
+            raise Fehler("Farben bitte als #RRGGBB angeben.")
     with transaktion(db):
         for k in EINSTELLUNGEN:
             if k in d:
@@ -222,6 +231,41 @@ def adresse_lesen(db, aid):
     return a
 
 
+def adresse_loeschen(db, aid, benutzer=None):
+    with transaktion(db):
+        if db.execute("SELECT 1 FROM beleg WHERE adresse_id=? LIMIT 1", (aid,)).fetchone():
+            raise Fehler("Zu dieser Adresse gibt es Belege – sie kann nicht gelöscht werden. Stattdessen Liefersperre setzen.")
+        if db.execute("SELECT 1 FROM projekt WHERE kunde_id=? LIMIT 1", (aid,)).fetchone():
+            raise Fehler("Die Adresse ist Kunde eines Projekts und kann nicht gelöscht werden.")
+        for t in ("ansprechpartner", "kunde", "lieferant"):
+            db.execute(f"DELETE FROM {t} WHERE adresse_id=?", (aid,))
+        db.execute("DELETE FROM adresse WHERE id=?", (aid,))
+        protokoll(db, benutzer, "adresse", aid, "gelöscht")
+
+
+def suche(db, q):
+    """Business-Suche: Adressen, Artikel, Belege, Projekte mit einem Begriff."""
+    q = (q or "").strip()
+    if len(q) < 2:
+        return []
+    l = f"%{q}%"
+    erg = []
+    for r in db.execute("""SELECT a.id, a.kurz, a.name1, a.ort, k.kundennr, lf.lieferantennr FROM adresse a LEFT JOIN kunde k ON k.adresse_id=a.id
+                           LEFT JOIN lieferant lf ON lf.adresse_id=a.id WHERE a.kurz LIKE ? OR a.name1 LIKE ? OR a.adressnr LIKE ? OR k.kundennr LIKE ?
+                           OR lf.lieferantennr LIKE ? OR a.ort LIKE ? OR a.email LIKE ? LIMIT 8""", [l] * 7):
+        rolle = "kunde" if r["kundennr"] else ("lieferant" if r["lieferantennr"] else "")
+        erg.append(dict(typ="Adresse", titel=f"{r['kundennr'] or r['lieferantennr'] or ''} {r['kurz']}".strip(), info=f"{r['name1']} · {r['ort'] or ''}",
+                        ziel=f"#/adressen/{rolle}/{r['id']}"))
+    for r in db.execute("SELECT id, artikelnr, kurz, bezeichnung FROM artikel WHERE artikelnr LIKE ? OR kurz LIKE ? OR bezeichnung LIKE ? LIMIT 8", [l] * 3):
+        erg.append(dict(typ="Artikel", titel=f"{r['artikelnr']} {r['kurz']}", info=r["bezeichnung"], ziel=f"#/artikel/{r['id']}"))
+    for r in db.execute("""SELECT b.id, b.nummer, b.status, b.betreff, ba.name, a.kurz FROM beleg b JOIN belegart ba ON ba.code=b.belegart
+                           JOIN adresse a ON a.id=b.adresse_id WHERE b.nummer LIKE ? OR b.betreff LIKE ? OR b.ihre_referenz LIKE ? ORDER BY b.id DESC LIMIT 8""", [l] * 3):
+        erg.append(dict(typ="Beleg", titel=f"{r['name']} {r['nummer'] or '(Entwurf)'}", info=f"{r['kurz']} · {r['betreff'] or ''}", ziel=f"#/beleg/{r['id']}"))
+    for r in db.execute("SELECT id, projektnr, titel FROM projekt WHERE projektnr LIKE ? OR titel LIKE ? LIMIT 8", [l] * 2):
+        erg.append(dict(typ="Projekt", titel=r["projektnr"], info=r["titel"], ziel=f"#/projekt/{r['id']}"))
+    return erg
+
+
 def adressen_liste(db, suche="", rolle=""):
     sql = """SELECT a.id,a.adressnr,a.kurz,a.name1,a.name2,a.strasse,a.plz,a.ort,a.land,a.telefon,a.email,
                     k.kundennr, l.lieferantennr, k.zahlungsbed_id k_zb, k.rabatt_pct k_rabatt, l.zahlungsbed_id l_zb
@@ -239,7 +283,7 @@ def adressen_liste(db, suche="", rolle=""):
 
 # ---------------------------------------------------------------- Artikel
 ARTIKEL_FELDER = ["artikelnr", "kurz", "bezeichnung", "me", "gruppe", "vk_preis", "ek_preis", "steuer_pct",
-                  "lagerfuehrung", "meldebestand", "hauptlieferant_id", "inaktiv"]
+                  "lagerfuehrung", "meldebestand", "hauptlieferant_id", "inaktiv", "memo"]
 
 
 def artikel_speichern(db, d, benutzer=None):
@@ -250,7 +294,7 @@ def artikel_speichern(db, d, benutzer=None):
         if not d.get("artikelnr"):
             d["artikelnr"] = naechste_stammnr(db, "artikel", "artikelnr", 100000)
         werte = [d.get(f) for f in ARTIKEL_FELDER]
-        werte = [w if w is not None else dflt for w, dflt in zip(werte, [None, None, None, "Stk", None, 0, 0, 19, 1, 0, None, 0])]
+        werte = [w if w is not None else dflt for w, dflt in zip(werte, [None, None, None, "Stk", None, 0, 0, 19, 1, 0, None, 0, None])]
         if d.get("id"):
             db.execute(f"UPDATE artikel SET {', '.join(f + '=?' for f in ARTIKEL_FELDER)} WHERE id=?", werte + [d["id"]])
             aid = d["id"]
@@ -258,6 +302,15 @@ def artikel_speichern(db, d, benutzer=None):
             aid = db.execute(f"INSERT INTO artikel({','.join(ARTIKEL_FELDER)}) VALUES({','.join('?' * len(ARTIKEL_FELDER))})", werte).lastrowid
         protokoll(db, benutzer, "artikel", aid, "gespeichert")
     return artikel_lesen(db, aid)
+
+
+def artikel_loeschen(db, aid, benutzer=None):
+    with transaktion(db):
+        if db.execute("SELECT 1 FROM beleg_position WHERE artikel_id=? LIMIT 1", (aid,)).fetchone() or \
+           db.execute("SELECT 1 FROM lagerbewegung WHERE artikel_id=? LIMIT 1", (aid,)).fetchone():
+            raise Fehler("Der Artikel wird in Belegen oder Lagerbewegungen verwendet – stattdessen auf „inaktiv“ setzen.")
+        db.execute("DELETE FROM artikel WHERE id=?", (aid,))
+        protokoll(db, benutzer, "artikel", aid, "gelöscht")
 
 
 def bestand(db, artikel_id):
@@ -337,7 +390,7 @@ def beleg_speichern(db, d, benutzer=None):
     felder = dict(belegart=art["code"], datum=d.get("datum") or heute(), adresse_id=d["adresse_id"],
                   projekt_id=d.get("projekt_id") or None, betreff=d.get("betreff"), ihre_referenz=d.get("ihre_referenz"),
                   kopftext=d.get("kopftext"), fusstext=d.get("fusstext"), zahlungsbed_id=d.get("zahlungsbed_id") or None,
-                  lager_id=d.get("lager_id") or 1, netto=netto, steuer=steuer, brutto=brutto)
+                  lager_id=d.get("lager_id") or 1, netto=netto, steuer=steuer, brutto=brutto, memo=d.get("memo"))
     with transaktion(db):
         bid = d.get("id")
         if bid:
@@ -358,6 +411,14 @@ def beleg_speichern(db, d, benutzer=None):
                         float(p.get("rabatt_pct") or 0), float(p["steuer_pct"]), p["gesamt"], p.get("vorgaenger_pos_id")))
         protokoll(db, benutzer, "beleg", bid, "gespeichert")
     return beleg_lesen(db, bid)
+
+
+def beleg_memo(db, bid, memo, benutzer=None):
+    with transaktion(db):
+        if not db.execute("UPDATE beleg SET memo=? WHERE id=?", (memo, bid)).rowcount:
+            raise Fehler("Beleg nicht gefunden.")
+        protokoll(db, benutzer, "beleg", bid, "Memotext")
+    return {"ok": True}
 
 
 def beleg_lesen(db, bid):

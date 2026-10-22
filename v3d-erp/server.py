@@ -121,7 +121,7 @@ class H(BaseHTTPRequestHandler):
         benutzer = self._benutzer()
         if pfad.startswith("/api/") and not benutzer:
             return self._senden(401, {"fehler": "Bitte anmelden."})
-        if methode == "POST" and self.headers.get("X-ERP") != "1":     # einfacher CSRF-Schutz
+        if methode in ("POST", "DELETE") and self.headers.get("X-ERP") != "1":     # einfacher CSRF-Schutz
             return self._senden(403, {"fehler": "Ungültige Anfrage."})
         for m, rx, fn in ROUTEN:
             t = rx.match(pfad)
@@ -167,6 +167,28 @@ def r_grundlagen(**_):
                 lager=erp.zeilen(DB.execute("SELECT * FROM lager")),
                 gruende=["Lieferant liefert später", "Freigabe Kunde verzögert", "Änderungswunsch Kunde", "Kapazität Fertigung",
                          "Nacharbeit / Qualität", "Krankheit / Urlaub", "Sonstiges"])
+
+
+@route("GET", "/api/suche")
+def r_suche(q, **_):
+    return erp.suche(DB, q.get("q", ""))
+
+
+@route("DELETE", "/api/adressen/(?P<aid>\\d+)")
+def r_adresse_loeschen(aid, benutzer, **_):
+    erp.adresse_loeschen(DB, aid, benutzer)
+    return {"ok": True}
+
+
+@route("DELETE", "/api/artikel/(?P<aid>\\d+)")
+def r_artikel_loeschen(aid, benutzer, **_):
+    erp.artikel_loeschen(DB, aid, benutzer)
+    return {"ok": True}
+
+
+@route("POST", "/api/belege/(?P<bid>\\d+)/memo")
+def r_beleg_memo(bid, body, benutzer, **_):
+    return erp.beleg_memo(DB, bid, body.get("memo"), benutzer)
 
 
 @route("GET", "/api/einstellungen")

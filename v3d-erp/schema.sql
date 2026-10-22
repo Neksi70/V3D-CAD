@@ -117,7 +117,8 @@ CREATE TABLE IF NOT EXISTS artikel (
   lagerfuehrung INTEGER NOT NULL DEFAULT 1,
   meldebestand  REAL NOT NULL DEFAULT 0,
   hauptlieferant_id INTEGER REFERENCES adresse(id),
-  inaktiv       INTEGER NOT NULL DEFAULT 0
+  inaktiv       INTEGER NOT NULL DEFAULT 0,
+  memo          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS lagerbewegung (
@@ -139,7 +140,8 @@ CREATE TABLE IF NOT EXISTS projekt (
   ansprechpartner TEXT,
   status        TEXT NOT NULL DEFAULT 'aktiv',   -- angebot | aktiv | abgeschlossen
   angelegt      TEXT NOT NULL,
-  plan_fixiert  TEXT                              -- Zeitpunkt, an dem die Zusage eingefroren wurde
+  plan_fixiert  TEXT,                             -- Zeitpunkt, an dem die Zusage eingefroren wurde
+  memo          TEXT
 );
 
 -- ---------- Belege ----------
@@ -163,7 +165,8 @@ CREATE TABLE IF NOT EXISTS beleg (
   angelegt       TEXT NOT NULL,
   angelegt_von   TEXT,
   verarbeitet    TEXT,
-  verarbeitet_von TEXT
+  verarbeitet_von TEXT,
+  memo           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS beleg_position (
