@@ -24,6 +24,24 @@ Umsatzübersicht, Umsatzvergleich Artikelgruppen, Fälligkeiten Kunden/Lieferant
 - **Microsoft 365**: 3 persönliche Postfächer + info@ + anfrage@, bald auftrag@ → Konzept: `konzept-m365-und-it.md`
 - Administration macht bisher ein externer IT-Betreuer → **Volme 3D soll die IT-Betreuung übernehmen können** (Teil B im Konzept)
 
+## Antworten Tommi Teil 3 (22.10.)
+- **Benutzer:** 3 (Tommi, Mutter, Schwester), **alle brauchen alle Module** (keine Abteilungstrennung). Mittelfristig (~5 Jahre) soll die **Produktion Arbeiten freigeben** können (Workflow).
+- **Buchhaltung:** heute außerhalb des ERP, alles an Steuerberater über **DATEV**; soll sich ändern („wie besprochen“).
+- **Was an myfactory nervt:**
+  1. Komplexität und **Instabilität**: Dinge werden nicht oder falsch angezeigt → Neustart oder anderer Account nötig
+  2. **Chargennummer immer wieder eingeben**, um Dokumente zu verknüpfen und zuzuordnen (will Tommi in der Praxis zeigen)
+  3. **Wareneingang Rohware mit Charge**: je Position ein Knopf, statt die ganze Auftragsbestätigung auf einmal als Wareneingang mit Rohmaterial zu buchen
+  4. **Kosten zu Artikeln** sehr aufwendig, das System will immer tiefere Positionen
+  5. **E-Mail-Anbindung** scheiterte an einer IT-Freischaltung (→ M365-Konzept, Volme 3D übernimmt IT)
+
+## Abgeleitete Kernanforderungen (neu, Priorität hoch)
+- **Charge als zentrales Objekt:** einmal beim Wareneingang erfasst, danach automatisch an Fertigung, Lieferschein, Rechnung, Dokumenten. Nie wieder abtippen.
+- **Wareneingang für den ganzen Auftrag in einem Schritt:** Tabelle aller Positionen, Charge je Zeile (oder eine für alle), Menge vorbelegt, ein Klick „buchen“.
+- **Dokumente an der Charge** (Werkszeugnis, Prüfprotokoll, Kunden-Lieferschein): einmal hochladen, überall sichtbar.
+- **Einfache Kalkulation:** Material + Zeit × Stundensatz + Fremdleistung + Aufschlag; Details freiwillig.
+- **Stabilität vor Funktionsfülle.**
+- **DATEV-Übergabe** (Stufe 1), später OP/Bank.
+
 ## Offene Fragen
 - Typische Meilensteine eines Projekts? Wie bekommt der Kunde den Zeitstrahl heute? Wer pflegt die Termine?
 - ~~Wo soll das System laufen?~~ → **Entschieden 22.10.: läuft bei GSB im Haus auf einem Server, den Volker verkauft.**
