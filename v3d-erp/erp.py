@@ -191,7 +191,7 @@ def adresse_lesen(db, aid):
 
 
 def adressen_liste(db, suche="", rolle=""):
-    sql = """SELECT a.id,a.adressnr,a.kurz,a.name1,a.plz,a.ort,a.telefon,a.email,
+    sql = """SELECT a.id,a.adressnr,a.kurz,a.name1,a.name2,a.strasse,a.plz,a.ort,a.land,a.telefon,a.email,
                     k.kundennr, l.lieferantennr, k.zahlungsbed_id k_zb, k.rabatt_pct k_rabatt, l.zahlungsbed_id l_zb
              FROM adresse a LEFT JOIN kunde k ON k.adresse_id=a.id LEFT JOIN lieferant l ON l.adresse_id=a.id WHERE 1=1"""
     p = []

@@ -114,6 +114,29 @@ dialog::backdrop{background:rgba(20,26,40,.45)}
   @page{size:A4;margin:15mm}
   body.querformat{}
 }
+/* Briefansicht Belegerfassung */
+.tisch{background:#dfe3ea;border-radius:10px;padding:22px 12px;overflow-x:auto}
+.blatt{background:#fff;max-width:900px;min-width:720px;margin:0 auto;padding:34px 44px 30px;box-shadow:0 4px 18px rgba(0,0,0,.14);border-radius:2px}
+.blatt input,.blatt select,.blatt textarea{border:1px solid transparent;background:#f5f7fb;border-radius:3px}
+.blatt input:focus,.blatt select:focus,.blatt textarea:focus{border-color:var(--blue);background:#fff;outline:0}
+.blatt.gesperrt input,.blatt.gesperrt select,.blatt.gesperrt textarea{background:transparent;color:var(--ink);-webkit-text-fill-color:var(--ink);opacity:1}
+.blatt.gesperrt select{appearance:none}.blatt.gesperrt textarea{resize:none}.blatt.gesperrt textarea:placeholder-shown{display:none}
+.bk-firma{text-align:right;font-weight:700;font-size:18px;letter-spacing:.02em}.bk-firma small{display:block;font-weight:400;font-size:11px;color:var(--mute)}
+.bk-oben{display:flex;justify-content:space-between;gap:24px;margin:26px 0 18px}
+.bk-links{width:46%}.bk-abs{font-size:9.5px;border-bottom:1px solid #444;padding-bottom:1px;margin-bottom:8px;white-space:nowrap;overflow:hidden}
+.bk-anschrift{min-height:96px;line-height:1.5}
+.bk-kasten{width:330px;border:1px solid #444;padding:0 0 4px}
+.bk-titel{background:#e9ecf1;border-bottom:1px solid #444;text-align:center;font-weight:700;font-size:17px;padding:4px}
+.bk-z{display:grid;grid-template-columns:118px 1fr;gap:6px;align-items:center;padding:2px 8px;font-size:13px}
+.bk-z>span:first-child{color:#444}
+.bk-z input,.bk-z select{padding:2px 5px}
+.bk-such{display:flex;gap:3px}.bk-such .btn{padding:0 7px}
+.bk-zb{grid-template-columns:150px 260px;justify-content:end;padding:6px 0}
+.bk-text{display:block;margin:8px 0;resize:vertical;font:inherit}
+.bk-pos th{background:#e9ecf1;color:#333;border-bottom:1px solid #444;position:static}
+.bk-pos td{border-bottom:1px solid #eceff4}
+.statusleiste{display:flex;gap:10px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-top:10px;font-size:13px;flex-wrap:wrap}
+@media (max-width:820px){.blatt{padding:18px;min-width:680px}}
 .druck .brief{font-size:12.5px}
 .druck .absz{font-size:9px;border-bottom:1px solid #000;display:inline-block;margin-bottom:4px}
 .druck .bk{border:1px solid #000;padding:6px 10px;width:250px;float:right}
@@ -256,43 +279,59 @@ async function belegMaske(b){
   const gesperrt = b.status!=='entwurf';
   const dis = gesperrt ? 'disabled' : '';
   if (!b.positionen.length && !gesperrt) b.positionen.push({});
-  M().innerHTML = `<div class="kopfzeile noprint"><a href="#/belege/${b.bereich}">← ${vk?'Verkaufsbelege':'Einkaufsbelege'}</a></div>
-  <div class="kopfzeile"><h1>${esc(b.belegart_name)} ${b.nummer?esc(b.nummer):'<span class="hinweis">(Entwurf – Nummer beim Verarbeiten)</span>'}</h1>
-    <span class="pill st-${b.status}">${b.status}</span><span class="sp"></span>
+  const nrVon = a => vk ? a.kundennr : a.lieferantennr;
+  let adresseId = b.adresse_id || null;
+  const aktAdr = () => adr.find(x=>x.id===adresseId);
+  const anschrift = a => a ? [a.name1, a.name2, a.strasse, [a.plz,a.ort].filter(Boolean).join(' '), a.land&&a.land!=='DE'?a.land:''].filter(Boolean).map(esc).join('<br>')
+                           : `<span class="hinweis">${vk?'Kundennummer':'Lieferantennummer'} rechts eingeben oder mit … suchen</span>`;
+  const sysStatus = b.status==='verarbeitet' ? 'verarbeitet' : (b.id ? 'gespeichert' : 'neu');
+  M().innerHTML = `<div class="kopfzeile noprint" style="margin-bottom:8px">
+    <a href="#/belege/${b.bereich}">← ${vk?'Verkaufsbelege':'Einkaufsbelege'}</a><span class="sp"></span>
+    <div class="menue" id="nM"><button class="btn">Neu ▾</button><div class="ddl">${G.belegarten.filter(x=>x.bereich===b.bereich).map(x=>`<button data-a="${x.code}">${esc(x.name)}</button>`).join('')}</div></div>
+    <input id="dSu" placeholder="Direktsuche Belegnr." style="width:170px">
     ${!gesperrt?`<button class="btn" id="bSp">Speichern</button><button class="btn ok" id="bVa">Verarbeiten</button>`:''}
     ${gesperrt && b.folgearten.length?`<div class="menue" id="wM"><button class="btn pri">Weiterverarbeiten ▾</button><div class="ddl">${b.folgearten.map(f=>`<button data-a="${f.code}">→ ${esc(f.name)}</button>`).join('')}</div></div>`:''}
     ${b.id?`<button class="btn" id="bDr">Drucken</button>`:''}
     ${b.id && !gesperrt?`<button class="btn rot" id="bLo">Löschen</button>`:''}</div>
-  ${b.kette.length>1?`<div class="card"><div class="kette"><b style="margin-right:6px">Vorgang:</b>${b.kette.map((k,i)=>`${i?'<span class="pfeil">→</span>':''}<a href="#/beleg/${k.id}" class="${k.id===b.id?'akt':''}">${esc(k.belegart_name)} ${esc(k.nummer||'Entwurf')}</a>`).join('')}</div></div>`:''}
-  <div class="card"><div class="raster">
-    <div class="feld"><label>${vk?'Kunde':'Lieferant'}</label><select id="kAdr" ${dis}><option value="">– wählen –</option>${adr.map(a=>`<option value="${a.id}" ${a.id===b.adresse_id?'selected':''}>${esc(vk?a.kundennr:a.lieferantennr)} · ${esc(a.kurz)}</option>`).join('')}</select></div>
-    <div class="feld"><label>Datum</label><input type="date" id="kDat" value="${b.datum}" ${dis}></div>
-    <div class="feld"><label>Projekt</label><select id="kPro" ${dis}><option value="">– ohne –</option>${proj.map(p=>`<option value="${p.id}" ${p.id===b.projekt_id?'selected':''}>${esc(p.projektnr)} · ${esc(p.titel)}</option>`).join('')}</select></div>
-    <div class="feld"><label>Betreff</label><input id="kBet" value="${esc(b.betreff||'')}" ${dis}></div>
-    <div class="feld"><label>Ihre Referenz / Bestellnr.</label><input id="kRef" value="${esc(b.ihre_referenz||'')}" ${dis}></div>
-    <div class="feld"><label>Zahlungsbedingung</label><select id="kZb" ${dis}><option value="">–</option>${G.zahlungsbedingungen.map(z=>`<option value="${z.id}" ${z.id===b.zahlungsbed_id?'selected':''}>${esc(z.text)}</option>`).join('')}</select></div>
-  </div>
-  <div class="feld" style="margin-top:10px"><label>Kopftext</label><textarea id="kKt" rows="2" ${dis}>${esc(b.kopftext||'')}</textarea></div></div>
-  <div class="card"><table class="pos"><thead><tr><th style="width:40px">Pos</th><th style="width:210px">Artikel</th><th>Bezeichnung</th><th class="r" style="width:90px">Menge</th><th style="width:60px">ME</th><th class="r" style="width:110px">Einzelpreis</th><th class="r" style="width:80px">Rabatt %</th><th class="r" style="width:110px">Gesamt</th><th style="width:30px"></th></tr></thead><tbody id="pt"></tbody></table>
-    ${!gesperrt?'<button class="btn" id="pNeu" style="margin-top:8px">+ Position</button>':''}
-    <div class="summe"><span>Netto</span><span class="r" id="sN"></span><span>MwSt.</span><span class="r" id="sS"></span><b>Gesamt</b><b class="r" id="sB"></b></div>
-    <div class="info noprint" id="bInfo" style="margin-top:10px">Artikel wählen → Bestand und Verfügbarkeit erscheinen hier.</div></div>
-  <div class="card"><div class="feld"><label>Fußtext</label><textarea id="kFt" rows="2" ${dis}>${esc(b.fusstext||'')}</textarea></div>
-  ${b.verarbeitet?`<div class="hinweis" style="margin-top:8px">Verarbeitet am ${fmt(b.verarbeitet)} von ${esc(b.verarbeitet_von||'')}. Änderungen nur noch über einen Folgebeleg (z. B. Gutschrift).</div>`:''}</div>
-  <datalist id="artL">${art.map(a=>`<option value="${esc(a.artikelnr)}">${esc(a.kurz)} – ${esc(a.bezeichnung)}</option>`).join('')}</datalist>`;
+  ${b.kette.length>1?`<div class="kette noprint" style="margin-bottom:10px"><b style="margin-right:6px">Vorgang:</b>${b.kette.map((k,i)=>`${i?'<span class="pfeil">→</span>':''}<a href="#/beleg/${k.id}" class="${k.id===b.id?'akt':''}">${esc(k.belegart_name)} ${esc(k.nummer||'Entwurf')}</a>`).join('')}</div>`:''}
+  <div class="tisch"><div class="blatt ${gesperrt?'gesperrt':''}">
+    <div class="bk-firma">Muster Fertigung GmbH<small>Beispielstraße 1 · 58089 Hagen</small></div>
+    <div class="bk-oben">
+      <div class="bk-links"><div class="bk-abs">Muster Fertigung GmbH · Beispielstraße 1 · 58089 Hagen</div><div class="bk-anschrift" id="anschrift">${anschrift(aktAdr())}</div></div>
+      <div class="bk-kasten">
+        <div class="bk-titel">${esc(b.belegart_name)}</div>
+        <div class="bk-z"><span>Belegnummer</span><b>${b.nummer?esc(b.nummer):'<i class="hinweis">beim Verarbeiten</i>'}</b></div>
+        <div class="bk-z"><span>${vk?'Kundennummer':'Lieferantennr.'}</span><span class="bk-such"><input id="kKnr" list="adrL" value="${esc(aktAdr()?nrVon(aktAdr()):'')}" ${dis}>${gesperrt?'':'<button class="btn" id="kSu" title="Suchen">…</button>'}</span></div>
+        <div class="bk-z"><span>Datum</span><input type="date" id="kDat" value="${b.datum}" ${dis}></div>
+        <div class="bk-z"><span>Betreff</span><input id="kBet" value="${esc(b.betreff||'')}" ${dis}></div>
+        <div class="bk-z"><span>Projekt</span><select id="kPro" ${dis}><option value="">–</option>${proj.map(p=>`<option value="${p.id}" ${p.id===b.projekt_id?'selected':''}>${esc(p.projektnr)} · ${esc(p.titel)}</option>`).join('')}</select></div>
+        <div class="bk-z"><span>${vk?'Ihre Bestellung':'Unsere Referenz'}</span><input id="kRef" value="${esc(b.ihre_referenz||'')}" ${dis}></div>
+        <div class="bk-z"><span>Bearbeiter</span><span>${esc(b.angelegt_von||ICH.login)}</span></div>
+      </div>
+    </div>
+    <textarea id="kKt" class="bk-text" rows="2" ${gesperrt?'':'placeholder="Kopftext (z. B. „Vielen Dank für Ihre Anfrage …“)"'} ${dis}>${esc(b.kopftext||'')}</textarea>
+    <table class="pos bk-pos"><thead><tr><th style="width:34px">Pos</th><th style="width:150px">Artikel</th><th>Bezeichnung</th><th class="r" style="width:80px">Menge</th><th style="width:52px">ME</th><th class="r" style="width:100px">Einzelpreis</th><th class="r" style="width:66px">Rabatt %</th><th class="r" style="width:100px">Gesamtpreis</th><th class="noprint" style="width:26px"></th></tr></thead><tbody id="pt"></tbody></table>
+    ${!gesperrt?'<button class="btn noprint" id="pNeu" style="margin-top:6px">+ Position</button>':''}
+    <div class="summe"><span>Zwischensumme netto</span><span class="r" id="sN"></span><span>zzgl. MwSt.</span><span class="r" id="sS"></span><b>Endsumme</b><b class="r" id="sB"></b></div>
+    <div class="bk-z bk-zb"><span>Zahlungsbedingung</span><select id="kZb" ${dis}><option value="">–</option>${G.zahlungsbedingungen.map(z=>`<option value="${z.id}" ${z.id===b.zahlungsbed_id?'selected':''}>${esc(z.text)}</option>`).join('')}</select></div>
+    <textarea id="kFt" class="bk-text" rows="2" ${gesperrt?'':'placeholder="Fußtext (z. B. „Für Rückfragen stehen wir Ihnen gern zur Verfügung.“)"'} ${dis}>${esc(b.fusstext||'')}</textarea>
+  </div></div>
+  <div class="statusleiste noprint"><span>Status: <b>${sysStatus}</b>${b.verarbeitet?` · ${fmt(b.verarbeitet)} von ${esc(b.verarbeitet_von||'')} – Änderung nur per Folgebeleg`:''}</span><span class="sp"></span><span id="bInfo">Bestand / Verfügbar: Artikel wählen</span></div>
+  <datalist id="artL">${art.map(a=>`<option value="${esc(a.artikelnr)}">${esc(a.kurz)} – ${esc(a.bezeichnung)}</option>`).join('')}</datalist>
+  <datalist id="adrL">${adr.map(a=>`<option value="${esc(nrVon(a))}">${esc(a.kurz)} · ${esc(a.ort||'')}</option>`).join('')}</datalist>`;
 
   const artNr = Object.fromEntries(art.map(a=>[a.artikelnr,a]));
   const artId = Object.fromEntries(art.map(a=>[a.id,a]));
   const zeichne = () => {
     $('#pt').innerHTML = b.positionen.map((p,i)=>{ const a=artId[p.artikel_id];
       return `<tr data-i="${i}"><td>${i+1}</td>
-      <td><input list="artL" class="pA" value="${esc(a?a.artikelnr:'')}" ${dis} placeholder="Nr. oder leer"></td>
-      <td><input class="pT" value="${esc(p.text||'')}" ${dis}></td>
+      <td><input list="artL" class="pA" value="${esc(a?a.artikelnr:'')}" ${dis} placeholder="Artikel"></td>
+      <td><input class="pT" value="${esc(p.text||'')}" ${dis} placeholder="Bezeichnung / freier Text"></td>
       <td><input class="pM zahl" value="${zahl(p.menge??1)}" ${dis}></td>
       <td><input class="pE" value="${esc(p.me||'Stk')}" ${dis}></td>
       <td><input class="pP zahl" value="${eur(p.einzelpreis??0)}" ${dis}></td>
       <td><input class="pR zahl" value="${zahl(p.rabatt_pct||0)}" ${dis}></td>
-      <td class="r pG"></td><td>${!gesperrt?`<button class="btn rot pX" title="Position löschen" style="padding:2px 7px">×</button>`:''}</td></tr>`; }).join('');
+      <td class="r pG"></td><td class="noprint">${!gesperrt?`<button class="btn rot pX" title="Position löschen" style="padding:1px 6px">×</button>`:''}</td></tr>`; }).join('');
     rechne();
   };
   const rechne = () => {
@@ -303,33 +342,56 @@ async function belegMaske(b){
     $('#sN').textContent=eur(n)+' €'; $('#sS').textContent=eur(s)+' €'; $('#sB').textContent=eur(n+s)+' €';
   };
   const info = async aid => { if(!aid) return; const a = await api('artikel/'+aid);
-    $('#bInfo').innerHTML = `<b>${esc(a.artikelnr)} ${esc(a.kurz)}</b> · Bestand <b>${zahl(a.bestand)} ${esc(a.me)}</b> · in Aufträgen ${zahl(a.reserviert)} · <b style="color:${a.verfuegbar<0?'var(--red)':'var(--green)'}">verfügbar ${zahl(a.verfuegbar)}</b> · VK ${eur(a.vk_preis)} € · EK ${eur(a.ek_preis)} €`; };
+    $('#bInfo').innerHTML = `<b>${esc(a.artikelnr)}</b> ${esc(a.kurz)} · Bestand <b>${zahl(a.bestand)} ${esc(a.me)}</b> · in Aufträgen ${zahl(a.reserviert)} · <b style="color:${a.verfuegbar<0?'var(--red)':'var(--green)'}">Verfügbar ${zahl(a.verfuegbar)}</b>`; };
   zeichne();
+  // Kunde/Lieferant über Nummer (wie in myfactory) – Anschrift füllt sich
+  const setzeAdresse = () => {
+    const v = $('#kKnr').value.trim().toLowerCase();
+    const a = adr.find(x => (nrVon(x)||'').toLowerCase()===v) || adr.find(x => x.kurz.toLowerCase()===v) ||
+              (v.length>=2 ? adr.filter(x => (x.kurz+' '+x.name1).toLowerCase().includes(v)).sort((x,y)=>x.kurz.length-y.kurz.length)[0] : null);
+    adresseId = a ? a.id : null;
+    $('#anschrift').innerHTML = anschrift(a);
+    if (a){ $('#kKnr').value = nrVon(a); const zb = vk?a.k_zb:a.l_zb; if (zb && !$('#kZb').value) $('#kZb').value = zb; }
+    else if (v) toast('Nicht gefunden – Nummer oder Kurzbezeichnung eingeben.', true);
+  };
+  if (!gesperrt){
+    $('#kKnr').onchange = setzeAdresse;
+    $('#kSu').onclick = () => dialog(vk?'Kunde suchen':'Lieferant suchen','',`<input id="suI" placeholder="Name, Nummer, Ort"><div class="liste" style="max-height:300px;margin-top:8px"><table><tbody id="suL"></tbody></table></div>`,[['Schließen','']]) || (() => {
+      const male = () => { const q=$('#suI').value.toLowerCase(); $('#suL').innerHTML = adr.filter(a=>(nrVon(a)+' '+a.kurz+' '+a.name1+' '+(a.ort||'')).toLowerCase().includes(q)).slice(0,60)
+        .map(a=>`<tr class="klick" data-n="${esc(nrVon(a))}"><td>${esc(nrVon(a))}</td><td>${esc(a.kurz)}</td><td>${esc(a.name1)}</td><td>${esc(a.ort||'')}</td></tr>`).join('');
+        $('#suL').querySelectorAll('tr').forEach(tr=>tr.onclick=()=>{ $('#kKnr').value=tr.dataset.n; $('#dlg').close(); setzeAdresse(); }); };
+      $('#suI').oninput = male; male(); $('#suI').focus(); })();
+  }
   $('#pt').addEventListener('input', e => { const tr=e.target.closest('tr'); const p=b.positionen[+tr.dataset.i]; const c=e.target.classList;
     if (c.contains('pT')) p.text=e.target.value; if (c.contains('pM')) p.menge=num(e.target.value); if (c.contains('pE')) p.me=e.target.value;
     if (c.contains('pP')) p.einzelpreis=num(e.target.value); if (c.contains('pR')) p.rabatt_pct=num(e.target.value); rechne(); });
-  $('#pt').addEventListener('change', e => { if(!e.target.classList.contains('pA')) return; const tr=e.target.closest('tr'); const p=b.positionen[+tr.dataset.i];
+  $('#pt').addEventListener('change', e => { if(!e.target.classList.contains('pA')) return; const tr=e.target.closest('tr'); const i=+tr.dataset.i; const p=b.positionen[i];
     const a=artNr[e.target.value.trim()]; if(!a){ p.artikel_id=null; return; }
-    const kd = adr.find(x=>x.id===+$('#kAdr').value);
+    const kd = aktAdr();
     Object.assign(p,{artikel_id:a.id,text:a.bezeichnung,me:a.me,einzelpreis:vk?a.vk_preis:a.ek_preis,steuer_pct:a.steuer_pct,rabatt_pct:vk&&kd?kd.k_rabatt||0:0});
-    setTimeout(()=>{ zeichne(); info(a.id); }, 0); });
+    if (i===b.positionen.length-1 && !gesperrt) b.positionen.push({});      // wie im Brief: nächste Zeile steht bereit
+    setTimeout(()=>{ zeichne(); info(a.id); const n=document.querySelector(`#pt tr[data-i="${i}"] .pM`); if(n){ n.focus(); n.select(); } }, 0); });
   $('#pt').addEventListener('focusin', e => { const tr=e.target.closest('tr'); if(tr){ const p=b.positionen[+tr.dataset.i]; if(p&&p.artikel_id) info(p.artikel_id);} });
-  $('#pt').addEventListener('click', e => { if(e.target.classList.contains('pX')){ b.positionen.splice(+e.target.closest('tr').dataset.i,1); zeichne(); } });
+  $('#pt').addEventListener('click', e => { if(e.target.classList.contains('pX')){ b.positionen.splice(+e.target.closest('tr').dataset.i,1); if(!b.positionen.length) b.positionen.push({}); zeichne(); } });
   if ($('#pNeu')) $('#pNeu').onclick = () => { b.positionen.push({}); zeichne(); };
-  const sammeln = () => ({id:b.id, belegart:b.belegart, adresse_id:+$('#kAdr').value||null, datum:$('#kDat').value, projekt_id:+$('#kPro').value||null,
+  const sammeln = () => ({id:b.id, belegart:b.belegart, adresse_id:adresseId, datum:$('#kDat').value, projekt_id:+$('#kPro').value||null,
     betreff:$('#kBet').value, ihre_referenz:$('#kRef').value, zahlungsbed_id:+$('#kZb').value||null, kopftext:$('#kKt').value, fusstext:$('#kFt').value,
     positionen:b.positionen.filter(p=>p.text||p.artikel_id).map(p=>({artikel_id:p.artikel_id||null,text:p.text,menge:num(p.menge??1),me:p.me||'Stk',einzelpreis:num(p.einzelpreis??0),rabatt_pct:num(p.rabatt_pct||0),steuer_pct:p.steuer_pct??19,vorgaenger_pos_id:p.vorgaenger_pos_id||null}))});
   const speichern = async () => { const n = await api('belege',{body:sammeln()}); b.id=n.id; return n; };
-  if (!gesperrt) $('#kAdr').onchange = () => { const a=adr.find(x=>x.id===+$('#kAdr').value); const zb=a&&(vk?a.k_zb:a.l_zb); if (zb && !$('#kZb').value) $('#kZb').value=zb; };
-  if ($('#bSp')) $('#bSp').onclick = async () => { const n=await speichern(); toast('Gespeichert.'); location.hash='#/beleg/'+n.id; if (location.hash==='#/beleg/'+n.id) seiteBeleg(n.id); };
+  menueAuf('#nM', code => location.hash='#/neu/'+code);
+  $('#dSu').onkeydown = async e => { if (e.key!=='Enter') return; const q=$('#dSu').value.trim(); if(!q) return;
+    const l = await api(`belege?bereich=${b.bereich}&suche=${encodeURIComponent(q)}`); const t = l.find(x=>(x.nummer||'').toLowerCase()===q.toLowerCase()) || l[0];
+    if (t) location.hash='#/beleg/'+t.id; else toast('Kein Beleg gefunden.', true); };
+  if ($('#bSp')) $('#bSp').onclick = async () => { const n=await speichern(); toast('Gespeichert.'); if (location.hash==='#/beleg/'+n.id) seiteBeleg(n.id); else location.hash='#/beleg/'+n.id; };
   if ($('#bVa')) $('#bVa').onclick = async () => {
     if (!confirm('Beleg verarbeiten? Danach ist er gesperrt und bekommt seine endgültige Nummer.')) return;
     const n = await speichern(); const r = await api(`belege/${n.id}/verarbeiten`,{body:{}});
     toast(`${r.beleg.nummer} verarbeitet${r.meldungen.length?' · '+r.meldungen.join(' · '):''}`);
-    location.hash='#/beleg/'+n.id; seiteBeleg(n.id); };
+    if (location.hash==='#/beleg/'+n.id) seiteBeleg(n.id); else location.hash='#/beleg/'+n.id; };
   if ($('#wM')) menueAuf('#wM', async ziel => { const n = await api(`belege/${b.id}/weiter`,{body:{ziel}}); toast(`${n.belegart_name} als Entwurf angelegt.`); location.hash='#/beleg/'+n.id; });
   if ($('#bLo')) $('#bLo').onclick = async () => { if(!confirm('Entwurf löschen?')) return; await api('belege/'+b.id,{method:'DELETE'}); location.hash='#/belege/'+b.bereich; };
   if ($('#bDr')) $('#bDr').onclick = () => belegDrucken(b.id);
+  if (!gesperrt && !adresseId) $('#kKnr').focus();
 }
 
 async function belegDrucken(id){
