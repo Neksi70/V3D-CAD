@@ -23,7 +23,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bericht
 import erp
+import finanzen
 import seed
+import zusatz
 
 HIER = os.path.dirname(os.path.abspath(__file__))
 DATEN = os.environ.get("V3D_ERP_DATEN", os.path.expanduser("~/.local/share/v3d-erp"))
@@ -264,6 +266,129 @@ def r_dok(did, **_):
     sicher = {"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "text/plain"}   # nie SVG/HTML inline
     typ = d["mime"] if d["mime"] in sicher else "application/octet-stream"
     return {"__datei": daten, "typ": typ, "name": "".join(ch for ch in d["name"] if ch.isprintable() and ch not in '"\\;'), "sandbox": True}
+
+
+# ---------------------------------------------------------------- Mahnwesen
+@route("GET", "/api/mahnstufen")
+def r_mahnstufen(**_):
+    return finanzen.mahnstufen(DB)
+
+
+@route("POST", "/api/mahnstufen")
+def r_mahnstufen_sp(body, benutzer, **_):
+    return finanzen.mahnstufen_speichern(DB, body.get("stufen") or [], benutzer)
+
+
+@route("GET", "/api/mahnvorschlag")
+def r_mahnvorschlag(q, **_):
+    return finanzen.mahnvorschlag(DB, q.get("stichtag") or None)
+
+
+@route("GET", "/api/mahnungen")
+def r_mahnungen(**_):
+    return finanzen.mahnungen_liste(DB)
+
+
+@route("POST", "/api/mahnungen")
+def r_mahnungen_neu(body, benutzer, **_):
+    return finanzen.mahnungen_erstellen(DB, [int(x) for x in body.get("adressen") or []], body.get("stichtag") or None,
+                                        int(body.get("frist_tage") or 10), benutzer)
+
+
+@route("GET", "/api/mahnungen/(?P<mid>\\d+)/pdf")
+def r_mahnung_pdf(mid, **_):
+    pdf, name = bericht.mahnung_pdf(DB, mid)
+    return {"__datei": pdf, "typ": "application/pdf", "name": name}
+
+
+@route("POST", "/api/op/(?P<oid>\\d+)/mahnsperre")
+def r_mahnsperre(oid, body, benutzer, **_):
+    return finanzen.mahnsperre(DB, oid, bool(body.get("an")), benutzer)
+
+
+# ---------------------------------------------------------------- Kontoauszug / Zahlungsabgleich
+@route("POST", "/api/bank/import")
+def r_bank_import(body, benutzer, **_):
+    import base64
+    try:
+        daten = base64.b64decode(body.get("daten") or "", validate=True)
+    except Exception:
+        raise erp.Fehler("Datei konnte nicht gelesen werden.")
+    return finanzen.kontoauszug_importieren(DB, body.get("name") or "kontoauszug", daten, benutzer)
+
+
+@route("GET", "/api/bank/umsaetze")
+def r_bank_umsaetze(q, **_):
+    return finanzen.umsaetze(DB, q.get("status", "offen"))
+
+
+@route("POST", "/api/bank/umsaetze/(?P<uid>\\d+)/zuordnen")
+def r_bank_zuordnen(uid, body, benutzer, **_):
+    return finanzen.zuordnen(DB, uid, int(body.get("op_id") or 0), body.get("skonto") or 0, benutzer)
+
+
+@route("POST", "/api/bank/umsaetze/(?P<uid>\\d+)/ignorieren")
+def r_bank_ignorieren(uid, body, benutzer, **_):
+    return finanzen.ignorieren(DB, uid, bool(body.get("zurueck")), benutzer)
+
+
+@route("POST", "/api/bank/alle-sicheren")
+def r_bank_alle(benutzer, **_):
+    return finanzen.alle_sicheren_zuordnen(DB, benutzer)
+
+
+@route("GET", "/api/bank/beispiel.csv")
+def r_bank_beispiel(**_):
+    return {"__datei": finanzen.beispiel_kontoauszug(DB), "typ": "text/csv; charset=windows-1252", "name": "Beispiel-Kontoauszug.csv"}
+
+
+# ---------------------------------------------------------------- Kundenpreise
+@route("GET", "/api/kundenpreise")
+def r_kp(q, **_):
+    return zusatz.kundenpreise(DB, int(q["adresse"]) if q.get("adresse") else None, int(q["artikel"]) if q.get("artikel") else None)
+
+
+@route("POST", "/api/kundenpreise")
+def r_kp_sp(body, benutzer, **_):
+    return zusatz.kundenpreis_speichern(DB, body, benutzer)
+
+
+@route("DELETE", "/api/kundenpreise/(?P<kid>\\d+)")
+def r_kp_lo(kid, benutzer, **_):
+    zusatz.kundenpreis_loeschen(DB, kid, benutzer)
+    return {"ok": True}
+
+
+@route("GET", "/api/preis")
+def r_preis(q, **_):
+    return zusatz.preis_finden(DB, int(q.get("adresse") or 0), int(q.get("artikel") or 0), float(q.get("menge") or 1), q.get("datum") or None)
+
+
+# ---------------------------------------------------------------- Kennzeichen
+@route("GET", "/api/kennzeichen/(?P<objekt>adresse|artikel)")
+def r_kz_defs(objekt, **_):
+    return zusatz.kz_defs(DB, objekt)
+
+
+@route("POST", "/api/kennzeichen/(?P<objekt>adresse|artikel)")
+def r_kz_defs_sp(objekt, body, benutzer, **_):
+    return zusatz.kz_defs_speichern(DB, objekt, body.get("felder") or [], benutzer)
+
+
+@route("GET", "/api/kennzeichen/(?P<objekt>adresse|artikel)/(?P<oid>\\d+)")
+def r_kz_werte(objekt, oid, **_):
+    return zusatz.kz_werte(DB, objekt, oid)
+
+
+@route("POST", "/api/kennzeichen/(?P<objekt>adresse|artikel)/(?P<oid>\\d+)")
+def r_kz_werte_sp(objekt, oid, body, benutzer, **_):
+    return zusatz.kz_werte_speichern(DB, objekt, oid, body.get("werte") or {}, benutzer)
+
+
+@route("GET", "/api/kennzeichen/(?P<objekt>adresse|artikel)/filter")
+def r_kz_filter(objekt, q, **_):
+    return zusatz.kz_filter(DB, objekt, int(q.get("feld") or 0), q.get("wert", ""))
+
 
 
 @route("GET", "/api/werkstatt")

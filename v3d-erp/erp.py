@@ -32,10 +32,14 @@ def schema_anlegen(db):
     if not db.execute("SELECT 1 FROM belegart LIMIT 1").fetchone():
         grundlagen_anlegen(db)
     # nachträglich hinzugekommene Spalten (bestehende Datenbanken)
-    for tab, sp in [("artikel", "memo"), ("beleg", "memo"), ("projekt", "memo"), ("artikel", "kalk"),
-                    ("beleg_position", "charge_nr"), ("beleg_position", "charge_id")]:
+    for tab, sp, typ in [("artikel", "memo", "TEXT"), ("beleg", "memo", "TEXT"), ("projekt", "memo", "TEXT"), ("artikel", "kalk", "TEXT"),
+                         ("beleg_position", "charge_nr", "TEXT"), ("beleg_position", "charge_id", "INTEGER"),
+                         ("offener_posten", "mahnstufe", "INTEGER NOT NULL DEFAULT 0"), ("offener_posten", "letzte_mahnung", "TEXT"),
+                         ("offener_posten", "mahnsperre", "INTEGER NOT NULL DEFAULT 0")]:
         if sp not in [r["name"] for r in db.execute(f"PRAGMA table_info({tab})")]:
-            db.execute(f"ALTER TABLE {tab} ADD COLUMN {sp} {'INTEGER' if sp.endswith('_id') else 'TEXT'}")
+            db.execute(f"ALTER TABLE {tab} ADD COLUMN {sp} {typ}")
+    if not db.execute("SELECT 1 FROM mahnstufe LIMIT 1").fetchone():
+        db.executemany("INSERT INTO mahnstufe(stufe,name,tage,gebuehr,text) VALUES(?,?,?,?,?)", MAHNSTUFEN)
     # neue Belegarten/Folgen in bestehenden Datenbanken nachtragen
     for i, (c, b, n, p, l, o, v) in enumerate(BELEGARTEN):
         db.execute("INSERT OR IGNORE INTO belegart(code,bereich,name,praefix,lager,op,vorzeichen,reihenfolge) VALUES(?,?,?,?,?,?,?,?)", (c, b, n, p, l, o, v, i))
@@ -95,6 +99,16 @@ BELEGARTEN = [
 ]
 FOLGEN = [("AN", "AB"), ("AB", "WK"), ("AB", "LS"), ("AB", "RE"), ("LS", "RE"), ("RE", "GS"),
           ("PA", "BE"), ("BE", "WE"), ("BE", "ER"), ("WE", "ER")]
+
+
+MAHNSTUFEN = [
+    (1, "Zahlungserinnerung", 7, 0,
+     "sicher haben Sie es im Tagesgeschäft übersehen: Die folgenden Rechnungen sind noch offen. Bitte überweisen Sie den Betrag bis zum {frist}. Sollte sich Ihre Zahlung mit diesem Schreiben überschnitten haben, betrachten Sie es bitte als gegenstandslos."),
+    (2, "1. Mahnung", 14, 5.0,
+     "leider konnten wir zu den folgenden Rechnungen noch keinen Zahlungseingang feststellen. Wir bitten Sie, den offenen Betrag zuzüglich Mahngebühr bis zum {frist} zu überweisen."),
+    (3, "2. Mahnung", 14, 10.0,
+     "trotz unserer Erinnerung sind die folgenden Rechnungen weiterhin offen. Bitte begleichen Sie den Gesamtbetrag bis spätestens {frist}. Andernfalls müssen wir weitere Schritte einleiten."),
+]
 
 
 def grundlagen_anlegen(db):
@@ -400,6 +414,9 @@ def beleg_speichern(db, d, benutzer=None):
         p.setdefault("steuer_pct", 19)
         p.setdefault("me", "Stk")
     netto, steuer, brutto = _summen(pos)
+    if not d.get("zahlungsbed_id"):            # Zahlungsbedingung des Kunden/Lieferanten vorbelegen
+        zb = db.execute(f"SELECT zahlungsbed_id FROM {rolle} WHERE adresse_id=?", (d["adresse_id"],)).fetchone()
+        d["zahlungsbed_id"] = zb["zahlungsbed_id"] if zb else None
     felder = dict(belegart=art["code"], datum=d.get("datum") or heute(), adresse_id=d["adresse_id"],
                   projekt_id=d.get("projekt_id") or None, betreff=d.get("betreff"), ihre_referenz=d.get("ihre_referenz"),
                   kopftext=d.get("kopftext"), fusstext=d.get("fusstext"), zahlungsbed_id=d.get("zahlungsbed_id") or None,
@@ -953,6 +970,37 @@ def meilenstein_hinweis(db, mid, text, benutzer=None):
 
 
 # ---------------------------------------------------------------- Startseite
+def diagrammdaten(db):
+    """Daten für die Startseiten-Diagramme (Netto, Rechnungen minus Gutschriften)."""
+    h = _dt.date.today()
+    umsatz_sql = """SELECT substr(b.datum,1,7) monat, SUM(ba.vorzeichen*b.netto) s FROM beleg b JOIN belegart ba ON ba.code=b.belegart
+                    WHERE b.status='verarbeitet' AND b.belegart IN ('RE','GS') AND b.datum>=? GROUP BY 1"""
+    werte = {r["monat"]: r["s"] for r in db.execute(umsatz_sql, ((h.replace(day=1) - _dt.timedelta(days=760)).isoformat(),))}
+    monate = []
+    for i in range(11, -1, -1):
+        y, m = divmod(h.year * 12 + h.month - 1 - i, 12)
+        k = f"{y}-{m + 1:02d}"
+        monate.append(dict(monat=k, netto=round(werte.get(k, 0), 2), vorjahr=round(werte.get(f"{y - 1}-{m + 1:02d}", 0), 2)))
+    jahr, vj = str(h.year), str(h.year - 1)
+    top = zeilen(db.execute("""SELECT a.id, a.kurz, SUM(ba.vorzeichen*b.netto) netto FROM beleg b JOIN belegart ba ON ba.code=b.belegart
+                               JOIN adresse a ON a.id=b.adresse_id WHERE b.status='verarbeitet' AND b.belegart IN ('RE','GS') AND substr(b.datum,1,4)=?
+                               GROUP BY a.id ORDER BY netto DESC LIMIT 6""", (jahr,)))
+    gruppen = zeilen(db.execute("""SELECT COALESCE(ar.gruppe,'ohne Gruppe') gruppe,
+                                   SUM(CASE WHEN substr(b.datum,1,4)=? THEN ba.vorzeichen*p.gesamt ELSE 0 END) jahr,
+                                   SUM(CASE WHEN substr(b.datum,1,4)=? THEN ba.vorzeichen*p.gesamt ELSE 0 END) vorjahr
+                                   FROM beleg_position p JOIN beleg b ON b.id=p.beleg_id JOIN belegart ba ON ba.code=b.belegart
+                                   LEFT JOIN artikel ar ON ar.id=p.artikel_id
+                                   WHERE b.status='verarbeitet' AND b.belegart IN ('RE','GS') GROUP BY 1 HAVING jahr<>0 OR vorjahr<>0 ORDER BY jahr DESC""", (jahr, vj)))
+    # Auftragsbestand: verarbeitete AB-Positionen minus bereits gelieferte Mengen, bewertet mit Positionspreis
+    bestand = zeilen(db.execute("""SELECT a.id, a.kurz, SUM(MAX(p.menge - COALESCE((SELECT SUM(n.menge) FROM beleg_position n JOIN beleg nb ON nb.id=n.beleg_id
+                                          WHERE n.vorgaenger_pos_id=p.id AND nb.belegart IN ('LS','RE') AND nb.status='verarbeitet'),0), 0)
+                                          * p.einzelpreis * (1 - p.rabatt_pct/100)) wert
+                                   FROM beleg_position p JOIN beleg b ON b.id=p.beleg_id JOIN adresse a ON a.id=b.adresse_id
+                                   WHERE b.belegart='AB' AND b.status='verarbeitet' GROUP BY a.id HAVING wert>0.005 ORDER BY wert DESC LIMIT 8"""))
+    return dict(umsatz_monate=monate, top_kunden=top, artikelgruppen=gruppen, auftragsbestand=bestand,
+                auftragsbestand_summe=round(sum(x["wert"] for x in bestand), 2))
+
+
 def uebersicht(db):
     h = heute()
     monat = h[:7]
@@ -976,8 +1024,9 @@ def uebersicht(db):
             if m["status"] in ("over", "risk"):
                 kritisch.append(dict(projekt_id=p["id"], projektnr=p["projektnr"], titel=m["titel"], status=m["status"],
                                      status_text=m["status_text"], plan_ende=m["plan_ende"]))
+    diagramme = diagrammdaten(db)
     meldungen = zeilen(db.execute("""SELECT v.zeit, v.benutzer, v.text, p.id projekt_id, p.projektnr FROM projekt_verlauf v JOIN projekt p ON p.id=v.projekt_id
                                      WHERE v.text LIKE ? ORDER BY v.id DESC LIMIT 8""", (WERKSTATT_PREFIX + "%",)))
-    return dict(werkstatt_meldungen=meldungen, umsatz_monat=umsatz, umsatz_jahr=jahr, op_debitor=deb["s"], op_debitor_ueber=deb["u"],
+    return dict(diagramme=diagramme, werkstatt_meldungen=meldungen, umsatz_monat=umsatz, umsatz_jahr=jahr, op_debitor=deb["s"], op_debitor_ueber=deb["u"],
                 op_kreditor=kred["s"], op_kreditor_ueber=kred["u"], entwuerfe=entwuerfe, meldebestand=melde,
                 projekte=projekte, kritisch=kritisch)

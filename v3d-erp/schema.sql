@@ -202,7 +202,10 @@ CREATE TABLE IF NOT EXISTS offener_posten (
   datum      TEXT NOT NULL,
   faellig    TEXT NOT NULL,
   betrag     REAL NOT NULL,
-  offen      REAL NOT NULL
+  offen      REAL NOT NULL,
+  mahnstufe  INTEGER NOT NULL DEFAULT 0,
+  letzte_mahnung TEXT,
+  mahnsperre INTEGER NOT NULL DEFAULT 0
 );
 
 -- ---------- Meilensteine / Zeitstrahl ----------
@@ -281,6 +284,88 @@ CREATE TABLE IF NOT EXISTS dokument (
   von        TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_dok ON dokument(objekt, objekt_id);
+
+-- ---------- Mahnwesen ----------
+CREATE TABLE IF NOT EXISTS mahnstufe (
+  stufe     INTEGER PRIMARY KEY,           -- 1, 2, 3 …
+  name      TEXT NOT NULL,                 -- Zahlungserinnerung, 1. Mahnung …
+  tage      INTEGER NOT NULL,              -- frühestens so viele Tage nach Fälligkeit bzw. letzter Stufe
+  gebuehr   REAL NOT NULL DEFAULT 0,
+  text      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mahnung (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  nummer     TEXT NOT NULL UNIQUE,
+  adresse_id INTEGER NOT NULL REFERENCES adresse(id),
+  datum      TEXT NOT NULL,
+  stufe      INTEGER NOT NULL,
+  gebuehr    REAL NOT NULL DEFAULT 0,
+  summe      REAL NOT NULL,                -- offene Posten + Gebühr
+  neue_frist TEXT NOT NULL,
+  erstellt_von TEXT
+);
+CREATE TABLE IF NOT EXISTS mahnung_posten (
+  mahnung_id INTEGER NOT NULL REFERENCES mahnung(id),
+  op_id      INTEGER NOT NULL REFERENCES offener_posten(id),
+  offen      REAL NOT NULL,
+  tage_ueber INTEGER NOT NULL,
+  PRIMARY KEY (mahnung_id, op_id)
+);
+
+-- ---------- Zahlungsabgleich (Kontoauszug) ----------
+CREATE TABLE IF NOT EXISTS bankimport (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  datei     TEXT NOT NULL,
+  format    TEXT NOT NULL,
+  zeit      TEXT NOT NULL,
+  von       TEXT,
+  anzahl    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS bankumsatz (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  import_id INTEGER REFERENCES bankimport(id),
+  datum     TEXT NOT NULL,
+  betrag    REAL NOT NULL,                 -- + Eingang, − Ausgang
+  name      TEXT,
+  iban      TEXT,
+  zweck     TEXT,
+  schluessel TEXT NOT NULL UNIQUE,         -- gegen doppelten Import
+  status    TEXT NOT NULL DEFAULT 'offen', -- offen | zugeordnet | ignoriert
+  op_id     INTEGER REFERENCES offener_posten(id),
+  skonto    REAL NOT NULL DEFAULT 0,
+  erledigt  TEXT,
+  von       TEXT
+);
+
+-- ---------- Kundenpreise (Preis je Kunde/Artikel, Staffel) ----------
+CREATE TABLE IF NOT EXISTS kundenpreis (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  adresse_id  INTEGER NOT NULL REFERENCES adresse(id),
+  artikel_id  INTEGER NOT NULL REFERENCES artikel(id),
+  ab_menge    REAL NOT NULL DEFAULT 1,
+  preis       REAL NOT NULL,
+  gueltig_ab  TEXT,
+  gueltig_bis TEXT,
+  bemerkung   TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_kp ON kundenpreis(adresse_id, artikel_id);
+
+-- ---------- Kennzeichen (eigene Zusatzfelder) ----------
+CREATE TABLE IF NOT EXISTS kennzeichen_def (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  objekt     TEXT NOT NULL,                -- adresse | artikel
+  name       TEXT NOT NULL,
+  typ        TEXT NOT NULL DEFAULT 'text', -- text | zahl | datum | janein | auswahl
+  optionen   TEXT,                         -- bei Auswahl: Werte mit ; getrennt
+  reihenfolge INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (objekt, name)
+);
+CREATE TABLE IF NOT EXISTS kennzeichen_wert (
+  def_id    INTEGER NOT NULL REFERENCES kennzeichen_def(id) ON DELETE CASCADE,
+  objekt_id INTEGER NOT NULL,
+  wert      TEXT,
+  PRIMARY KEY (def_id, objekt_id)
+);
 
 -- ---------- Einstellungen (Briefkopf, Bank, Standardtexte, Logo als data-URL) ----------
 CREATE TABLE IF NOT EXISTS einstellung (

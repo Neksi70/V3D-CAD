@@ -321,3 +321,118 @@ class Bericht:
 def terminbericht(db, pid):
     p = erp.projekt_lesen(db, pid)
     return Bericht(p, erp.einstellungen(db)).erstellen(), f"Terminbericht_{p['projektnr']}_{dt.date.today().isoformat()}.pdf"
+
+
+# ================================================================ Mahnschreiben (A4 hoch)
+def mahnung_pdf(db, mid):
+    import finanzen
+    from reportlab.lib.pagesizes import A4 as A4H
+    m = finanzen.mahnung_lesen(db, mid)
+    e = erp.einstellungen(db)
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4H)
+    bw, bh = A4H
+    c.setTitle(f"{m['stufe_name']} {m['nummer']}")
+    haupt = HexColor(e.get("farbe_haupt") or "#004aad")
+    r = 56
+    # Kopf
+    logo = Bericht({"projektnr": "", "titel": ""}, e).logo
+    if logo:
+        iw, ih = logo.getSize()
+        c.drawImage(logo, bw - r - iw * 46 / ih, bh - 40 - 46, iw * 46 / ih, 46, mask="auto")
+    else:
+        c.setFont("Helvetica-Bold", 15)
+        c.drawRightString(bw - r, bh - 60, e.get("firma_name") or "")
+    # Absenderzeile + Anschrift (Fensterkuvert DIN 5008 B)
+    c.setFont("Helvetica", 7.5)
+    c.setFillColor(MUTE)
+    c.drawString(r, bh - 148, _kuerzen(c, " · ".join(x for x in [e.get("firma_name"), e.get("strasse"), f"{e.get('plz','')} {e.get('ort','')}".strip()] if x), 240, "Helvetica", 7.5))
+    c.setStrokeColor(MUTE)
+    c.line(r, bh - 151, r + 240, bh - 151)
+    c.setFillColor(TEXT)
+    c.setFont("Helvetica", 10.5)
+    y = bh - 168
+    for z in [m["name1"], m["name2"], m["strasse"], f"{m['plz'] or ''} {m['ort'] or ''}".strip()]:
+        if z:
+            c.drawString(r, y, z)
+            y -= 14
+    # Infoblock rechts
+    c.setFont("Helvetica", 9)
+    info = [("Datum", _de(m["datum"])), ("Mahnung", m["nummer"]), ("Kundennr.", m["kundennr"] or "–")]
+    iy = bh - 160
+    for k, v in info:
+        c.setFillColor(MUTE)
+        c.drawString(bw - r - 150, iy, k)
+        c.setFillColor(TEXT)
+        c.drawRightString(bw - r, iy, v)
+        iy -= 13
+    # Betreff + Text
+    y = bh - 270
+    c.setFont("Helvetica-Bold", 13)
+    c.setFillColor(haupt)
+    c.drawString(r, y, m["stufe_name"])
+    c.setFillColor(TEXT)
+    c.setFont("Helvetica", 10)
+    y -= 24
+    c.drawString(r, y, "Sehr geehrte Damen und Herren,")
+    y -= 18
+    text = (m["stufe_text"] or "").replace("{frist}", _de(m["neue_frist"]))
+    for absatz in text.split("\n"):
+        zeile_ = ""
+        for wort in absatz.split():
+            if c.stringWidth(zeile_ + " " + wort, "Helvetica", 10) > bw - 2 * r:
+                c.drawString(r, y, zeile_)
+                y -= 14
+                zeile_ = wort
+            else:
+                zeile_ = (zeile_ + " " + wort).strip()
+        c.drawString(r, y, zeile_)
+        y -= 14
+    # Tabelle
+    y -= 12
+    spalten = [("Rechnung", r), ("Datum", r + 110), ("fällig seit", r + 190), ("Tage", r + 280), ("offen €", bw - r)]
+    c.setFillColor(HexColor("#eef1f6"))
+    c.rect(r, y - 4, bw - 2 * r, 16, stroke=0, fill=1)
+    c.setFillColor(TEXT)
+    c.setFont("Helvetica-Bold", 9)
+    for t, x in spalten:
+        (c.drawRightString if t.startswith("offen") else c.drawString)(x - (4 if t.startswith("offen") else -4), y, t)
+    y -= 18
+    c.setFont("Helvetica", 9.5)
+    for p in m["posten"]:
+        c.drawString(r + 4, y, p["nummer"] or "")
+        c.drawString(r + 114, y, _de(p["beleg_datum"]))
+        c.drawString(r + 194, y, _de(p["faellig"]))
+        c.drawString(r + 284, y, str(p["tage_ueber"]))
+        c.drawRightString(bw - r - 4, y, f"{p['offen']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        c.setStrokeColor(LINIE)
+        c.line(r, y - 5, bw - r, y - 5)
+        y -= 16
+    def eur(v):
+        return f"{v:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+    if m["gebuehr"]:
+        c.drawString(r + 4, y, "Mahngebühr")
+        c.drawRightString(bw - r - 4, y, eur(m["gebuehr"]))
+        y -= 16
+    c.setFont("Helvetica-Bold", 10.5)
+    c.drawString(r + 4, y - 2, "Gesamtbetrag")
+    c.drawRightString(bw - r - 4, y - 2, eur(m["summe"]))
+    y -= 30
+    c.setFont("Helvetica", 10)
+    if e.get("iban"):
+        c.drawString(r, y, f"Bitte überweisen Sie auf: {e.get('bank_name') or ''}  IBAN {e['iban']}  BIC {e.get('bic') or ''}")
+        y -= 14
+        c.drawString(r, y, f"Verwendungszweck: {m['nummer']} / Kd-Nr. {m['kundennr'] or ''}")
+        y -= 22
+    c.drawString(r, y, "Mit freundlichen Grüßen")
+    y -= 14
+    c.drawString(r, y, e.get("firma_name") or "")
+    # Fuß
+    c.setStrokeColor(LINIE)
+    c.line(r, 50, bw - r, 50)
+    c.setFont("Helvetica", 7)
+    c.setFillColor(MUTE)
+    teile = [e.get("firma_name"), e.get("telefon") and "Tel. " + e["telefon"], e.get("email"), e.get("handelsregister"), e.get("ust_id") and "USt-IdNr. " + e["ust_id"]]
+    c.drawString(r, 38, "  ·  ".join(t for t in teile if t))
+    c.save()
+    return buf.getvalue(), f"{m['nummer']}_{m['kurz']}.pdf".replace(" ", "_")

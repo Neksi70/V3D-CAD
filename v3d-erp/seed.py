@@ -158,4 +158,51 @@ def befuellen(db, benutzer="seed"):
     beleg("AN", k2, [pos("100100", 120, 84.00)], d(-3), None, "Rahmenangebot AP-60 2027")
     beleg("RE", k1, [pos("900100", 6)], d(-40), None, "Konstruktionsänderung Halter")
     db.execute("INSERT INTO projekt_verlauf(projekt_id,zeit,benutzer,text) SELECT id, ?, 'seed', 'Testdaten angelegt' FROM projekt", (erp.jetzt(),))
+    nachtrag_finanzen(db, benutzer)
+    return True
+
+
+def nachtrag_finanzen(db, benutzer="seed"):
+    """Testdaten für Diagramme, Mahnwesen, Kundenpreise, Kennzeichen – idempotent, auch für bestehende Test-DBs."""
+    import zusatz
+    if db.execute("SELECT 1 FROM einstellung WHERE schluessel='seed_finanzen'").fetchone():
+        return False
+    kunden = [r["adresse_id"] for r in db.execute("SELECT adresse_id FROM kunde ORDER BY adresse_id")]
+    art = {r["artikelnr"]: r["id"] for r in db.execute("SELECT id, artikelnr FROM artikel")}
+    if not kunden or not art:
+        return False
+    import random
+    rnd = random.Random(42)
+    posten = [("900100", 95.0, (6, 30)), ("300400", 0.62, (1500, 4000)), ("100100", 89.0, (10, 40)), ("900200", 78.0, (8, 24))]
+    # Rechnungen der letzten 14 Monate (bezahlt) → Umsatzdiagramm mit Vorjahr
+    for m in range(14, 0, -1):
+        tag = (dt.date.today().replace(day=1) - dt.timedelta(days=30 * m - 12)).isoformat()
+        for _ in range(rnd.randint(1, 2)):
+            nr, preis, (lo, hi) = rnd.choice([x for x in posten if x[0] in art])
+            b = erp.beleg_speichern(db, dict(belegart="RE", adresse_id=rnd.choice(kunden), datum=tag, betreff="Lohnbearbeitung / Dienstleistung",
+                                             positionen=[dict(artikel_id=art[nr], menge=rnd.randint(lo, hi), einzelpreis=preis)]), benutzer)
+            erp.beleg_verarbeiten(db, b["id"], benutzer)
+            db.execute("UPDATE offener_posten SET offen=0 WHERE beleg_id=?", (b["id"],))
+    # eine überfällige Rechnung (für Mahnwesen + Zahlungsabgleich)
+    b = erp.beleg_speichern(db, dict(belegart="RE", adresse_id=kunden[-1], datum=d(-45), zahlungsbed_id=1, betreff="Konstruktion Vorrichtung",
+                                     positionen=[dict(artikel_id=art.get("900100"), text="Konstruktion / CAD je Stunde", menge=4, einzelpreis=95)]), benutzer)
+    erp.beleg_verarbeiten(db, b["id"], benutzer)
+    # Kundenpreise mit Staffel (Lohnbearbeitung je Kunde verschieden)
+    if "300400" in art:
+        k = db.execute("SELECT adresse_id FROM kunde k JOIN adresse a ON a.id=k.adresse_id WHERE a.kurz LIKE 'MUSTER%' LIMIT 1").fetchone()
+        if k:
+            zusatz.kundenpreis_speichern(db, dict(adresse_id=k["adresse_id"], artikel_id=art["300400"], ab_menge=1, preis=0.68, bemerkung="Einzellos"), benutzer)
+            zusatz.kundenpreis_speichern(db, dict(adresse_id=k["adresse_id"], artikel_id=art["300400"], ab_menge=2500, preis=0.62, bemerkung="Rahmenvertrag 2026"), benutzer)
+            zusatz.kundenpreis_speichern(db, dict(adresse_id=k["adresse_id"], artikel_id=art["300400"], ab_menge=10000, preis=0.57, bemerkung="Jahresmenge"), benutzer)
+    # Kennzeichen
+    da = {f["name"]: f["id"] for f in zusatz.kz_defs_speichern(db, "adresse", [dict(name="IATF 16949 zertifiziert", typ="janein"),
+          dict(name="Branche", typ="auswahl", optionen="Automobil; Maschinenbau; Sonstige"), dict(name="Erstkontakt", typ="datum")], benutzer)}
+    dr = {f["name"]: f["id"] for f in zusatz.kz_defs_speichern(db, "artikel", [dict(name="Werkstoff", typ="text"),
+          dict(name="Prüfmittel", typ="auswahl", optionen="Lehrdorn; Gewindelehrdorn; Messschieber; Messmaschine")], benutzer)}
+    for i, kid in enumerate(kunden):
+        zusatz.kz_werte_speichern(db, "adresse", kid, {da["IATF 16949 zertifiziert"]: "1" if i % 2 == 0 else "0",
+                                                       da["Branche"]: ["Automobil", "Automobil", "Maschinenbau"][i % 3]}, benutzer)
+    if "300400" in art:
+        zusatz.kz_werte_speichern(db, "artikel", art["300400"], {dr["Werkstoff"]: "Sint-D11", dr["Prüfmittel"]: "Gewindelehrdorn"}, benutzer)
+    db.execute("INSERT OR REPLACE INTO einstellung(schluessel,wert) VALUES('seed_finanzen','1')")
     return True

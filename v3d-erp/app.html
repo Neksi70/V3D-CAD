@@ -211,6 +211,22 @@ main{padding:0!important;min-width:0;display:flex;flex-direction:column}
 .ws-gruende{display:flex;flex-wrap:wrap;gap:6px}.ws-gruende .btn{font-size:15px;padding:8px 12px}
 .charge-alle{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fff8e6;border:1px solid #f3d38a;border-radius:6px;padding:8px 10px;margin:6px 0 10px}
 .charge-alle input{max-width:220px}
+.start-raster{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:14px;margin-top:14px}
+.start-raster>.breit{grid-column:1/-1}.start-raster .card{margin:0}
+.viz-kopf{display:flex;align-items:flex-start;gap:10px;margin-bottom:6px}
+.viz-leg{display:flex;gap:12px;font-size:12px;color:var(--mute);align-items:center;flex-wrap:wrap;justify-content:flex-end}.viz-leg span{white-space:nowrap}.viz-leg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.viz-svg{width:100%;height:auto;display:block}
+.viz-grid{stroke:#e9ecf1;stroke-width:1}.viz-basis{stroke:#c9cfda;stroke-width:1}
+.viz-achse{font-size:11px;fill:var(--mute)}.viz-wert{font-size:11px;font-weight:600;fill:var(--ink)}
+.viz-balken{display:grid;gap:6px}
+.viz-zeile{display:grid;grid-template-columns:minmax(80px,32%) 1fr auto;gap:8px;align-items:center;font-size:13px;padding:2px 0;border-radius:4px}
+.viz-zeile.klick{cursor:pointer}.viz-zeile:hover{background:#f3f6fb}
+.viz-lbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.viz-bahn{display:block;height:12px}.viz-bahn.doppelt{height:20px;display:grid;gap:2px}
+.viz-bar{display:block;height:100%;border-radius:0 4px 4px 0;min-height:8px}
+.viz-num{font-size:12px;color:var(--ink);font-variant-numeric:tabular-nums;min-width:44px;text-align:right}
+.viz-tip{position:fixed;z-index:200;background:#1d2433;color:#fff;font-size:12px;padding:6px 9px;border-radius:6px;pointer-events:none;display:none;box-shadow:0 6px 18px rgba(0,0,0,.25);line-height:1.4}
+.kpi.klick{cursor:pointer}.kpi.klick:hover{border-color:var(--blue)}
 </style>
 </head>
 <body>
@@ -259,12 +275,13 @@ function zeigeLogin(){
 
 const MENUE = [
   ['Übersicht', [['#/start','Startseite']]],
-  ['Verkauf', [['#/belege/VK','Verkaufsbelege'],['#/op/debitor','Offene Posten Kunden']]],
-  ['Einkauf', [['#/belege/EK','Einkaufsbelege'],['#/op/kreditor','Offene Posten Lieferanten']]],
+  ['Verkauf', [['#/belege/VK','Verkaufsbelege']]],
+  ['Einkauf', [['#/belege/EK','Einkaufsbelege']]],
+  ['Finanzen', [['#/op/debitor','Offene Posten Kunden'],['#/op/kreditor','Offene Posten Lieferanten'],['#/bank','Zahlungsabgleich'],['#/mahnwesen','Mahnwesen']]],
   ['Projekte', [['#/projekte','Projekte & Zeitstrahl'],['#/werkstatt','Werkstatt-Ansicht']]],
   ['Lager', [['#/chargen','Chargen (Kundenmaterial)']]],
   ['Stammdaten', [['#/adressen/kunde','Kunden'],['#/adressen/lieferant','Lieferanten'],['#/adressen/','Alle Adressen'],['#/artikel','Artikel & Lager']]],
-  ['System', [['#/einstellungen','Firmendaten & Briefkopf']]],
+  ['System', [['#/einstellungen','Firmendaten & Briefkopf'],['#/kennzeichen','Kennzeichen (Zusatzfelder)']]],
 ];
 function thema(e){ const r = document.documentElement.style; r.setProperty('--blue', e.farbe_haupt || '#004aad'); r.setProperty('--akzent', e.farbe_akzent || '#f39200'); }
 function rahmen(){
@@ -283,7 +300,7 @@ const favs = () => { try { return JSON.parse(localStorage.getItem(favKey()) || '
 function renderMenue(){
   const fv = favs();
   let auf; try { auf = JSON.parse(localStorage.getItem('erp-ordner') || 'null'); } catch(e){}
-  auf = auf || ['Verkauf','Einkauf','Projekte','Lager','Stammdaten'];
+  auf = auf || ['Verkauf','Einkauf','Finanzen','Projekte','Lager','Stammdaten'];
   const m = document.getElementById('menu');
   m.innerHTML = `<div class="mm-titel">Mein Menü</div>` + (fv.length ? fv.map(f=>`<a href="${f.h}">${esc(f.t)}</a>`).join('') : '<div style="padding:2px 18px 6px;color:#8e98b0;font-size:12px">Mit ☆ oben rechts auf einer Seite hier ablegen</div>')
     + (NUR_FAV ? '' : MENUE.map(([g,l])=>`<div class="ordner ${auf.includes(g)?'auf':''}" data-g="${g}"><span class="pf">▶</span>${g}</div><div class="inhalt-o">${l.map(([h,t])=>`<a href="${h}">${t}</a>`).join('')}</div>`).join(''));
@@ -410,6 +427,9 @@ async function navigiere(){
     else if (teil==='artikel') await seiteArtikel(a==='neu' ? 'neu' : (a ? +a : null));
     else if (teil==='einstellungen') await seiteEinstellungen();
     else if (teil==='chargen') await seiteChargen(a ? +a : null);
+    else if (teil==='mahnwesen') await seiteMahnwesen();
+    else if (teil==='bank') await seiteBank();
+    else if (teil==='kennzeichen') await seiteKennzeichen();
     else if (teil==='werkstatt'){ M().innerHTML = '<div class="kopfzeile"><h1>Werkstatt-Ansicht</h1></div><div id="wsBox"></div>'; await werkstattZeichnen($('#wsBox')); }
     else { location.hash = '#/start'; return; }
     const h1 = t.body.querySelector('.kopfzeile h1');
@@ -430,26 +450,173 @@ function fussHTML(e){
   return `<div class="bk-fuss">${sp(e.firma_name, e.strasse, [e.plz,e.ort].filter(Boolean).join(' '))}${sp(e.telefon&&'Tel. '+e.telefon, e.email, e.web)}${sp(e.bank_name, e.iban&&'IBAN '+e.iban, e.bic&&'BIC '+e.bic)}${sp(e.geschaeftsfuehrer&&'Geschäftsführer: '+e.geschaeftsfuehrer, e.handelsregister, e.ust_id&&'USt-IdNr. '+e.ust_id, e.steuernr&&'St.-Nr. '+e.steuernr)}</div>`;
 }
 
+// ================================================================ Diagramme (SVG, ohne Bibliothek)
+const VJ_FARBE = '#1baf7a';      // „Vorjahr“ – geprüft gegen GSB-Blau (CVD ΔE 31), Kontrast-Hinweis → Legende + Tabelle + Tooltip
+const kurzZahl = v => Math.abs(v) >= 1000 ? (Math.round(v / 100) / 10).toLocaleString('de-DE') + ' T' : Math.round(v).toLocaleString('de-DE');
+const MONAT = ['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
+function tooltip(e, html){ let t = document.getElementById('vizTip'); if (!t){ t = document.createElement('div'); t.id = 'vizTip'; t.className = 'viz-tip'; document.body.appendChild(t); }
+  if (!html){ t.style.display = 'none'; return; } t.innerHTML = html; t.style.display = 'block';
+  const x = Math.min(e.clientX + 14, innerWidth - t.offsetWidth - 8), y = Math.max(8, e.clientY - t.offsetHeight - 10); t.style.left = x + 'px'; t.style.top = y + 'px'; }
+function sauberMax(m){ if (m <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(m))); for (const f of [1, 2, 2.5, 5, 10]) if (f * p >= m) return f * p; return 10 * p; }
+function vizKarte(titel, untertitel, legende, svg, tabelle){
+  return `<div class="card viz"><div class="viz-kopf"><div><b>${titel}</b>${untertitel?`<div class="hinweis">${untertitel}</div>`:''}</div><span class="sp"></span>
+    ${legende}<button class="btn posknopf viz-tab" title="Als Tabelle">▤</button></div><div class="viz-bild">${svg}</div><div class="viz-tabelle" hidden>${tabelle}</div></div>`;
+}
+const leg = l => `<span class="viz-leg">${l.map(([f,t]) => `<span><i style="background:${f}"></i>${t}</span>`).join('')}</span>`;
+function saeulenUmsatz(monate){
+  const W = 980, H = 260, L = 46, B = 26, T = 18, n = monate.length, slot = (W - L - 8) / n;
+  const max = sauberMax(Math.max(...monate.flatMap(m => [m.netto, m.vorjahr]), 1));
+  const y = v => H - B - (Math.max(0, v) / max) * (H - B - T);
+  const bw = Math.min(14, (slot - 10) / 2);
+  let g = '';
+  for (let i = 0; i <= 4; i++){ const v = max * i / 4, yy = y(v); g += `<line x1="${L}" x2="${W-6}" y1="${yy}" y2="${yy}" class="viz-grid"/><text x="${L-6}" y="${yy+4}" class="viz-achse" text-anchor="end">${kurzZahl(v)}</text>`; }
+  const saeule = (x, v, f) => { if (v <= 0) return ''; const yy = y(v), h = H - B - yy, r = Math.min(4, h);
+    return `<path d="M${x},${H-B} V${yy + r} Q${x},${yy} ${x + r},${yy} H${x + bw - r} Q${x + bw},${yy} ${x + bw},${yy + r} V${H-B} Z" fill="${f}"/>`; };
+  monate.forEach((m, i) => { const x0 = L + i * slot + (slot - 2 * bw - 2) / 2; const [jj, mm] = m.monat.split('-');
+    g += `<g class="viz-hit" data-t="${MONAT[+mm-1]} ${jj}: <b>${eur(m.netto)} €</b><br>Vorjahr: ${eur(m.vorjahr)} €"><rect x="${L + i*slot}" y="${T}" width="${slot}" height="${H-B-T}" fill="transparent"/>
+      ${saeule(x0 + bw + 2, m.vorjahr, VJ_FARBE)}${saeule(x0, m.netto, 'var(--blue)')}
+      <text x="${L + i*slot + slot/2}" y="${H-8}" class="viz-achse" text-anchor="middle">${MONAT[+mm-1]}</text></g>`; });
+  const letzte = monate[n-1]; if (letzte.netto > 0) g += `<text x="${L + (n-1)*slot + slot/2}" y="${y(letzte.netto) - 6}" class="viz-wert" text-anchor="middle">${kurzZahl(letzte.netto)}</text>`;
+  g += `<line x1="${L}" x2="${W-6}" y1="${H-B}" y2="${H-B}" class="viz-basis"/>`;
+  return `<svg viewBox="0 0 ${W} ${H}" class="viz-svg" role="img" aria-label="Umsatz der letzten 12 Monate gegen Vorjahr">${g}</svg>`;
+}
+function balkenListe(zeilen, farbe, ziel){
+  if (!zeilen.length) return '<p class="hinweis">Noch keine Daten.</p>';
+  const max = Math.max(...zeilen.map(z => z.wert), 1);
+  return `<div class="viz-balken">${zeilen.map(z => `<div class="viz-zeile viz-hit ${ziel?'klick':''}" data-t="${esc(z.label)}: <b>${eur(z.wert)} €</b>" ${ziel?`data-ziel="${ziel(z)}"`:''}>
+    <span class="viz-lbl" title="${esc(z.label)}">${esc(z.label)}</span><span class="viz-bahn"><span class="viz-bar" style="width:${Math.max(1, z.wert / max * 100)}%;background:${farbe}"></span></span><span class="viz-num">${kurzZahl(z.wert)}</span></div>`).join('')}</div>`;
+}
+function gruppenBalken(zeilen){
+  if (!zeilen.length) return '<p class="hinweis">Noch keine Daten.</p>';
+  const max = Math.max(...zeilen.flatMap(z => [z.jahr, z.vorjahr]), 1);
+  return `<div class="viz-balken">${zeilen.map(z => `<div class="viz-zeile viz-hit" data-t="${esc(z.gruppe)}<br>dieses Jahr: <b>${eur(z.jahr)} €</b><br>Vorjahr: ${eur(z.vorjahr)} €">
+    <span class="viz-lbl" title="${esc(z.gruppe)}">${esc(z.gruppe)}</span><span class="viz-bahn doppelt"><span class="viz-bar" style="width:${Math.max(z.jahr>0?1:0, z.jahr / max * 100)}%;background:var(--blue)"></span><span class="viz-bar" style="width:${Math.max(z.vorjahr>0?1:0, z.vorjahr / max * 100)}%;background:${VJ_FARBE}"></span></span><span class="viz-num">${kurzZahl(z.jahr)}</span></div>`).join('')}</div>`;
+}
+function vizBinden(box){
+  box.querySelectorAll('.viz-hit').forEach(h => { h.onmousemove = e => tooltip(e, h.dataset.t); h.onmouseleave = () => tooltip(null, null);
+    if (h.dataset.ziel) h.onclick = () => { tooltip(null, null); location.hash = h.dataset.ziel; }; });
+  box.querySelectorAll('.viz-tab').forEach(b => b.onclick = () => { const k = b.closest('.viz'); const t = k.querySelector('.viz-tabelle'), bild = k.querySelector('.viz-bild');
+    t.hidden = !t.hidden; bild.hidden = !t.hidden; b.classList.toggle('pri', !t.hidden); });
+}
+const tab = (kopf, zeilen) => `<table><thead><tr>${kopf.map((k,i)=>`<th class="${i?'r':''}">${k}</th>`).join('')}</tr></thead><tbody>${zeilen.map(z=>`<tr>${z.map((c,i)=>`<td class="${i?'r':''}">${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+
+const WIDGETS = [['umsatz','Umsatz 12 Monate'],['bestand','Auftragsbestand'],['topkunden','Top-Kunden'],['gruppen','Umsatzvergleich Artikelgruppen'],['termine','Termine'],['projekte','Projekte'],['werkstatt','Meldungen aus der Werkstatt'],['melde','Meldebestand']];
+const widgetsAus = () => { try { return JSON.parse(localStorage.getItem('erp-widgets-aus') || '[]'); } catch(e){ return []; } };
+
 // ================================================================ Startseite
 async function seiteStart(){
-  const u = await api('uebersicht');
-  M().innerHTML = `<div class="kopfzeile"><h1>Startseite</h1></div>
+  const u = await api('uebersicht'), dg = u.diagramme, aus = widgetsAus(), an = k => !aus.includes(k);
+  const w = [];
+  if (an('umsatz')) w.push(`<div class="breit">${vizKarte('Umsatz netto – letzte 12 Monate', 'Rechnungen abzüglich Gutschriften', leg([['var(--blue)','dieses Jahr'],[VJ_FARBE,'Vorjahr']]), saeulenUmsatz(dg.umsatz_monate),
+      tab(['Monat','Umsatz €','Vorjahr €'], dg.umsatz_monate.map(m => { const [j,mo] = m.monat.split('-'); return [MONAT[+mo-1]+' '+j, eur(m.netto), eur(m.vorjahr)]; })))}</div>`);
+  if (an('bestand')) w.push(vizKarte('Auftragsbestand', `noch nicht geliefert · gesamt <b>${eur(dg.auftragsbestand_summe)} €</b>`, '', balkenListe(dg.auftragsbestand.map(x => ({label:x.kurz, wert:x.wert, id:x.id})), 'var(--blue)', z => `#/adressen/kunde/${z.id}`),
+      tab(['Kunde','offen €'], dg.auftragsbestand.map(x => [esc(x.kurz), eur(x.wert)]))));
+  if (an('topkunden')) w.push(vizKarte('Top-Kunden ' + new Date().getFullYear(), 'Umsatz netto', '', balkenListe(dg.top_kunden.map(x => ({label:x.kurz, wert:x.netto, id:x.id})), 'var(--blue)', z => `#/adressen/kunde/${z.id}`),
+      tab(['Kunde','Umsatz €'], dg.top_kunden.map(x => [esc(x.kurz), eur(x.netto)]))));
+  if (an('gruppen')) w.push(vizKarte('Umsatzvergleich Artikelgruppen', 'dieses Jahr gegen Vorjahr', leg([['var(--blue)','dieses Jahr'],[VJ_FARBE,'Vorjahr']]), gruppenBalken(dg.artikelgruppen),
+      tab(['Gruppe','dieses Jahr €','Vorjahr €'], dg.artikelgruppen.map(x => [esc(x.gruppe), eur(x.jahr), eur(x.vorjahr)]))));
+  if (an('termine')) w.push(`<div class="card"><b>Termine, die Aufmerksamkeit brauchen</b>
+      <table style="margin-top:6px"><tbody>${u.kritisch.map(k=>`<tr class="klick" onclick="location.hash='#/projekt/${k.projekt_id}'"><td>${esc(k.projektnr)}</td><td>${esc(k.titel)}</td><td><span class="pill s-${k.status}">${esc(k.status_text)}</span></td></tr>`).join('') || '<tr><td class="hinweis">Alles im Plan.</td></tr>'}</tbody></table></div>`);
+  if (an('projekte')) w.push(`<div class="card"><b>Projekte</b>
+      <table style="margin-top:6px"><tbody>${u.projekte.map(p=>`<tr class="klick" onclick="location.hash='#/projekt/${p.id}'"><td>${esc(p.projektnr)}</td><td>${esc(p.titel)}<div class="hinweis">${esc(p.kunde_kurz||'')}</div></td><td class="r">${p.kennzahlen.erledigt}/${p.kennzahlen.gesamt}</td><td class="r" style="color:${p.kennzahlen.termintreue>=90?'var(--green)':p.kennzahlen.termintreue>=70?'var(--orange)':'var(--red)'}">${p.kennzahlen.termintreue} %</td></tr>`).join('')}</tbody></table></div>`);
+  if (an('werkstatt') && u.werkstatt_meldungen.length) w.push(`<div class="card"><b>Meldungen aus der Werkstatt</b><table style="margin-top:6px"><tbody>${u.werkstatt_meldungen.map(x=>`<tr class="klick" onclick="location.hash='#/projekt/${x.projekt_id}'"><td class="hinweis" style="white-space:nowrap">${fmt(x.zeit)}<br>${esc(x.projektnr)}</td><td>⚠ ${esc(x.text.replace(/^Werkstatt meldet /,''))}</td></tr>`).join('')}</tbody></table></div>`);
+  if (an('melde')) w.push(`<div class="card"><b>Meldebestand unterschritten</b>
+      <table style="margin-top:6px"><tbody>${u.meldebestand.map(a=>`<tr class="klick" onclick="location.hash='#/artikel/${a.id}'"><td>${esc(a.artikelnr)}</td><td>${esc(a.kurz)}</td><td class="r">${zahl(a.bestand)} / ${zahl(a.meldebestand)}</td></tr>`).join('') || '<tr><td class="hinweis">Keine.</td></tr>'}</tbody></table></div>`);
+  M().innerHTML = `<div class="kopfzeile"><h1>Startseite</h1><span class="sp"></span><button class="btn" id="stAnp" title="Startseite anpassen">⚙ Anpassen</button></div>
   <div class="kpis">
     <div class="kpi"><div class="z">${eur(u.umsatz_monat)} €</div><div class="t">Umsatz netto diesen Monat</div></div>
     <div class="kpi"><div class="z">${eur(u.umsatz_jahr)} €</div><div class="t">Umsatz netto dieses Jahr</div></div>
-    <div class="kpi"><div class="z">${eur(u.op_debitor)} €</div><div class="t">Offen Kunden · <b style="color:${u.op_debitor_ueber>0?'var(--red)':'inherit'}">${eur(u.op_debitor_ueber)} € überfällig</b></div></div>
-    <div class="kpi"><div class="z">${eur(u.op_kreditor)} €</div><div class="t">Offen Lieferanten · ${eur(u.op_kreditor_ueber)} € fällig</div></div>
+    <div class="kpi klick" onclick="location.hash='#/op/debitor'"><div class="z">${eur(u.op_debitor)} €</div><div class="t">Offen Kunden · <b style="color:${u.op_debitor_ueber>0?'var(--red)':'inherit'}">${eur(u.op_debitor_ueber)} € überfällig</b></div></div>
+    <div class="kpi klick" onclick="location.hash='#/op/kreditor'"><div class="z">${eur(u.op_kreditor)} €</div><div class="t">Offen Lieferanten · ${eur(u.op_kreditor_ueber)} € fällig</div></div>
     <div class="kpi"><div class="z">${u.entwuerfe}</div><div class="t">Belege im Entwurf</div></div>
   </div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:14px;margin-top:14px">
-    <div class="card"><b>Termine, die Aufmerksamkeit brauchen</b>
-      <table style="margin-top:6px"><tbody>${u.kritisch.map(k=>`<tr class="klick" onclick="location.hash='#/projekt/${k.projekt_id}'"><td>${esc(k.projektnr)}</td><td>${esc(k.titel)}</td><td><span class="pill s-${k.status}">${esc(k.status_text)}</span></td></tr>`).join('') || '<tr><td class="hinweis">Alles im Plan.</td></tr>'}</tbody></table></div>
-    <div class="card"><b>Projekte</b>
-      <table style="margin-top:6px"><tbody>${u.projekte.map(p=>`<tr class="klick" onclick="location.hash='#/projekt/${p.id}'"><td>${esc(p.projektnr)}</td><td>${esc(p.titel)}<div class="hinweis">${esc(p.kunde_kurz||'')}</div></td><td class="r">${p.kennzahlen.erledigt}/${p.kennzahlen.gesamt}</td><td class="r" style="color:${p.kennzahlen.termintreue>=90?'var(--green)':p.kennzahlen.termintreue>=70?'var(--orange)':'var(--red)'}">${p.kennzahlen.termintreue} %</td></tr>`).join('')}</tbody></table></div>
-    ${u.werkstatt_meldungen.length ? `<div class="card"><b>Meldungen aus der Werkstatt</b><table style="margin-top:6px"><tbody>${u.werkstatt_meldungen.map(w=>`<tr class="klick" onclick="location.hash='#/projekt/${w.projekt_id}'"><td class="hinweis" style="white-space:nowrap">${fmt(w.zeit)}<br>${esc(w.projektnr)}</td><td>⚠ ${esc(w.text.replace(/^Werkstatt meldet /,''))}</td></tr>`).join('')}</tbody></table></div>` : ''}
-    <div class="card"><b>Meldebestand unterschritten</b>
-      <table style="margin-top:6px"><tbody>${u.meldebestand.map(a=>`<tr class="klick" onclick="location.hash='#/artikel/${a.id}'"><td>${esc(a.artikelnr)}</td><td>${esc(a.kurz)}</td><td class="r">${zahl(a.bestand)} / ${zahl(a.meldebestand)}</td></tr>`).join('') || '<tr><td class="hinweis">Keine.</td></tr>'}</tbody></table></div>
-  </div>`;
+  <div class="start-raster">${w.join('')}</div>`;
+  vizBinden(M());
+  $('#stAnp').onclick = () => { dialog('Startseite anpassen', 'Was soll angezeigt werden?', `<div style="display:grid;gap:6px">${WIDGETS.map(([k,t]) => `<label><input type="checkbox" data-w="${k}" style="width:auto" ${an(k)?'checked':''}> ${t}</label>`).join('')}</div>`,
+    [['Abbrechen',''], ['Übernehmen','pri', () => { localStorage.setItem('erp-widgets-aus', JSON.stringify([...document.querySelectorAll('[data-w]')].filter(c => !c.checked).map(c => c.dataset.w))); seiteStart(); }]]); };
+}
+
+// ================================================================ Mahnwesen
+async function seiteMahnwesen(){
+  let reiter = 'vorschlag';
+  M().innerHTML = `<div class="kopfzeile"><h1>Mahnwesen</h1></div><div class="card"><div class="reiter" id="mwR">${[['vorschlag','Mahnvorschlag'],['erstellt','Erstellte Mahnungen'],['stufen','Mahnstufen']].map(([k,t])=>`<button data-r="${k}">${t}</button>`).join('')}</div><div id="mwI"></div></div>`;
+  const male = async () => {
+    $$('#mwR button').forEach(b => b.classList.toggle('on', b.dataset.r === reiter));
+    const I = $('#mwI');
+    if (reiter === 'vorschlag'){
+      const st = I.dataset.st || heute(); const v = await api('mahnvorschlag?stichtag=' + st);
+      I.innerHTML = `<div class="werkz"><span class="hinweis">Stichtag</span><input type="date" id="mwSt" value="${st}" style="width:auto"><span class="sp"></span>
+        <button class="btn pri" id="mwOk" ${v.length?'':'disabled'}>Mahnungen erstellen</button></div>
+        <table><thead><tr><th><input type="checkbox" id="mwAlle" style="width:auto" checked></th><th>Kunde</th><th>Stufe</th><th>Rechnungen</th><th class="r">offen</th><th class="r">Gebühr</th></tr></thead><tbody>
+        ${v.map(k => `<tr><td><input type="checkbox" class="mwK" value="${k.adresse_id}" style="width:auto" checked></td><td><b>${esc(k.kurz)}</b><div class="hinweis">${esc(k.name1)}</div></td>
+          <td><span class="pill ${k.stufe>1?'s-over':'s-risk'}">${esc(k.stufe_name)}</span></td>
+          <td>${k.posten.map(p => `<a href="#/beleg/${p.beleg_id}">${esc(p.nummer)}</a> <span class="hinweis">${p.tage_ueber} T. überfällig</span>`).join('<br>')}</td>
+          <td class="r"><b>${eur(k.summe)} €</b></td><td class="r">${eur(k.gebuehr)} €</td></tr>`).join('') || '<tr><td colspan="6" class="hinweis">Nichts zu mahnen. 👍</td></tr>'}</tbody></table>
+        <p class="hinweis">Gemahnt wird, was die Tage der nächsten Stufe überschritten hat (Stufen siehe Reiter „Mahnstufen“). Einzelne Rechnungen nimmst du unter Offene Posten mit „Mahnsperre“ heraus.</p>`;
+      $('#mwSt').onchange = e => { I.dataset.st = e.target.value; male(); };
+      $('#mwAlle').onchange = e => $$('.mwK').forEach(c => c.checked = e.target.checked);
+      $('#mwOk').onclick = async () => { const ids = [...$$('.mwK')].filter(c => c.checked).map(c => +c.value); if (!ids.length) return toast('Bitte Kunden wählen.', true);
+        if (!confirm(`${ids.length} Mahnung(en) erstellen?`)) return;
+        const neu = await api('mahnungen', {body:{adressen: ids, stichtag: st}});
+        dialog('Mahnungen erstellt', `${neu.length} Schreiben – zum Öffnen, Drucken oder Versenden anklicken`, `<table><tbody>${neu.map(m => `<tr><td><a href="api/mahnungen/${m.id}/pdf" target="_blank">📄 ${esc(m.nummer)}</a></td><td>${esc(m.kurz)}</td><td>${esc(m.stufe_name)}</td><td class="r">${eur(m.summe)} €</td></tr>`).join('')}</tbody></table>`, [['Schließen','']]);
+        male(); };
+    }
+    if (reiter === 'erstellt'){
+      const l = await api('mahnungen');
+      I.innerHTML = `<table><thead><tr><th>Nummer</th><th>Datum</th><th>Kunde</th><th>Stufe</th><th>neue Frist</th><th class="r">Summe</th></tr></thead><tbody>
+        ${l.map(m => `<tr><td><a href="api/mahnungen/${m.id}/pdf" target="_blank">📄 ${esc(m.nummer)}</a></td><td>${fmt(m.datum)}</td><td>${esc(m.kurz)}</td><td>${esc(m.stufe_name)}</td><td>${fmt(m.neue_frist)}</td><td class="r">${eur(m.summe)} €</td></tr>`).join('') || '<tr><td colspan="6" class="hinweis">Noch keine Mahnungen.</td></tr>'}</tbody></table>`;
+    }
+    if (reiter === 'stufen'){
+      const l = await api('mahnstufen');
+      I.innerHTML = `<table><thead><tr><th>Stufe</th><th>Bezeichnung</th><th>Tage danach</th><th>Gebühr €</th><th>Text ( {frist} = neues Zahlungsziel )</th></tr></thead><tbody>
+        ${l.map(m => `<tr data-s="${m.stufe}"><td>${m.stufe}</td><td><input class="msN" value="${esc(m.name)}"></td><td><input class="msT zahl" value="${m.tage}" style="width:70px"></td><td><input class="msG zahl" value="${eur(m.gebuehr)}" style="width:80px"></td><td><textarea class="msX" rows="3">${esc(m.text)}</textarea></td></tr>`).join('')}</tbody></table>
+        <div class="fussreihe"><button class="btn pri" id="msSp" data-ak="s">${ak('Speichern','S')}</button></div>
+        <p class="hinweis">„Tage danach“: Stufe 1 zählt ab Fälligkeit, jede weitere ab der letzten Mahnung.</p>`;
+      $('#msSp').onclick = async () => { await api('mahnstufen', {body:{stufen: [...$$('#mwI tr[data-s]')].map(tr => ({stufe:+tr.dataset.s, name:tr.querySelector('.msN').value, tage:num(tr.querySelector('.msT').value), gebuehr:num(tr.querySelector('.msG').value), text:tr.querySelector('.msX').value}))}}); toast('Mahnstufen gespeichert.'); };
+    }
+  };
+  $$('#mwR button').forEach(b => b.onclick = () => { reiter = b.dataset.r; male(); });
+  await male();
+}
+
+// ================================================================ Zahlungsabgleich (Kontoauszug)
+async function seiteBank(){
+  let status = 'offen';
+  M().innerHTML = `<div class="kopfzeile"><h1>Zahlungsabgleich</h1></div>
+  <div class="card"><div class="werkz"><label class="btn pri">⇪ Kontoauszug einlesen<input type="file" id="bkF" accept=".csv,.txt,.xml" style="display:none"></label>
+    <button class="btn ok" id="bkAlle">✓ Alle sicheren Vorschläge übernehmen</button><span class="sp"></span>
+    <a class="hinweis" href="api/bank/beispiel.csv" download>Beispiel-Kontoauszug (Testsystem)</a></div>
+    <p class="hinweis" style="margin:0 0 8px">CSV aus dem Online-Banking (z. B. Sparkasse „CSV-CAMT“, Volksbank, Commerzbank) oder CAMT.053-XML. Bereits eingelesene Buchungen werden erkannt und nicht doppelt übernommen.</p>
+    <div class="reiter" id="bkR">${[['offen','Offen'],['zugeordnet','Zugeordnet'],['ignoriert','Ignoriert']].map(([k,t])=>`<button data-r="${k}">${t}</button>`).join('')}</div><div id="bkL"></div></div>`;
+  const male = async () => {
+    $$('#bkR button').forEach(b => b.classList.toggle('on', b.dataset.r === status));
+    const l = await api('bank/umsaetze?status=' + status);
+    $('#bkL').innerHTML = `<table><thead><tr><th>Datum</th><th>Name</th><th>Verwendungszweck</th><th class="r">Betrag</th><th>${status==='offen'?'Vorschlag':'Offener Posten'}</th><th></th></tr></thead><tbody>
+      ${l.map(u => { const v = u.vorschlaege[0];
+        return `<tr data-id="${u.id}"><td>${fmt(u.datum)}</td><td>${esc(u.name||'')}</td><td style="max-width:280px">${esc(u.zweck||'')}</td>
+        <td class="r" style="color:${u.betrag<0?'var(--red)':'var(--green)'};white-space:nowrap"><b>${eur(u.betrag)} €</b></td>
+        <td>${status==='offen' ? (v ? `<div><b>${esc(v.nummer)}</b> · ${esc(v.kurz)} · offen ${eur(v.offen)} €${v.skonto?` · <span class="grund">Skonto ${eur(v.skonto)} €</span>`:''}</div><div class="hinweis">${v.sicher?'<span class="pill s-ok">sicher</span> ':''}${esc(v.grund)}</div>` : '<span class="hinweis">kein passender offener Posten</span>')
+          : (u.op_nummer ? `<a href="#/beleg/${u.beleg_id}">${esc(u.op_nummer)}</a>${u.skonto?` · Skonto ${eur(u.skonto)} €`:''}` : '–')}</td>
+        <td style="white-space:nowrap">${status==='offen' ? `${v?`<button class="btn ok bkOk" data-op="${v.op_id}" data-sk="${v.skonto}">✓</button>`:''}<button class="btn bkAnd">Anderer OP…</button><button class="btn bkIgn" title="z. B. Strom, Miete – nicht über offene Posten">Ignorieren</button>`
+          : `<button class="btn bkZur">Rückgängig</button>`}</td></tr>`; }).join('') || `<tr><td colspan="6" class="hinweis">${status==='offen'?'Keine offenen Umsätze – Kontoauszug einlesen.':'Nichts.'}</td></tr>`}</tbody></table>`;
+    const id = el => +el.closest('tr').dataset.id;
+    $$('.bkOk').forEach(b => b.onclick = async () => { const r = await api(`bank/umsaetze/${id(b)}/zuordnen`, {body:{op_id:+b.dataset.op, skonto:+b.dataset.sk}}); toast(`Zahlung zu ${r.nummer} gebucht${r.offen>0.005?` – noch offen ${eur(r.offen)} €`:''}.`); male(); });
+    $$('.bkIgn').forEach(b => b.onclick = async () => { await api(`bank/umsaetze/${id(b)}/ignorieren`, {body:{}}); male(); });
+    $$('.bkZur').forEach(b => b.onclick = async () => { if (!confirm('Zuordnung bzw. Ignorieren zurücknehmen?')) return; await api(`bank/umsaetze/${id(b)}/ignorieren`, {body:{zurueck:true}}); toast('Zurückgenommen.'); male(); });
+    $$('.bkAnd').forEach(b => b.onclick = async () => { const u = l.find(x => x.id === id(b)); const ops = await api('op?art=' + (u.betrag > 0 ? 'debitor' : 'kreditor'));
+      dialog('Offenen Posten wählen', esc(`${u.name||''} · ${eur(u.betrag)} €`), `<input id="opS" placeholder="Nummer oder Name"><div class="liste" style="max-height:320px;margin-top:8px"><table><tbody id="opL"></tbody></table></div>
+        <div class="zeile"><label>Skonto ausbuchen €</label><input id="opSk" value="0,00"></div>`, [['Schließen','']]);
+      const male2 = () => { const q = document.getElementById('opS').value.toLowerCase();
+        document.getElementById('opL').innerHTML = ops.filter(o => (o.nummer+' '+o.adresse_kurz).toLowerCase().includes(q)).map(o => `<tr class="klick" data-op="${o.id}"><td>${esc(o.nummer)}</td><td>${esc(o.adresse_kurz)}</td><td>fällig ${fmt(o.faellig)}</td><td class="r">${eur(o.offen)} €</td></tr>`).join('');
+        document.querySelectorAll('#opL tr').forEach(tr => tr.onclick = async () => { await api(`bank/umsaetze/${u.id}/zuordnen`, {body:{op_id:+tr.dataset.op, skonto:num(document.getElementById('opSk').value)}}); document.getElementById('dlg').close(); toast('Zugeordnet.'); male(); }); };
+      document.getElementById('opS').oninput = male2; male2(); });
+  };
+  $$('#bkR button').forEach(b => b.onclick = () => { status = b.dataset.r; male(); });
+  $('#bkF').onchange = async e => { const f = e.target.files[0]; if (!f) return;
+    const daten = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result.split(',')[1]); fr.readAsDataURL(f); });
+    const r = await api('bank/import', {body:{name:f.name, daten}}); toast(`${r.format}: ${r.neu} Buchungen eingelesen${r.doppelt?`, ${r.doppelt} schon vorhanden`:''}.`); e.target.value = ''; status = 'offen'; male(); };
+  $('#bkAlle').onclick = async () => { const r = await api('bank/alle-sicheren', {body:{}}); toast(`${r.zugeordnet} Zahlungen automatisch zugeordnet.`); male(); };
+  await male();
 }
 
 // ================================================================ Belege
@@ -574,7 +741,8 @@ async function belegMaske(b){
     $('#sN').textContent=eur(n)+' €'; $('#sS').textContent=eur(s)+' €'; $('#sB').textContent=eur(n+s)+' €';
   };
   const info = async aid => { if(!aid) return; const a = await api('artikel/'+aid);
-    $('#bInfo').innerHTML = `<b>${esc(a.artikelnr)}</b> ${esc(a.kurz)} · Bestand <b>${zahl(a.bestand)} ${esc(a.me)}</b> · in Aufträgen ${zahl(a.reserviert)} · <b style="color:${a.verfuegbar<0?'var(--red)':'var(--green)'}">Verfügbar ${zahl(a.verfuegbar)}</b>`; };
+    const pz = b.positionen.find(x => x.artikel_id === aid && x._quelle);
+    $('#bInfo').innerHTML = `${pz ? `Preis: <b>${esc(pz._quelle)}</b> · ` : ''}<b>${esc(a.artikelnr)}</b> ${esc(a.kurz)} · Bestand <b>${zahl(a.bestand)} ${esc(a.me)}</b> · in Aufträgen ${zahl(a.reserviert)} · <b style="color:${a.verfuegbar<0?'var(--red)':'var(--green)'}">Verfügbar ${zahl(a.verfuegbar)}</b>`; };
   zeichne();
   // Kunde/Lieferant über Nummer (wie in myfactory) – Anschrift füllt sich
   const setzeAdresse = () => {
@@ -596,10 +764,16 @@ async function belegMaske(b){
   }
   $('#pt').addEventListener('input', e => { const tr=e.target.closest('tr'); const p=b.positionen[+tr.dataset.i]; const c=e.target.classList;
     if (c.contains('pT')) p.text=e.target.value; if (c.contains('pM')) p.menge=num(e.target.value); if (c.contains('pE')) p.me=e.target.value;
-    if (c.contains('pP')) p.einzelpreis=num(e.target.value); if (c.contains('pR')) p.rabatt_pct=num(e.target.value);
+    if (c.contains('pP')){ p.einzelpreis=num(e.target.value); p._manuell = true; } if (c.contains('pR')){ p.rabatt_pct=num(e.target.value); p._manuell = true; }
+    if (c.contains('pM') && vk && p.artikel_id && !p._manuell){ clearTimeout(p._t); p._t = setTimeout(async () => { const alt = p.einzelpreis; await preisHolen(p);
+      if (p.einzelpreis !== alt){ const z = $(`#pt tr[data-i="${tr.dataset.i}"]`); z.querySelector('.pP').value = eur(p.einzelpreis); z.querySelector('.pR').value = zahl(p.rabatt_pct); rechne(); toast(`Preis angepasst: ${p._quelle} → ${eur(p.einzelpreis)} €`); } }, 450); }
     if (c.contains('pC')) p.charge_nr=e.target.value; rechne(); });
-  const setzeArtikel = (i, a) => { const p = b.positionen[i]; const kd = aktAdr();
-    Object.assign(p,{artikel_id:a.id,text:a.bezeichnung,me:a.me,einzelpreis:vk?a.vk_preis:a.ek_preis,steuer_pct:a.steuer_pct,rabatt_pct:vk&&kd?kd.k_rabatt||0:0});
+  const preisHolen = async (p) => { if (!vk || !adresseId || !p.artikel_id || p._manuell) return;
+    const r = await api(`preis?adresse=${adresseId}&artikel=${p.artikel_id}&menge=${num(p.menge ?? 1)}&datum=${$('#kDat').value}`);
+    p.einzelpreis = r.preis; p.rabatt_pct = r.rabatt_pct; p._quelle = r.quelle; };
+  const setzeArtikel = async (i, a) => { const p = b.positionen[i]; const kd = aktAdr();
+    Object.assign(p,{artikel_id:a.id,text:a.bezeichnung,me:a.me,einzelpreis:vk?a.vk_preis:a.ek_preis,steuer_pct:a.steuer_pct,rabatt_pct:vk&&kd?kd.k_rabatt||0:0, _manuell:false});
+    await preisHolen(p);
     if (i===b.positionen.length-1 && !gesperrt) b.positionen.push({});      // wie im Brief: nächste Zeile steht bereit
     setTimeout(()=>{ zeichne(); info(a.id); const n=$(`#pt tr[data-i="${i}"] .pM`); if(n){ n.focus(); n.select(); } }, 0); };
   const artikelSuche = i => { dialog('Artikel suchen', '', `<input id="asI" placeholder="Nummer, Bezeichnung, Gruppe"><div class="liste" style="max-height:320px;margin-top:8px"><table><tbody id="asL"></tbody></table></div>`, [['Schließen','']]);
@@ -691,10 +865,13 @@ async function seiteOP(art){
   const l = await api('op?art='+art);
   const summe = l.reduce((s,o)=>s+o.offen,0);
   M().innerHTML = `<div class="kopfzeile"><h1>Offene Posten ${art==='debitor'?'Kunden':'Lieferanten'}</h1><span class="sp"></span><b>${eur(summe)} € offen</b></div>
-  <div class="card"><div class="liste" style="max-height:none"><table><thead><tr><th>Beleg</th><th>${art==='debitor'?'Kunde':'Lieferant'}</th><th>Datum</th><th>Fällig</th><th class="r">Betrag</th><th class="r">Offen</th><th>Status</th><th></th></tr></thead><tbody>
+  <div class="card"><div class="liste" style="max-height:none"><table><thead><tr><th>Beleg</th><th>${art==='debitor'?'Kunde':'Lieferant'}</th><th>Datum</th><th>Fällig</th><th class="r">Betrag</th><th class="r">Offen</th><th>Status</th>${art==='debitor'?'<th>Mahnung</th>':''}<th></th></tr></thead><tbody>
   ${l.map(o=>`<tr><td><a href="#/beleg/${o.beleg_id}">${esc(o.nummer)}</a></td><td>${esc(o.adresse_kurz)}</td><td>${fmt(o.datum)}</td><td>${fmt(o.faellig)}</td><td class="r">${eur(o.betrag)}</td><td class="r"><b>${eur(o.offen)}</b></td>
-  <td>${o.tage_ueber>0?`<span class="pill s-over">${o.tage_ueber} Tage überfällig</span>`:`<span class="pill s-open">fällig in ${-o.tage_ueber} T.</span>`}</td><td><button class="btn zb" data-id="${o.id}" data-o="${o.offen}">Zahlung</button></td></tr>`).join('') || '<tr><td colspan="8" class="hinweis">Nichts offen.</td></tr>'}
+  <td>${o.tage_ueber>0?`<span class="pill s-over">${o.tage_ueber} Tage überfällig</span>`:`<span class="pill s-open">fällig in ${-o.tage_ueber} T.</span>`}</td>
+  ${art==='debitor'?`<td style="white-space:nowrap">${o.mahnstufe?`Stufe ${o.mahnstufe} <span class="hinweis">${fmt(o.letzte_mahnung)}</span>`:'–'} <label class="hinweis" title="Nicht mahnen (z. B. Reklamation, Absprache)"><input type="checkbox" class="ms" data-id="${o.id}" style="width:auto" ${o.mahnsperre?'checked':''}> Sperre</label></td>`:''}
+  <td><button class="btn zb" data-id="${o.id}" data-o="${o.offen}">Zahlung</button></td></tr>`).join('') || '<tr><td colspan="9" class="hinweis">Nichts offen.</td></tr>'}
   </tbody></table></div></div>`;
+  M().querySelectorAll('.ms').forEach(c => c.onchange = async () => { await api(`op/${c.dataset.id}/mahnsperre`, {body:{an:c.checked}}); toast(c.checked ? 'Mahnsperre gesetzt.' : 'Mahnsperre aufgehoben.'); });
   M().querySelectorAll('.zb').forEach(btn => btn.onclick = async () => {
     const v = prompt('Zahlbetrag (€):', eur(btn.dataset.o)); if (v===null) return;
     await api(`op/${btn.dataset.id}/zahlung`,{body:{betrag:num(v)}}); toast('Zahlung gebucht.'); seiteOP(art); });
@@ -754,6 +931,7 @@ async function seiteAdressen(rolle, sel){
   const laden = async () => {
     let l = await api(`adressen?rolle=${rolle}&suche=${encodeURIComponent($('#aS').value)}`);
     const plz = $('#fPlz').value.trim(), ort = $('#fOrt').value.trim().toLowerCase(), mail = $('#fMail').value.trim().toLowerCase();
+    if (kzFilter) l = l.filter(a => kzFilter.ids.includes(a.id));
     if (plz) l = l.filter(a => (a.plz||'').startsWith(plz)); if (ort) l = l.filter(a => (a.ort||'').toLowerCase().includes(ort)); if (mail) l = l.filter(a => (a.email||'').toLowerCase().includes(mail));
     const ans = $('#aAns').value, cmp = (x,y) => String(x||'').localeCompare(String(y||''), 'de', {numeric:true});
     l.sort((x,y) => ans==='kurz' ? cmp(x.kurz,y.kurz) : ans==='ort' ? cmp(x.plz,y.plz) : cmp(nrVon(x),nrVon(y)));
@@ -765,7 +943,8 @@ async function seiteAdressen(rolle, sel){
   $('#aAns').onchange = laden;
   $('#aErw').onclick = () => { const b = $('#aErwB'); b.hidden = !b.hidden; if (!b.hidden) $('#fPlz').focus(); };
   $('#aVt').onclick = volltextDialog;
-  $('#aKz').onclick = () => toast('Eigene Zusatzfelder („Kennzeichen“) kommen in einem späteren Schritt.');
+  let kzFilter = null;
+  $('#aKz').onclick = () => kennzeichenFilterDialog('adresse', f => { kzFilter = f; $('#aKz').textContent = f ? 'Kennzeichen: ' + f.text + ' ✕' : 'Kennzeichen'; $('#aKz').classList.toggle('ok', !!f); laden(); });
   $('#aNeu').onclick = () => { sel = null; oeffne(null); };
   const brauche = () => { if (!akt || !akt.id){ toast('Bitte zuerst einen Datensatz in der Liste wählen.', true); return false; } return true; };
   $('#aKop').onclick = () => { if (!brauche()) return;
@@ -792,7 +971,7 @@ async function adresseDetail(id, rolle, neuLaden, gewaehlt, opt = {}){
   const zb = (sel) => `<option value="">–</option>`+G.zahlungsbedingungen.map(z=>`<option value="${z.id}" ${z.id===sel?'selected':''}>${esc(z.text)}</option>`).join('');
   const male = () => {
     $('#ad').innerHTML = `<div class="card"><div class="kopfzeile" style="margin-bottom:6px"><b style="font-size:16px">${a.id?esc(a.name1):'Neue Adresse'}</b>${a.id?`<span class="hinweis">Adressnr. ${esc(a.adressnr)}${a.kunde?' · Kundennr. '+esc(a.kunde.kundennr):''}${a.lieferant?' · Lieferantennr. '+esc(a.lieferant.lieferantennr):''}</span>`:''}</div>
-    <div class="reiter">${[['stamm','Adresse'],['rollen','Kunden-/Lieferantendaten'],['belege','Belege'],['op','Offene Posten'],['projekte','Projekte']].map(([k,t])=>`<button data-r="${k}" class="${reiter===k?'on':''}" ${!a.id&&!['stamm','rollen'].includes(k)?'disabled':''}>${t}</button>`).join('')}</div>
+    <div class="reiter">${[['stamm','Adresse'],['rollen','Kunden-/Lieferantendaten'],...(a.kunde?[['preise','Preise']]:[]),['kz','Kennzeichen'],['belege','Belege'],['op','Offene Posten'],['projekte','Projekte']].map(([k,t])=>`<button data-r="${k}" class="${reiter===k?'on':''}" ${!a.id&&!['stamm','rollen'].includes(k)?'disabled':''}>${t}</button>`).join('')}</div>
     <div id="aR"></div>
     <div class="fussreihe"><button class="btn pri" id="aSp" data-ak="s">${ak('Speichern','S')}</button><button class="btn" id="aSchl" data-ak="c">S${'<u>c</u>'}hließen</button></div></div>`;
     const R = $('#aR');
@@ -812,9 +991,12 @@ async function adresseDetail(id, rolle, neuLaden, gewaehlt, opt = {}){
       <p class="hinweis">Eine Adresse kann gleichzeitig Kunde und Lieferant sein – Kontaktdaten werden nur einmal gepflegt.</p>`;
     if (reiter==='belege') R.innerHTML = `<table><tbody>${a.belege.map(b=>`<tr class="klick" onclick="location.hash='#/beleg/${b.id}'"><td>${esc(ba(b.belegart).name)}</td><td>${esc(b.nummer||'Entwurf')}</td><td>${fmt(b.datum)}</td><td>${esc(b.betreff||'')}</td><td class="r">${eur(b.brutto)} €</td></tr>`).join('')||'<tr><td class="hinweis">Keine Belege.</td></tr>'}</tbody></table>`;
     if (reiter==='op') R.innerHTML = `<table><tbody>${a.op.map(o=>`<tr><td>${o.art==='debitor'?'Kunde':'Lieferant'}</td><td>fällig ${fmt(o.faellig)}</td><td class="r">${eur(o.offen)} €</td></tr>`).join('')||'<tr><td class="hinweis">Nichts offen.</td></tr>'}</tbody></table>`;
+    if (reiter==='preise') kundenpreiseZeichnen(R, {adresse_id: a.id});
+    if (reiter==='kz') kennzeichenZeichnen(R, 'adresse', a.id);
     if (reiter==='projekte') R.innerHTML = `<table><tbody>${a.projekte.map(p=>`<tr class="klick" onclick="location.hash='#/projekt/${p.id}'"><td>${esc(p.projektnr)}</td><td>${esc(p.titel)}</td><td>${esc(p.status)}</td></tr>`).join('')||'<tr><td class="hinweis">Keine Projekte.</td></tr>'}</tbody></table>`;
     $('#ad').querySelectorAll('.reiter button').forEach(b => b.onclick = () => { merken(); reiter=b.dataset.r; male(); });
-    $('#aSp').onclick = async () => { merken(); const n = await api('adressen',{body:a}); toast('Gespeichert.'); Object.assign(a,n); gewaehlt(a); await neuLaden(); male(); };
+    $('#aSp').onclick = async () => { merken(); const kz = reiter==='kz' && a.id ? kennzeichenWerte($('#aR')) : null;
+      const n = await api('adressen',{body:a}); if (kz) await api(`kennzeichen/adresse/${n.id}`, {body:{werte:kz}}); toast('Gespeichert.'); Object.assign(a,n); gewaehlt(a); await neuLaden(); male(); };
     $('#aSchl').onclick = () => schliesseReiter(TABS.indexOf(AKT));
   };
   const merken = () => {
@@ -841,6 +1023,7 @@ async function seiteArtikel(sel){
     klick: id => { sel = id; oeffne(id); } });
   const laden = async () => {
     let l = await api('artikel?suche='+encodeURIComponent($('#rS').value));
+    if (kzFilter) l = l.filter(a => kzFilter.ids.includes(a.id));
     const gr = $('#fGr').value.trim().toLowerCase(); if (gr) l = l.filter(a => (a.gruppe||'').toLowerCase().includes(gr));
     if ($('#fMb').checked) l = l.filter(a => a.lagerfuehrung && a.meldebestand > 0 && a.bestand <= a.meldebestand);
     if (!$('#fIn').checked) l = l.filter(a => !a.inaktiv);
@@ -853,7 +1036,8 @@ async function seiteArtikel(sel){
   $('#fGr').oninput = () => { clearTimeout(t); t = setTimeout(laden, 250); }; $('#fMb').onchange = laden; $('#fIn').onchange = laden; $('#rAns').onchange = laden;
   $('#rErw').onclick = () => { const b = $('#rErwB'); b.hidden = !b.hidden; };
   $('#rVt').onclick = volltextDialog;
-  $('#rKz').onclick = () => toast('Eigene Zusatzfelder („Kennzeichen“) kommen in einem späteren Schritt.');
+  let kzFilter = null;
+  $('#rKz').onclick = () => kennzeichenFilterDialog('artikel', f => { kzFilter = f; $('#rKz').textContent = f ? 'Kennzeichen: ' + f.text + ' ✕' : 'Kennzeichen'; $('#rKz').classList.toggle('ok', !!f); laden(); });
   $('#rNeu').onclick = () => { sel = null; oeffne(null); };
   const brauche = () => { if (!akt || !akt.id){ toast('Bitte zuerst einen Artikel in der Liste wählen.', true); return false; } return true; };
   $('#rKop').onclick = () => { if (!brauche()) return; const k = {...akt}; delete k.id; k.artikelnr = ''; k.kurz = (k.kurz||'') + ' KOPIE'; k.bewegungen = []; k.bestand = 0; oeffne(null, {vorlage: k}); toast('Kopie angelegt – Artikelnummer wird beim Speichern vergeben.'); };
@@ -875,7 +1059,7 @@ async function artikelDetail(id, neuLaden, gewaehlt, opt = {}){
   const f = (k,l,cls='') => `<div class="feld"><label>${l}</label><input id="r_${k}" class="${cls}" value="${esc(cls?zahl(a[k]):a[k]??'')}"></div>`;
   const male = () => {
     $('#ard').innerHTML = `<div class="card"><div class="kopfzeile" style="margin-bottom:6px"><b style="font-size:16px">${a.id?esc(a.artikelnr+' '+a.kurz):'Neuer Artikel'}</b></div>
-      <div class="reiter">${[['grundlagen','Grundlagen'],['ekvk','Einkauf/Verkauf'],['kalk','Kalkulation'],['bestaende','Bestände']].map(([k,t])=>`<button data-r="${k}" class="${reiter===k?'on':''}">${t}</button>`).join('')}</div>
+      <div class="reiter">${[['grundlagen','Grundlagen'],['ekvk','Einkauf/Verkauf'],['kalk','Kalkulation'],['kpreise','Kundenpreise'],['kz','Kennzeichen'],['bestaende','Bestände']].map(([k,t])=>`<button data-r="${k}" class="${reiter===k?'on':''}">${t}</button>`).join('')}</div>
       <div id="rR"></div>
       <div class="fussreihe"><button class="btn pri" id="rSp" data-ak="s">${ak('Speichern','S')}</button><button class="btn" id="rSchl" data-ak="c">S<u>c</u>hließen</button></div></div>`;
     const R = $('#rR');
@@ -896,11 +1080,14 @@ async function artikelDetail(id, neuLaden, gewaehlt, opt = {}){
         $('#kErg').innerHTML = `Zeit je Stück <b>${zahl(Math.round(zeit*100)/100)} min</b> · Fertigung ${eur(fert)} € · Selbstkosten <b>${eur(selbst)} €</b> · <b>Preisvorschlag ${eur(vkp)} € / Stk</b>${a.vk_preis?` <span class="hinweis">(aktuell ${eur(a.vk_preis)} €)</span>`:''}`; };
       R.querySelectorAll('.kalk').forEach(i => i.oninput = rechneK); rechneK();
       $('#kUeb').onclick = () => { merken(); a.vk_preis = a._kalkVK; toast(`VK-Preis ${eur(a.vk_preis)} € übernommen – bitte speichern.`); }; }
+    if (reiter==='kpreise') { if (a.id) kundenpreiseZeichnen(R, {artikel_id: a.id}); else R.innerHTML = '<p class="hinweis">Bitte den Artikel zuerst speichern.</p>'; }
+    if (reiter==='kz') { if (a.id) kennzeichenZeichnen(R, 'artikel', a.id); else R.innerHTML = '<p class="hinweis">Bitte den Artikel zuerst speichern.</p>'; }
     if (reiter==='bestaende') R.innerHTML = `<div class="raster">${f('meldebestand','Meldebestand','zahl')}</div>
       ${a.id&&a.lagerfuehrung?`<div class="info" style="margin-top:12px">Bestand <b>${zahl(a.bestand)} ${esc(a.me)}</b> · in Aufträgen ${zahl(a.reserviert)} · verfügbar <b>${zahl(a.verfuegbar)}</b></div>
       <table style="margin-top:8px"><thead><tr><th>Datum</th><th>Beleg</th><th>Text</th><th class="r">Menge</th></tr></thead><tbody>${(a.bewegungen||[]).map(b=>`<tr><td>${fmt(b.datum)}</td><td>${esc(b.nummer||'')}</td><td>${esc(b.text||'')}</td><td class="r" style="color:${b.menge<0?'var(--red)':'var(--green)'}">${b.menge>0?'+':''}${zahl(b.menge)}</td></tr>`).join('')}</tbody></table>`:'<p class="hinweis">Ohne Lagerführung bzw. noch nicht gespeichert.</p>'}`;
     $('#ard').querySelectorAll('.reiter button').forEach(b => b.onclick = () => { merken(); reiter = b.dataset.r; male(); });
-    $('#rSp').onclick = async () => { merken(); const d = {...a}; delete d.bewegungen; const n = await api('artikel',{body:d}); toast('Gespeichert.'); Object.assign(a, n); gewaehlt(a); await neuLaden(); male(); };
+    $('#rSp').onclick = async () => { merken(); const kz = reiter==='kz' && a.id ? kennzeichenWerte($('#rR')) : null; const d = {...a}; delete d.bewegungen;
+      const n = await api('artikel',{body:d}); if (kz) await api(`kennzeichen/artikel/${n.id}`, {body:{werte:kz}}); toast('Gespeichert.'); Object.assign(a, n); gewaehlt(a); await neuLaden(); male(); };
     $('#rSchl').onclick = () => schliesseReiter(TABS.indexOf(AKT));
   };
   const merken = () => {
@@ -1071,6 +1258,79 @@ async function seiteEinstellungen(){
     vorschau(); };
   $('#eLogoX').onclick = () => { e.logo = ''; vorschau(); };
   $('#eSp').onclick = async () => { vorschau(); E = await api('einstellungen', {body:e}); $('#navLogo').innerHTML = E.logo ? `<img src="${E.logo}" alt="" style="display:block;max-width:150px;max-height:60px;margin:2px 18px 10px;border-radius:3px">` : ''; thema(E); TABS.forEach(t => t.el.querySelector('.badge-bs').textContent = E.betriebsstaette || ''); toast('Firmendaten gespeichert – gelten ab sofort für Briefansicht und Ausdruck.'); };
+}
+
+// ================================================================ Kundenpreise (Reiter in Kunde und Artikel)
+async function kundenpreiseZeichnen(box, filter){
+  // filter: {adresse_id} oder {artikel_id}
+  const [l, art, kunden] = await Promise.all([api('kundenpreise?' + (filter.adresse_id ? 'adresse=' + filter.adresse_id : 'artikel=' + filter.artikel_id)),
+    filter.adresse_id ? api('artikel') : Promise.resolve([]), filter.artikel_id ? api('adressen?rolle=kunde') : Promise.resolve([])]);
+  const auswahl = filter.adresse_id
+    ? `<select class="kpA"><option value="">– Artikel –</option>${art.map(a => `<option value="${a.id}">${esc(a.artikelnr)} · ${esc(a.kurz)} (Liste ${eur(a.vk_preis)})</option>`).join('')}</select>`
+    : `<select class="kpA"><option value="">– Kunde –</option>${kunden.map(k => `<option value="${k.id}">${esc(k.kundennr)} · ${esc(k.kurz)}</option>`).join('')}</select>`;
+  box.innerHTML = `<p class="hinweis" style="margin-top:0">Kundenpreise gehen vor dem Listenpreis (ohne zusätzlichen Kundenrabatt). Staffel: ab Menge gilt der Preis der höchsten erreichten Stufe.</p>
+    <table><thead><tr><th>${filter.adresse_id?'Artikel':'Kunde'}</th><th class="r">ab Menge</th><th class="r">Preis €</th><th>gültig ab</th><th>gültig bis</th><th>Bemerkung</th><th></th></tr></thead><tbody>
+    ${l.map(k => `<tr data-id="${k.id}"><td>${filter.adresse_id ? esc(k.artikelnr + ' · ' + k.artikel_kurz) + `<div class="hinweis">Liste ${eur(k.vk_preis)} €</div>` : esc(k.kundennr + ' · ' + k.kunde_kurz)}</td>
+      <td class="r">${zahl(k.ab_menge)} ${esc(k.me||'')}</td><td class="r"><b>${eur(k.preis)}</b></td><td>${fmt(k.gueltig_ab)}</td><td>${fmt(k.gueltig_bis)}</td><td>${esc(k.bemerkung||'')}</td>
+      <td><button class="btn rot posknopf kpX" title="Löschen">×</button></td></tr>`).join('') || '<tr><td colspan="7" class="hinweis">Noch keine Kundenpreise.</td></tr>'}
+    <tr class="kp-neu"><td>${auswahl}</td><td><input class="kpM zahl" value="1" style="width:80px"></td><td><input class="kpP zahl" placeholder="0,00" style="width:90px"></td>
+      <td><input type="date" class="kpVon"></td><td><input type="date" class="kpBis"></td><td><input class="kpB" placeholder="z. B. Rahmenvertrag 2027"></td><td><button class="btn pri posknopf kpOk">＋</button></td></tr></tbody></table>`;
+  box.querySelectorAll('.kpX').forEach(b => b.onclick = async () => { await api('kundenpreise/' + b.closest('tr').dataset.id, {method:'DELETE'}); kundenpreiseZeichnen(box, filter); });
+  box.querySelector('.kpOk').onclick = async () => { const r = box.querySelector('.kp-neu'); const sel = +r.querySelector('.kpA').value;
+    if (!sel) return toast(filter.adresse_id ? 'Bitte Artikel wählen.' : 'Bitte Kunde wählen.', true);
+    if (!r.querySelector('.kpP').value.trim()) return toast('Bitte Preis eingeben.', true);
+    await api('kundenpreise', {body:{adresse_id: filter.adresse_id || sel, artikel_id: filter.artikel_id || sel, ab_menge: num(r.querySelector('.kpM').value), preis: num(r.querySelector('.kpP').value),
+      gueltig_ab: r.querySelector('.kpVon').value || null, gueltig_bis: r.querySelector('.kpBis').value || null, bemerkung: r.querySelector('.kpB').value}});
+    toast('Kundenpreis gespeichert.'); kundenpreiseZeichnen(box, filter); };
+}
+
+// ================================================================ Kennzeichen (eigene Zusatzfelder)
+async function kennzeichenZeichnen(box, objekt, id, speicherbar = true){
+  const felder = await api(`kennzeichen/${objekt}/${id}`);
+  if (!felder.length){ box.innerHTML = `<p class="hinweis">Noch keine Kennzeichen eingerichtet – unter <a href="#/kennzeichen">System → Kennzeichen</a> anlegen (z. B. „IATF-zertifiziert“, „Branche“, „Erstkontakt“).</p>`; return; }
+  const feld = f => { const w = f.wert ?? '';
+    if (f.typ === 'janein') return `<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-kz="${f.id}" style="width:auto" ${w==='1'?'checked':''}> ${esc(f.name)}</label>`;
+    let inp = `<input data-kz="${f.id}" value="${esc(w)}" ${f.typ==='zahl'?'class="zahl"':''}>`;
+    if (f.typ === 'datum') inp = `<input type="date" data-kz="${f.id}" value="${esc(w)}">`;
+    if (f.typ === 'auswahl') inp = `<select data-kz="${f.id}"><option value="">–</option>${(f.optionen||'').split(';').map(o => o.trim()).map(o => `<option ${o===w?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
+    return `<div class="feld"><label>${esc(f.name)}</label>${inp}</div>`; };
+  box.innerHTML = `<div class="raster">${felder.map(feld).join('')}</div>${speicherbar?'<p class="hinweis">Wird mit „Speichern“ übernommen.</p>':''}`;
+}
+function kennzeichenWerte(box){
+  const w = {}; box.querySelectorAll('[data-kz]').forEach(i => w[i.dataset.kz] = i.type === 'checkbox' ? (i.checked ? '1' : '0') : i.value); return w;
+}
+async function kennzeichenFilterDialog(objekt, anwenden){
+  const defs = await api('kennzeichen/' + objekt);
+  if (!defs.length) return toast('Noch keine Kennzeichen eingerichtet (System → Kennzeichen).', true);
+  dialog('Nach Kennzeichen filtern', '', `<div class="zeile"><label>Kennzeichen</label><select id="kfF">${defs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div><div class="zeile"><label>Wert</label><span id="kfW"></span></div>`,
+    [['Filter aufheben','', () => anwenden(null)], ['Filtern','pri', async () => { const f = +document.getElementById('kfF').value, d = defs.find(x => x.id === f);
+      const i = document.querySelector('#kfW [data-kfw]'); const wert = i.type === 'checkbox' ? (i.checked ? '1' : '0') : i.value;
+      const ids = await api(`kennzeichen/${objekt}/filter?feld=${f}&wert=${encodeURIComponent(wert)}`); anwenden({ids, text: `${d.name} = ${d.typ==='janein' ? (wert==='1'?'ja':'nein') : wert}`}); }]]);
+  const wert = () => { const d = defs.find(x => x.id === +document.getElementById('kfF').value);
+    document.getElementById('kfW').innerHTML = d.typ === 'janein' ? '<label><input type="checkbox" data-kfw style="width:auto" checked> ja</label>'
+      : d.typ === 'auswahl' ? `<select data-kfw>${d.optionen.split(';').map(o => `<option>${esc(o.trim())}</option>`).join('')}</select>`
+      : `<input data-kfw ${d.typ==='datum'?'type="date"':''} placeholder="${d.typ==='text'?'enthält …':''}">`; };
+  document.getElementById('kfF').onchange = wert; wert();
+}
+async function seiteKennzeichen(){
+  M().innerHTML = `<div class="kopfzeile"><h1>Kennzeichen (Zusatzfelder)</h1></div>
+  <p class="hinweis">Eigene Felder für Kunden/Lieferanten und Artikel – z. B. „IATF-zertifiziert“, „Branche“, „Werkstoff“, „Prüfmittel nötig“. Sie erscheinen im Reiter „Kennzeichen“ und lassen sich in den Listen mit dem Knopf „Kennzeichen“ filtern.</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(460px,100%),1fr));gap:14px">${['adresse','artikel'].map(o => `<div class="card" data-o="${o}"><b>${o==='adresse'?'Adressen (Kunden & Lieferanten)':'Artikel'}</b><div class="kzListe" style="margin-top:8px"></div>
+    <div class="fussreihe"><button class="btn kzNeu">＋ Feld</button><button class="btn pri kzSp">Speichern</button></div></div>`).join('')}</div>`;
+  for (const karte of $$('[data-o]')){
+    const o = karte.dataset.o; let felder = await api('kennzeichen/' + o);
+    const male = () => { karte.querySelector('.kzListe').innerHTML = `<table><thead><tr><th>Name</th><th>Typ</th><th>Auswahlwerte (mit ; getrennt)</th><th></th></tr></thead><tbody>${felder.map((f,i) => `<tr data-i="${i}">
+        <td><input class="kzN" value="${esc(f.name||'')}"></td><td><select class="kzT">${[['text','Text'],['zahl','Zahl'],['datum','Datum'],['janein','Ja/Nein'],['auswahl','Auswahl']].map(([v,t]) => `<option value="${v}" ${f.typ===v?'selected':''}>${t}</option>`).join('')}</select></td>
+        <td><input class="kzO" value="${esc(f.optionen||'')}" ${f.typ==='auswahl'?'':'disabled'}></td><td><button class="btn rot posknopf kzX">×</button></td></tr>`).join('') || '<tr><td colspan="4" class="hinweis">Noch keine Felder.</td></tr>'}</tbody></table>`;
+      karte.querySelectorAll('tr[data-i]').forEach(tr => { const f = felder[+tr.dataset.i];
+        tr.querySelector('.kzN').oninput = e => f.name = e.target.value;
+        tr.querySelector('.kzT').onchange = e => { f.typ = e.target.value; male(); };
+        tr.querySelector('.kzO').oninput = e => f.optionen = e.target.value;
+        tr.querySelector('.kzX').onclick = () => { if (f.id && !confirm(`„${f.name}“ löschen? Die eingetragenen Werte gehen verloren.`)) return; felder.splice(+tr.dataset.i, 1); male(); }; }); };
+    karte.querySelector('.kzNeu').onclick = () => { felder.push({name:'', typ:'text'}); male(); karte.querySelectorAll('.kzN')[felder.length-1].focus(); };
+    karte.querySelector('.kzSp').onclick = async () => { felder = await api('kennzeichen/' + o, {body:{felder}}); male(); toast('Kennzeichen gespeichert.'); };
+    male();
+  }
 }
 
 // ================================================================ Dokumente
