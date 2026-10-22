@@ -35,7 +35,8 @@ def schema_anlegen(db):
     for tab, sp, typ in [("artikel", "memo", "TEXT"), ("beleg", "memo", "TEXT"), ("projekt", "memo", "TEXT"), ("artikel", "kalk", "TEXT"),
                          ("beleg_position", "charge_nr", "TEXT"), ("beleg_position", "charge_id", "INTEGER"),
                          ("offener_posten", "mahnstufe", "INTEGER NOT NULL DEFAULT 0"), ("offener_posten", "letzte_mahnung", "TEXT"),
-                         ("offener_posten", "mahnsperre", "INTEGER NOT NULL DEFAULT 0")]:
+                         ("offener_posten", "mahnsperre", "INTEGER NOT NULL DEFAULT 0"),
+                         ("artikel", "arbeitsplan", "TEXT")]:
         if sp not in [r["name"] for r in db.execute(f"PRAGMA table_info({tab})")]:
             db.execute(f"ALTER TABLE {tab} ADD COLUMN {sp} {typ}")
     if not db.execute("SELECT 1 FROM mahnstufe LIMIT 1").fetchone():
@@ -125,12 +126,14 @@ def grundlagen_anlegen(db):
 # ---------------------------------------------------------------- Einstellungen
 EINSTELLUNGEN = ["firma_name", "firma_zusatz", "strasse", "plz", "ort", "telefon", "email", "web", "ust_id", "steuernr",
                  "handelsregister", "geschaeftsfuehrer", "bank_name", "iban", "bic", "logo",
-                 "kopftext_vk", "fusstext_vk", "kopftext_ek", "fusstext_ek", "farbe_haupt", "farbe_akzent", "betriebsstaette"]
+                 "kopftext_vk", "fusstext_vk", "kopftext_ek", "fusstext_ek", "farbe_haupt", "farbe_akzent", "betriebsstaette",
+                 "arbeitsgaenge", "maschinen"]
 STANDARD_EINSTELLUNGEN = dict(
     firma_name="Muster Fertigung GmbH", firma_zusatz="Sondermaschinen · Vorrichtungen · Serienteile",
     strasse="Beispielstraße 1", plz="58089", ort="Hagen", telefon="02331 000000", email="info@muster-fertigung.example",
     web="www.muster-fertigung.example", ust_id="DE000000000", steuernr="", handelsregister="Amtsgericht Hagen HRB 0000",
     geschaeftsfuehrer="Max Mustermann", bank_name="Musterbank Hagen", iban="DE00 0000 0000 0000 0000 00", bic="MUSTDEXXX",
+    arbeitsgaenge="Bohren; Gewinde schneiden; Entgraten; Prüfen; Verpacken", maschinen="",
     logo="", kopftext_vk="Vielen Dank für Ihre Anfrage. Gerne bieten wir Ihnen an:",
     fusstext_vk="Für Rückfragen stehen wir Ihnen gern zur Verfügung.", kopftext_ek="Wir bestellen zu den vereinbarten Bedingungen:",
     fusstext_ek="Bitte bestätigen Sie uns Liefertermin und Preis.",
@@ -304,7 +307,7 @@ def adressen_liste(db, suche="", rolle=""):
 
 # ---------------------------------------------------------------- Artikel
 ARTIKEL_FELDER = ["artikelnr", "kurz", "bezeichnung", "me", "gruppe", "vk_preis", "ek_preis", "steuer_pct",
-                  "lagerfuehrung", "meldebestand", "hauptlieferant_id", "inaktiv", "memo", "kalk"]
+                  "lagerfuehrung", "meldebestand", "hauptlieferant_id", "inaktiv", "memo", "kalk", "arbeitsplan"]
 
 
 def artikel_speichern(db, d, benutzer=None):
@@ -317,7 +320,7 @@ def artikel_speichern(db, d, benutzer=None):
         werte = [d.get(f) for f in ARTIKEL_FELDER]
         if isinstance(d.get("kalk"), dict):
             werte[ARTIKEL_FELDER.index("kalk")] = json.dumps(d["kalk"])
-        werte = [w if w is not None else dflt for w, dflt in zip(werte, [None, None, None, "Stk", None, 0, 0, 19, 1, 0, None, 0, None, None])]
+        werte = [w if w is not None else dflt for w, dflt in zip(werte, [None, None, None, "Stk", None, 0, 0, 19, 1, 0, None, 0, None, None, None])]
         if d.get("id"):
             db.execute(f"UPDATE artikel SET {', '.join(f + '=?' for f in ARTIKEL_FELDER)} WHERE id=?", werte + [d["id"]])
             aid = d["id"]

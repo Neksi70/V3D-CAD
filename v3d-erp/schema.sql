@@ -271,6 +271,27 @@ CREATE TABLE IF NOT EXISTS charge_bewegung (
 );
 CREATE INDEX IF NOT EXISTS ix_cb_charge ON charge_bewegung(charge_id);
 
+-- ---------- Produktion: Rückmeldung je Palette/Charge und Arbeitsgang ----------
+CREATE TABLE IF NOT EXISTS fertigung (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  charge_id     INTEGER NOT NULL REFERENCES charge(id),
+  palette       TEXT,                      -- Paletten-/Gitterbox-Nr. (frei)
+  arbeitsgang   TEXT NOT NULL,             -- Bohren, Gewinde schneiden, …
+  maschine      TEXT,
+  mitarbeiter   TEXT,
+  menge_plan    REAL,                      -- Menge auf der Palette (Angabe beim Start)
+  start         TEXT NOT NULL,
+  ende          TEXT,                      -- NULL = läuft
+  pause_seit    TEXT,                      -- gesetzt = gerade unterbrochen
+  pause_min     REAL NOT NULL DEFAULT 0,
+  menge_gut     REAL,
+  menge_ausschuss REAL,
+  bemerkung     TEXT,
+  benutzer      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_fertigung_charge ON fertigung(charge_id);
+CREATE INDEX IF NOT EXISTS ix_fertigung_offen ON fertigung(ende);
+
 -- ---------- Dokumente (Dateien an Charge, Beleg, Projekt, Adresse, Artikel) ----------
 CREATE TABLE IF NOT EXISTS dokument (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,

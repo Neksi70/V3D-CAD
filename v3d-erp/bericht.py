@@ -295,6 +295,63 @@ class Bericht:
             y -= 15
         return y
 
+    def fertigungsstand(self, y, chargen):
+        """Fortschritt je Charge und Arbeitsgang – ohne Personal, Maschinen, Zeiten oder Ausschuss (bleibt intern)."""
+        c = self.c
+        if y < 120:
+            y = self.neue_seite()
+        c.setFillColor(TEXT)
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(RAND, y, f"Fertigungsstand je Charge (Stand {_de(dt.date.today().isoformat())})")
+        y -= 18
+        n_ag = max(len(ch["schritte"]) for ch in chargen)
+        links = [("Charge", 110), ("Artikel", 190), ("Eingang", 60)]
+        rechts = 70
+        ag_b = (W - 2 * RAND - sum(b for _, b in links) - rechts) / max(1, n_ag)
+
+        def kopf(y):
+            c.setFillColor(HexColor("#eef1f6"))
+            c.rect(RAND, y - 5, W - 2 * RAND, 16, stroke=0, fill=1)
+            c.setFillColor(TEXT)
+            c.setFont("Helvetica-Bold", 8)
+            x = RAND + 4
+            for t, b in links:
+                c.drawString(x, y, t)
+                x += b
+            c.drawString(x, y, "Bearbeitungsschritte")
+            c.drawRightString(W - RAND - 4, y, "Geliefert")
+            return y - 18
+
+        y = kopf(y)
+        for ch in chargen:
+            if y < 60:
+                y = kopf(self.neue_seite() - 4)
+            x = RAND + 4
+            c.setFont("Helvetica", 8)
+            c.setFillColor(TEXT)
+            for (_, b), w in zip(links, [ch["chargennr"], f"{ch.get('artikelnr') or ''} {ch.get('artikel_kurz') or ''}".strip(), f"{ch['eingang']:,.0f}".replace(",", ".")]):
+                c.drawString(x, y, _kuerzen(c, w, b - 6, "Helvetica", 8))
+                x += b
+            for st in ch["schritte"]:
+                bw = ag_b - 6
+                c.setFillColor(HexColor("#e7ebf1"))
+                c.roundRect(x, y - 3, bw, 12, 2, stroke=0, fill=1)
+                if st["pct"]:
+                    c.setFillColor(HexColor("#1f9d55") if st["fertig"] else (self.haupt if st["laufend"] else HexColor("#7cc79c")))
+                    c.roundRect(x, y - 3, max(3, bw * st["pct"] / 100), 12, 2, stroke=0, fill=1)
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica", 7)
+                t = f"{st['arbeitsgang']} {'✓' if st['fertig'] else str(st['pct']) + ' %'}{' · läuft' if st['laufend'] else ''}"
+                c.drawString(x + 3, y, _kuerzen(c, t.replace("✓", "fertig"), bw - 6, "Helvetica", 7))
+                x += ag_b
+            c.setFont("Helvetica", 8)
+            c.drawRightString(W - RAND - 4, y, f"{ch['geliefert']:,.0f}".replace(",", "."))
+            c.setStrokeColor(LINIE)
+            c.setLineWidth(0.4)
+            c.line(RAND, y - 7, W - RAND, y - 7)
+            y -= 19
+        return y
+
     def erstellen(self):
         ms = self.p["meilensteine"]
         alle = [d for m in ms for d in (m["plan_start"], m["plan_ende"], m["zugesagt"], m["ist_ende"]) if d] + [dt.date.today().isoformat()]
@@ -313,13 +370,18 @@ class Bericht:
         if y < 140:
             y = self.neue_seite()
         y = self.tabelle(y - 6, ms)
+        if self.p.get("fertigung"):
+            y = self.fertigungsstand(y - 18, self.p["fertigung"])
         self.fuss()
         self.c.save()
         return self.buf.getvalue()
 
 
 def terminbericht(db, pid):
+    import produktion
     p = erp.projekt_lesen(db, pid)
+    ids = produktion.chargen_fuer_projekt(db, pid)
+    p["fertigung"] = produktion.fortschritt(db, ids) if ids else []
     return Bericht(p, erp.einstellungen(db)).erstellen(), f"Terminbericht_{p['projektnr']}_{dt.date.today().isoformat()}.pdf"
 
 

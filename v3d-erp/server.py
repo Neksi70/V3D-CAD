@@ -7,6 +7,7 @@ Login:  demo / demo  (nur Testdaten!)
 
 Nur Python-Standardbibliothek.
 """
+import datetime
 import hashlib
 import hmac
 import json
@@ -25,6 +26,7 @@ import bericht
 import erechnung
 import erp
 import finanzen
+import produktion
 import seed
 import zusatz
 
@@ -65,7 +67,8 @@ def token_pruefen(tok):
 ROUTEN = []
 FEHLVERSUCHE = {}      # Anmeldesperre: Schlüssel → (Anzahl, letzter Versuch)
 # Was die Rolle „werkstatt“ (Tablet in der Produktion) darf – sonst nichts
-WERKSTATT_ERLAUBT = re.compile(r"^(GET /api/(ich|grundlagen|einstellungen|werkstatt)|POST /api/meilensteine/\d+/(erledigt|hinweis))$")
+WERKSTATT_ERLAUBT = re.compile(r"^(GET /api/(ich|grundlagen|einstellungen|werkstatt|produktion(/[a-z]+)?)|POST /api/meilensteine/\d+/(erledigt|hinweis)"
+                               r"|POST /api/produktion/start|POST /api/fertigung/\d+/(pause|weiter|beenden|zurueck)|DELETE /api/fertigung/\d+)$")
 
 
 def route(methode, muster):
@@ -485,6 +488,63 @@ def r_weiter(bid, body, benutzer, **_):
 def r_beleg_loeschen(bid, benutzer, **_):
     erp.beleg_loeschen(DB, bid, benutzer)
     return {"ok": True}
+
+# ---------------------------------------------------------------- Produktion (Rückmeldung je Palette/Charge)
+@route("GET", "/api/produktion")
+def r_produktion(q, **_):
+    von = (datetime.date.today() - datetime.timedelta(days=int(q.get("tage") or 1))).isoformat()
+    return {"laufend": produktion.liste(DB, laufend=True), "erledigt": [f for f in produktion.liste(DB, von=von) if f["ende"]],
+            **produktion.grundlagen(DB)}
+
+
+@route("GET", "/api/produktion/chargen")
+def r_produktion_chargen(q, **_):
+    return produktion.charge_suchen(DB, q.get("suche"))
+
+
+@route("GET", "/api/produktion/fortschritt")
+def r_produktion_fortschritt(q, **_):
+    if q.get("charge"):
+        return produktion.fortschritt(DB, [int(q["charge"])])
+    if q.get("projekt"):
+        return produktion.fortschritt(DB, produktion.chargen_fuer_projekt(DB, int(q["projekt"])))
+    return produktion.fortschritt(DB)
+
+
+@route("GET", "/api/produktion/liste")
+def r_produktion_liste(q, **_):
+    return produktion.liste(DB, charge_id=int(q["charge"]) if q.get("charge") else None, projekt_id=int(q["projekt"]) if q.get("projekt") else None)
+
+
+@route("POST", "/api/produktion/start")
+def r_produktion_start(body, benutzer, **_):
+    return produktion.starten(DB, body, benutzer)
+
+
+@route("POST", "/api/fertigung/(?P<fid>\\d+)/pause")
+def r_fertigung_pause(fid, benutzer, **_):
+    return produktion.pause(DB, fid, True, benutzer)
+
+
+@route("POST", "/api/fertigung/(?P<fid>\\d+)/weiter")
+def r_fertigung_weiter(fid, benutzer, **_):
+    return produktion.pause(DB, fid, False, benutzer)
+
+
+@route("POST", "/api/fertigung/(?P<fid>\\d+)/beenden")
+def r_fertigung_beenden(fid, body, benutzer, **_):
+    return produktion.beenden(DB, fid, body, benutzer)
+
+
+@route("POST", "/api/fertigung/(?P<fid>\\d+)/zurueck")
+def r_fertigung_zurueck(fid, benutzer, **_):
+    return produktion.zuruecknehmen(DB, fid, benutzer)
+
+
+@route("DELETE", "/api/fertigung/(?P<fid>\\d+)")
+def r_fertigung_loeschen(fid, benutzer, **_):
+    return produktion.loeschen(DB, fid, benutzer)
+
 
 # ---------------------------------------------------------------- Beleg-PDF / E-Rechnung
 @route("GET", "/api/belege/(?P<bid>\\d+)/pdf")

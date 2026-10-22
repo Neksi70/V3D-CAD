@@ -159,7 +159,15 @@ def befuellen(db, benutzer="seed"):
     beleg("RE", k1, [pos("900100", 6)], d(-40), None, "Konstruktionsänderung Halter")
     db.execute("INSERT INTO projekt_verlauf(projekt_id,zeit,benutzer,text) SELECT id, ?, 'seed', 'Testdaten angelegt' FROM projekt", (erp.jetzt(),))
     nachtrag_finanzen(db, benutzer)
+    nachtrag_produktion(db)
     return True
+
+
+def nachtrag_produktion(db):
+    """Arbeitsplan für den Lohnbearbeitungs-Testartikel – idempotent (überschreibt nichts Eingetragenes)."""
+    with erp.transaktion(db):
+        n = db.execute("UPDATE artikel SET arbeitsplan='Bohren; Gewinde schneiden; Prüfen' WHERE artikelnr='300400' AND COALESCE(arbeitsplan,'')=''").rowcount
+    return bool(n)
 
 
 def nachtrag_finanzen(db, benutzer="seed"):
