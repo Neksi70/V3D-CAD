@@ -169,6 +169,19 @@ def r_grundlagen(**_):
                          "Nacharbeit / Qualität", "Krankheit / Urlaub", "Sonstiges"])
 
 
+@route("GET", "/api/einstellungen")
+def r_einst(**_):
+    return erp.einstellungen(DB)
+
+
+@route("POST", "/api/einstellungen")
+def r_einst_speichern(body, benutzer, **_):
+    u = DB.execute("SELECT rolle FROM benutzer WHERE login=?", (benutzer,)).fetchone()
+    if not u or u["rolle"] != "admin":
+        raise erp.Fehler("Nur Administratoren dürfen die Firmendaten ändern.")
+    return erp.einstellungen_speichern(DB, body, benutzer)
+
+
 @route("GET", "/api/uebersicht")
 def r_uebersicht(**_):
     return erp.uebersicht(DB)

@@ -167,6 +167,17 @@ class TestProjekt(Basis):
         self.assertEqual(p["meilensteine"][1]["zugesagt"], d(8))
 
 
+class TestEinstellungen(Basis):
+    def test_standard_und_speichern(self):
+        e = erp.einstellungen(self.db)
+        self.assertEqual(e["firma_name"], "Muster Fertigung GmbH")
+        e = erp.einstellungen_speichern(self.db, dict(firma_name="Neue Firma", logo="data:image/png;base64,AAAA"))
+        self.assertEqual((e["firma_name"], e["logo"]), ("Neue Firma", "data:image/png;base64,AAAA"))
+        self.assertEqual(e["ort"], "Hagen")                       # nicht übergebene Felder bleiben
+        with self.assertRaises(erp.Fehler):
+            erp.einstellungen_speichern(self.db, dict(logo="javascript:alert(1)"))
+
+
 class TestSeed(unittest.TestCase):
     def test_testdaten_laufen_durch(self):
         with tempfile.TemporaryDirectory() as t:

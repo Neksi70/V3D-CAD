@@ -97,6 +97,38 @@ def grundlagen_anlegen(db):
     db.execute("INSERT INTO lager(nr,name) VALUES('1','Hauptlager')")
 
 
+# ---------------------------------------------------------------- Einstellungen
+EINSTELLUNGEN = ["firma_name", "firma_zusatz", "strasse", "plz", "ort", "telefon", "email", "web", "ust_id", "steuernr",
+                 "handelsregister", "geschaeftsfuehrer", "bank_name", "iban", "bic", "logo",
+                 "kopftext_vk", "fusstext_vk", "kopftext_ek", "fusstext_ek"]
+STANDARD_EINSTELLUNGEN = dict(
+    firma_name="Muster Fertigung GmbH", firma_zusatz="Sondermaschinen · Vorrichtungen · Serienteile",
+    strasse="Beispielstraße 1", plz="58089", ort="Hagen", telefon="02331 000000", email="info@muster-fertigung.example",
+    web="www.muster-fertigung.example", ust_id="DE000000000", steuernr="", handelsregister="Amtsgericht Hagen HRB 0000",
+    geschaeftsfuehrer="Max Mustermann", bank_name="Musterbank Hagen", iban="DE00 0000 0000 0000 0000 00", bic="MUSTDEXXX",
+    logo="", kopftext_vk="Vielen Dank für Ihre Anfrage. Gerne bieten wir Ihnen an:",
+    fusstext_vk="Für Rückfragen stehen wir Ihnen gern zur Verfügung.", kopftext_ek="Wir bestellen zu den vereinbarten Bedingungen:",
+    fusstext_ek="Bitte bestätigen Sie uns Liefertermin und Preis.")
+
+
+def einstellungen(db):
+    werte = {r["schluessel"]: r["wert"] for r in db.execute("SELECT schluessel, wert FROM einstellung")}
+    return {k: werte.get(k, STANDARD_EINSTELLUNGEN.get(k, "")) or "" for k in EINSTELLUNGEN}
+
+
+def einstellungen_speichern(db, d, benutzer=None):
+    logo = d.get("logo") or ""
+    if logo and (not logo.startswith("data:image/") or len(logo) > 700_000):
+        raise Fehler("Logo bitte als Bild (PNG/JPG/SVG) bis ca. 500 KB.")
+    with transaktion(db):
+        for k in EINSTELLUNGEN:
+            if k in d:
+                db.execute("INSERT INTO einstellung(schluessel,wert) VALUES(?,?) ON CONFLICT(schluessel) DO UPDATE SET wert=excluded.wert",
+                           (k, (d.get(k) or "").strip() if k != "logo" else logo))
+        protokoll(db, benutzer, "einstellung", None, "geändert", [k for k in EINSTELLUNGEN if k in d])
+    return einstellungen(db)
+
+
 # ---------------------------------------------------------------- Passwörter
 def pw_hash(pw, iter_=200_000):
     salz = secrets.token_hex(16)

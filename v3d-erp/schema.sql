@@ -235,6 +235,12 @@ CREATE TABLE IF NOT EXISTS mail (
   beleg_id    INTEGER REFERENCES beleg(id)
 );
 
+-- ---------- Einstellungen (Briefkopf, Bank, Standardtexte, Logo als data-URL) ----------
+CREATE TABLE IF NOT EXISTS einstellung (
+  schluessel TEXT PRIMARY KEY,
+  wert       TEXT
+);
+
 -- ---------- Protokoll (wer hat was geändert) ----------
 CREATE TABLE IF NOT EXISTS protokoll (
   id       INTEGER PRIMARY KEY AUTOINCREMENT,
