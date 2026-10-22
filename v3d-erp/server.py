@@ -37,6 +37,7 @@ if not os.path.exists(GEHEIM_PFAD):
 GEHEIM = open(GEHEIM_PFAD).read().strip().encode()
 SITZUNG_STD = 12
 
+erp.DOK_ORDNER = os.path.join(DATEN, "dokumente")
 DB = erp.verbinden(DB_PFAD)
 erp.schema_anlegen(DB)
 seed.befuellen(DB)
@@ -97,7 +98,7 @@ class H(BaseHTTPRequestHandler):
 
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
-        if n > 5_000_000:
+        if n > 36_000_000:
             raise erp.Fehler("Anfrage zu groß.")
         return json.loads(self.rfile.read(n) or b"{}")
 
@@ -155,7 +156,10 @@ class H(BaseHTTPRequestHandler):
                     with SPERRE:
                         erg = fn(benutzer=benutzer, q=q, body=body, **{k: int(v) if v.isdigit() else v for k, v in t.groupdict().items()})
                     if isinstance(erg, dict) and "__datei" in erg:
-                        return self._senden(200, erg["__datei"], erg["typ"], {"Content-Disposition": f'inline; filename="{erg["name"]}"'})
+                        kopf = {"Content-Disposition": f"inline; filename*=UTF-8''{urllib.parse.quote(erg['name'])}"}
+                        if erg.get("sandbox"):
+                            kopf["Content-Security-Policy"] = "sandbox"
+                        return self._senden(200, erg["__datei"], erg["typ"], kopf)
                     return self._senden(200, erg)
                 except erp.Fehler as e:
                     return self._senden(400, {"fehler": str(e)})
@@ -226,6 +230,40 @@ def r_artikel_loeschen(aid, benutzer, **_):
 @route("POST", "/api/belege/(?P<bid>\\d+)/memo")
 def r_beleg_memo(bid, body, benutzer, **_):
     return erp.beleg_memo(DB, bid, body.get("memo"), benutzer)
+
+
+@route("GET", "/api/chargen")
+def r_chargen(q, **_):
+    return erp.chargen_liste(DB, q.get("suche", ""), int(q["adresse"]) if q.get("adresse") else None,
+                             int(q["artikel"]) if q.get("artikel") else None, q.get("offen") == "1")
+
+
+@route("GET", "/api/chargen/(?P<cid>\\d+)")
+def r_charge(cid, **_):
+    return erp.charge_lesen(DB, cid)
+
+
+@route("POST", "/api/chargen/(?P<cid>\\d+)/ausschuss")
+def r_ausschuss(cid, body, benutzer, **_):
+    return erp.charge_ausschuss(DB, cid, body.get("menge"), body.get("grund"), benutzer)
+
+
+@route("POST", "/api/dokumente")
+def r_dok_neu(body, benutzer, **_):
+    import base64
+    try:
+        daten = base64.b64decode(body.get("daten") or "", validate=True)
+    except Exception:
+        raise erp.Fehler("Datei konnte nicht gelesen werden.")
+    return erp.dokument_speichern(DB, body.get("objekt"), int(body.get("objekt_id") or 0), body.get("name"), daten, body.get("mime"), benutzer)
+
+
+@route("GET", "/api/dokumente/(?P<did>\\d+)")
+def r_dok(did, **_):
+    d, daten = erp.dokument_datei(DB, did)
+    sicher = {"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "text/plain"}   # nie SVG/HTML inline
+    typ = d["mime"] if d["mime"] in sicher else "application/octet-stream"
+    return {"__datei": daten, "typ": typ, "name": "".join(ch for ch in d["name"] if ch.isprintable() and ch not in '"\\;'), "sandbox": True}
 
 
 @route("GET", "/api/werkstatt")

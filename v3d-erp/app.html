@@ -209,6 +209,8 @@ main{padding:0!important;min-width:0;display:flex;flex-direction:column}
 .ws-ok{background:var(--green)!important;border-color:var(--green)!important;color:#fff!important;flex:1}
 .ws-problem{color:#8a4b00}
 .ws-gruende{display:flex;flex-wrap:wrap;gap:6px}.ws-gruende .btn{font-size:15px;padding:8px 12px}
+.charge-alle{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fff8e6;border:1px solid #f3d38a;border-radius:6px;padding:8px 10px;margin:6px 0 10px}
+.charge-alle input{max-width:220px}
 </style>
 </head>
 <body>
@@ -260,6 +262,7 @@ const MENUE = [
   ['Verkauf', [['#/belege/VK','Verkaufsbelege'],['#/op/debitor','Offene Posten Kunden']]],
   ['Einkauf', [['#/belege/EK','Einkaufsbelege'],['#/op/kreditor','Offene Posten Lieferanten']]],
   ['Projekte', [['#/projekte','Projekte & Zeitstrahl'],['#/werkstatt','Werkstatt-Ansicht']]],
+  ['Lager', [['#/chargen','Chargen (Kundenmaterial)']]],
   ['Stammdaten', [['#/adressen/kunde','Kunden'],['#/adressen/lieferant','Lieferanten'],['#/adressen/','Alle Adressen'],['#/artikel','Artikel & Lager']]],
   ['System', [['#/einstellungen','Firmendaten & Briefkopf']]],
 ];
@@ -280,7 +283,7 @@ const favs = () => { try { return JSON.parse(localStorage.getItem(favKey()) || '
 function renderMenue(){
   const fv = favs();
   let auf; try { auf = JSON.parse(localStorage.getItem('erp-ordner') || 'null'); } catch(e){}
-  auf = auf || ['Verkauf','Einkauf','Projekte','Stammdaten'];
+  auf = auf || ['Verkauf','Einkauf','Projekte','Lager','Stammdaten'];
   const m = document.getElementById('menu');
   m.innerHTML = `<div class="mm-titel">Mein Menü</div>` + (fv.length ? fv.map(f=>`<a href="${f.h}">${esc(f.t)}</a>`).join('') : '<div style="padding:2px 18px 6px;color:#8e98b0;font-size:12px">Mit ☆ oben rechts auf einer Seite hier ablegen</div>')
     + (NUR_FAV ? '' : MENUE.map(([g,l])=>`<div class="ordner ${auf.includes(g)?'auf':''}" data-g="${g}"><span class="pf">▶</span>${g}</div><div class="inhalt-o">${l.map(([h,t])=>`<a href="${h}">${t}</a>`).join('')}</div>`).join(''));
@@ -406,6 +409,7 @@ async function navigiere(){
     else if (teil==='adressen') await seiteAdressen(a||'', b==='neu' ? 'neu' : (b ? +b : null));
     else if (teil==='artikel') await seiteArtikel(a==='neu' ? 'neu' : (a ? +a : null));
     else if (teil==='einstellungen') await seiteEinstellungen();
+    else if (teil==='chargen') await seiteChargen(a ? +a : null);
     else if (teil==='werkstatt'){ M().innerHTML = '<div class="kopfzeile"><h1>Werkstatt-Ansicht</h1></div><div id="wsBox"></div>'; await werkstattZeichnen($('#wsBox')); }
     else { location.hash = '#/start'; return; }
     const h1 = t.body.querySelector('.kopfzeile h1');
@@ -488,6 +492,8 @@ async function belegMaske(b){
   const vk = b.bereich==='VK';
   const [adr, art, proj] = await Promise.all([api('adressen?rolle='+(vk?'kunde':'lieferant')), api('artikel'), api('projekte')]);
   const gesperrt = b.status!=='entwurf';
+  const mitCharge = ['WK','LS','RE','GS'].includes(b.belegart), istWK = b.belegart === 'WK', istLS = b.belegart === 'LS';
+  const chargenOffen = istLS && !gesperrt && b.adresse_id ? await api(`chargen?adresse=${b.adresse_id}&offen=1`) : [];
   const dis = gesperrt ? 'disabled' : '';
   if (!b.positionen.length && !gesperrt) b.positionen.push({});
   const nrVon = a => vk ? a.kundennr : a.lieferantennr;
@@ -521,12 +527,13 @@ async function belegMaske(b){
         <div class="bk-z"><span>Datum</span><input type="date" id="kDat" value="${b.datum}" ${dis}></div>
         <div class="bk-z"><span>Betreff</span>${gesperrt?`<span class="bk-wert">${esc(b.betreff||'')}</span><input id="kBet" type="hidden" value="${esc(b.betreff||'')}">`:`<input id="kBet" value="${esc(b.betreff||'')}">`}</div>
         <div class="bk-z"><span>Projekt</span>${gesperrt&&b.projektnr?`<span class="bk-wert"><a href="#/projekt/${b.projekt_id}">${esc(b.projektnr)}</a> ${esc(b.projekt_titel||'')}</span>`:''}<select id="kPro" ${dis} ${gesperrt&&b.projektnr?'style="display:none"':''}><option value="">–</option>${proj.map(p=>`<option value="${p.id}" ${p.id===b.projekt_id?'selected':''}>${esc(p.projektnr)} · ${esc(p.titel)}</option>`).join('')}</select></div>
-        <div class="bk-z"><span>${vk?'Ihre Bestellung':'Unsere Referenz'}</span><input id="kRef" value="${esc(b.ihre_referenz||'')}" ${dis}></div>
+        <div class="bk-z"><span>${istWK?'Ihr Lieferschein':vk?'Ihre Bestellung':'Unsere Referenz'}</span><input id="kRef" value="${esc(b.ihre_referenz||'')}" ${dis}></div>
         <div class="bk-z"><span>Bearbeiter</span><span>${esc(b.angelegt_von||ICH.login)}</span></div>
       </div>
     </div>
     <textarea id="kKt" class="bk-text" rows="2" ${gesperrt?'':'placeholder="Kopftext (z. B. „Vielen Dank für Ihre Anfrage …“)"'} ${dis}>${esc(b.kopftext||'')}</textarea>
-    <table class="pos bk-pos"><thead><tr><th style="width:34px">Pos</th><th style="width:150px">Artikel</th><th>Bezeichnung</th><th class="r" style="width:80px">Menge</th><th style="width:52px">ME</th><th class="r" style="width:100px">Einzelpreis</th><th class="r" style="width:66px">Rabatt %</th><th class="r" style="width:100px">Gesamtpreis</th><th class="noprint" style="width:58px"></th></tr></thead><tbody id="pt"></tbody></table>
+    ${istWK && !gesperrt ? `<div class="charge-alle noprint"><b>Charge für alle Positionen:</b><input id="chAlle" placeholder="z. B. Charge vom Lieferschein"><button class="btn pri" id="chAlleB">übernehmen</button><span class="hinweis">oder je Zeile eintragen · danach „Verarbeiten“ bucht den ganzen Wareneingang</span></div>` : ''}
+    <table class="pos bk-pos"><thead><tr><th style="width:34px">Pos</th><th style="width:150px">Artikel</th><th>Bezeichnung</th>${mitCharge?'<th style="width:130px">Charge</th>':''}<th class="r" style="width:80px">Menge</th><th style="width:52px">ME</th><th class="r" style="width:100px">Einzelpreis</th><th class="r" style="width:66px">Rabatt %</th><th class="r" style="width:100px">Gesamtpreis</th><th class="noprint" style="width:58px"></th></tr></thead><tbody id="pt"></tbody></table>
     ${!gesperrt?'<button class="btn noprint" id="pNeu" style="margin-top:6px">+ Position</button>':''}
     <div class="summe"><span>Zwischensumme netto</span><span class="r" id="sN"></span><span>zzgl. MwSt.</span><span class="r" id="sS"></span><b>Endsumme</b><b class="r" id="sB"></b></div>
     <div class="bk-z bk-zb"><span>Zahlungsbedingung</span><select id="kZb" ${dis}><option value="">–</option>${G.zahlungsbedingungen.map(z=>`<option value="${z.id}" ${z.id===b.zahlungsbed_id?'selected':''}>${esc(z.text)}</option>`).join('')}</select></div>
@@ -539,11 +546,19 @@ async function belegMaske(b){
 
   const artNr = Object.fromEntries(art.map(a=>[a.artikelnr,a]));
   const artId = Object.fromEntries(art.map(a=>[a.id,a]));
+  const chargeZelle = p => {
+    if (istWK && !gesperrt) return `<input class="pC" value="${esc(p.charge_nr||'')}" placeholder="Charge">`;
+    if (istLS && !gesperrt){ const opt = chargenOffen.filter(c => !p.artikel_id || c.artikel_id === p.artikel_id);
+      if (p.charge_id && !opt.some(c => c.id === p.charge_id)) opt.unshift({id:p.charge_id, chargennr:p.charge_nr, rest:''});
+      return `<select class="pCs"><option value="">– ohne –</option>${opt.map(c => `<option value="${c.id}" data-nr="${esc(c.chargennr)}" ${c.id===p.charge_id?'selected':''}>${esc(c.chargennr)}${c.rest!==''?' (Rest '+zahl(c.rest)+')':''}</option>`).join('')}</select>`; }
+    return p.charge_id ? `<a href="#/chargen/${p.charge_id}" class="bk-wert">${esc(p.charge_nr||'')}</a>` : `<span class="bk-wert hinweis">${esc(p.charge_nr||'–')}</span>`;
+  };
   const zeichne = () => {
     $('#pt').innerHTML = b.positionen.map((p,i)=>{ const a=artId[p.artikel_id];
       return `<tr data-i="${i}"><td>${i+1}</td>
       <td><span class="artzelle"><input list="artL" class="pA" value="${esc(a?a.artikelnr:'')}" ${dis} placeholder="Artikel">${gesperrt?'':'<button class="btn posknopf pS" title="Artikel suchen">!</button>'}</span></td>
       <td>${gesperrt?`<span class="bk-wert">${esc(p.text||'')}</span>`:`<input class="pT" value="${esc(p.text||'')}" placeholder="Bezeichnung / freier Text">`}</td>
+      ${mitCharge ? `<td>${chargeZelle(p)}</td>` : ''}
       <td><input class="pM zahl" value="${zahl(p.menge??1)}" ${dis}></td>
       <td><input class="pE" value="${esc(p.me||'Stk')}" ${dis}></td>
       <td><input class="pP zahl" value="${eur(p.einzelpreis??0)}" ${dis}></td>
@@ -581,7 +596,8 @@ async function belegMaske(b){
   }
   $('#pt').addEventListener('input', e => { const tr=e.target.closest('tr'); const p=b.positionen[+tr.dataset.i]; const c=e.target.classList;
     if (c.contains('pT')) p.text=e.target.value; if (c.contains('pM')) p.menge=num(e.target.value); if (c.contains('pE')) p.me=e.target.value;
-    if (c.contains('pP')) p.einzelpreis=num(e.target.value); if (c.contains('pR')) p.rabatt_pct=num(e.target.value); rechne(); });
+    if (c.contains('pP')) p.einzelpreis=num(e.target.value); if (c.contains('pR')) p.rabatt_pct=num(e.target.value);
+    if (c.contains('pC')) p.charge_nr=e.target.value; rechne(); });
   const setzeArtikel = (i, a) => { const p = b.positionen[i]; const kd = aktAdr();
     Object.assign(p,{artikel_id:a.id,text:a.bezeichnung,me:a.me,einzelpreis:vk?a.vk_preis:a.ek_preis,steuer_pct:a.steuer_pct,rabatt_pct:vk&&kd?kd.k_rabatt||0:0});
     if (i===b.positionen.length-1 && !gesperrt) b.positionen.push({});      // wie im Brief: nächste Zeile steht bereit
@@ -601,7 +617,9 @@ async function belegMaske(b){
        <div class="zeile"><label>Bestand / Verfügbar</label><span>${a.lagerfuehrung ? zahl(a.bestand) + ' ' + esc(a.me) : 'keine Lagerführung'}</span></div>` : ''}
        ${p.vorgaenger_pos_id ? '<p class="hinweis">Übernommen aus einem Vorgängerbeleg.</p>' : ''}`,
       gesperrt ? [['Schließen','']] : [['Abbrechen',''], ['Übernehmen','pri', () => { p.text = document.getElementById('ldT').value; zeichne(); }]]); };
-  $('#pt').addEventListener('change', e => { if(!e.target.classList.contains('pA')) return; const i=+e.target.closest('tr').dataset.i;
+  $('#pt').addEventListener('change', e => { if (e.target.classList.contains('pCs')){ const p = b.positionen[+e.target.closest('tr').dataset.i];
+      p.charge_id = +e.target.value || null; p.charge_nr = p.charge_id ? e.target.selectedOptions[0].dataset.nr : null; return; }
+    if(!e.target.classList.contains('pA')) return; const i=+e.target.closest('tr').dataset.i;
     const a=artNr[e.target.value.trim()]; if(!a){ b.positionen[i].artikel_id=null; return; } setzeArtikel(i, a); });
   $('#pt').addEventListener('focusin', e => { const tr=e.target.closest('tr'); if(tr){ const p=b.positionen[+tr.dataset.i]; if(p&&p.artikel_id) info(p.artikel_id);} });
   $('#pt').addEventListener('click', e => { const tr = e.target.closest('tr'); if (!tr) return;
@@ -611,7 +629,7 @@ async function belegMaske(b){
   if ($('#pNeu')) $('#pNeu').onclick = () => { b.positionen.push({}); zeichne(); };
   const sammeln = () => ({id:b.id, belegart:b.belegart, adresse_id:adresseId, datum:$('#kDat').value, projekt_id:+$('#kPro').value||null,
     betreff:$('#kBet').value, ihre_referenz:$('#kRef').value, zahlungsbed_id:+$('#kZb').value||null, kopftext:$('#kKt').value, fusstext:$('#kFt').value, memo:b.memo||null,
-    positionen:b.positionen.filter(p=>p.text||p.artikel_id).map(p=>({artikel_id:p.artikel_id||null,text:p.text,menge:num(p.menge??1),me:p.me||'Stk',einzelpreis:num(p.einzelpreis??0),rabatt_pct:num(p.rabatt_pct||0),steuer_pct:p.steuer_pct??19,vorgaenger_pos_id:p.vorgaenger_pos_id||null}))});
+    positionen:b.positionen.filter(p=>p.text||p.artikel_id).map(p=>({artikel_id:p.artikel_id||null,text:p.text,menge:num(p.menge??1),me:p.me||'Stk',einzelpreis:num(p.einzelpreis??0),rabatt_pct:num(p.rabatt_pct||0),steuer_pct:p.steuer_pct??19,vorgaenger_pos_id:p.vorgaenger_pos_id||null,charge_nr:p.charge_nr||null,charge_id:p.charge_id||null}))});
   const speichern = async () => { const n = await api('belege',{body:sammeln()}); b.id=n.id; return n; };
   menueAuf('#nM', code => location.hash='#/neu/'+code);
   $('#dSu').onkeydown = async e => { if (e.key!=='Enter') return; const q=$('#dSu').value.trim(); if(!q) return;
@@ -639,7 +657,10 @@ async function belegMaske(b){
     if (r==='such'){ let i = b.positionen.findIndex(p => !p.text && !p.artikel_id); if (i < 0){ b.positionen.push({}); i = b.positionen.length-1; zeichne(); } artikelSuche(i); }
     if (r==='text'){ b.positionen.push({text:'', menge:0, einzelpreis:0}); zeichne(); const z=$$('#pt .pT'); z[z.length-1]?.focus(); }
     if (r==='leer'){ b.positionen = b.positionen.filter(p => p.text || p.artikel_id); if (!b.positionen.length) b.positionen.push({}); zeichne(); } });
-  $('#bDok').onclick = () => toast('Dokumente & Anhänge (Zeichnungen, Lieferanten-PDFs) kommen in einem späteren Schritt.');
+  if ($('#chAlleB')) $('#chAlleB').onclick = () => { const v = $('#chAlle').value.trim(); if (!v) return toast('Bitte eine Charge eingeben.', true);
+    b.positionen.forEach(p => { if (p.text || p.artikel_id) p.charge_nr = v; }); zeichne(); toast(`Charge ${v} für alle Positionen übernommen.`); };
+  $('#bDok').innerHTML = `D<u>o</u>kumente${b.dokumente && b.dokumente.length ? ' (' + b.dokumente.length + ')' : ''}`;
+  $('#bDok').onclick = () => dokumenteDialog('beleg', b.id, b.dokumente || [], () => seiteBeleg(b.id), 'Gespeicherte Belege – Kunden-Lieferschein, Werkszeugnis, Zeichnung …');
   $('#bMemo').onclick = () => memoDialog(b.nummer || 'neuer Beleg', b.memo, async v => { b.memo = v; if (b.id) await api(`belege/${b.id}/memo`, {body:{memo:v}}); $('#bMemo').innerHTML = ak('Memotext','M') + (v ? ' ●' : ''); });
   if ($('#bDa')) $('#bDa').onclick = async () => { const d = await api('belege/'+b.id);
     dialog('Druckansicht', esc(d.belegart_name + ' ' + (d.nummer || 'Entwurf')), `<div style="background:#dfe3ea;padding:14px;max-height:72vh;overflow:auto"><div class="blatt druck-vorschau" style="min-width:0;padding:30px 36px">${belegDruckHTML(d)}</div></div>`, [['Schließen',''], ['Drucken','pri', () => belegDrucken(b.id)]]);
@@ -652,10 +673,10 @@ function belegDruckHTML(b){
   return `<div class="brief">${kopfHTML(E)}
     <div class="absz">${esc(absender(E))}</div>
     <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:24px"><div>${esc(b.name1)}<br>${esc(b.name2||'')}${b.name2?'<br>':''}${esc(b.strasse||'')}<br>${esc(b.plz||'')} ${esc(b.ort||'')}</div>
-    <div class="bk"><b style="font-size:15px">${esc(b.belegart_name)}</b><br>Nummer: ${esc(b.nummer||'ENTWURF')}<br>Datum: ${fmt(b.datum)}<br>${b.kundennr?'Kundennr.: '+esc(b.kundennr)+'<br>':''}${b.projektnr?'Projekt: '+esc(b.projektnr)+'<br>':''}${b.ihre_referenz?'Ihre Ref.: '+esc(b.ihre_referenz):''}</div></div>
+    <div class="bk"><b style="font-size:15px">${esc(b.belegart_name)}</b><br>Nummer: ${esc(b.nummer||'ENTWURF')}<br>Datum: ${fmt(b.datum)}<br>${b.kundennr?'Kundennr.: '+esc(b.kundennr)+'<br>':''}${b.projektnr?'Projekt: '+esc(b.projektnr)+'<br>':''}${b.ihre_referenz?(b.belegart==='WK'?'Ihr Lieferschein: ':'Ihre Ref.: ')+esc(b.ihre_referenz):''}</div></div>
     ${b.betreff?`<b>${esc(b.betreff)}</b><br><br>`:''}${b.kopftext?esc(b.kopftext)+'<br><br>':''}
     <table><thead><tr><th>Pos</th><th>Bezeichnung</th><th class="r">Menge</th><th>ME</th><th class="r">Einzelpreis</th><th class="r">Gesamt</th></tr></thead>
-    <tbody>${b.positionen.map(p=>`<tr><td>${p.pos}</td><td>${esc(p.text)}${p.rabatt_pct?` <small>(−${zahl(p.rabatt_pct)} %)</small>`:''}</td><td class="r">${zahl(p.menge)}</td><td>${esc(p.me)}</td><td class="r">${eur(p.einzelpreis)}</td><td class="r">${eur(p.gesamt)}</td></tr>`).join('')}</tbody></table>
+    <tbody>${b.positionen.map(p=>`<tr><td>${p.pos}</td><td>${esc(p.text)}${p.rabatt_pct?` <small>(−${zahl(p.rabatt_pct)} %)</small>`:''}${p.charge_nr?`<br><small>Charge: ${esc(p.charge_nr)}</small>`:''}</td><td class="r">${zahl(p.menge)}</td><td>${esc(p.me)}</td><td class="r">${eur(p.einzelpreis)}</td><td class="r">${eur(p.gesamt)}</td></tr>`).join('')}</tbody></table>
     <div class="summe"><span>Netto</span><span class="r">${eur(b.netto)} €</span><span>MwSt.</span><span class="r">${eur(b.steuer)} €</span><b>Gesamt</b><b class="r">${eur(b.brutto)} €</b></div>
     ${b.zahlungsbed?`<p>Zahlungsbedingung: ${esc(b.zahlungsbed)}</p>`:''}${b.fusstext?`<p>${esc(b.fusstext)}</p>`:''}${fussHTML(E)}</div>`;
 }
@@ -854,7 +875,7 @@ async function artikelDetail(id, neuLaden, gewaehlt, opt = {}){
   const f = (k,l,cls='') => `<div class="feld"><label>${l}</label><input id="r_${k}" class="${cls}" value="${esc(cls?zahl(a[k]):a[k]??'')}"></div>`;
   const male = () => {
     $('#ard').innerHTML = `<div class="card"><div class="kopfzeile" style="margin-bottom:6px"><b style="font-size:16px">${a.id?esc(a.artikelnr+' '+a.kurz):'Neuer Artikel'}</b></div>
-      <div class="reiter">${[['grundlagen','Grundlagen'],['ekvk','Einkauf/Verkauf'],['bestaende','Bestände']].map(([k,t])=>`<button data-r="${k}" class="${reiter===k?'on':''}">${t}</button>`).join('')}</div>
+      <div class="reiter">${[['grundlagen','Grundlagen'],['ekvk','Einkauf/Verkauf'],['kalk','Kalkulation'],['bestaende','Bestände']].map(([k,t])=>`<button data-r="${k}" class="${reiter===k?'on':''}">${t}</button>`).join('')}</div>
       <div id="rR"></div>
       <div class="fussreihe"><button class="btn pri" id="rSp" data-ak="s">${ak('Speichern','S')}</button><button class="btn" id="rSchl" data-ak="c">S<u>c</u>hließen</button></div></div>`;
     const R = $('#rR');
@@ -864,6 +885,17 @@ async function artikelDetail(id, neuLaden, gewaehlt, opt = {}){
     if (reiter==='ekvk') R.innerHTML = `<div class="raster">${f('vk_preis','VK-Preis €','zahl')}${f('ek_preis','EK-Preis €','zahl')}${f('steuer_pct','MwSt. %','zahl')}
       <div class="feld"><label>Hauptlieferant</label><select id="r_hauptlieferant_id"><option value="">–</option>${lief.map(l=>`<option value="${l.id}" ${l.id===a.hauptlieferant_id?'selected':''}>${esc(l.lieferantennr)} · ${esc(l.kurz)}</option>`).join('')}</select></div></div>
       ${a.vk_preis?`<p class="hinweis">Rohertrag ${eur(a.vk_preis-a.ek_preis)} € (${Math.round((a.vk_preis-a.ek_preis)/a.vk_preis*100)} %)</p>`:''}`;
+    if (reiter==='kalk'){ const k = a.kalk || {}; const kf = (n,l,ph) => `<div class="feld"><label>${l}</label><input class="kalk zahl" data-n="${n}" value="${k[n]!=null?zahl(k[n]):''}" placeholder="${ph||''}"></div>`;
+      R.innerHTML = `<p class="hinweis" style="margin-top:0">Einfach gehalten: nur ausfüllen, was ihr braucht. Lohnbearbeitung: Material stellt meist der Kunde.</p>
+        <div class="raster">${kf('ruestzeit_min','Rüstzeit je Los (min)')}${kf('losgroesse','Losgröße (Stk)','z. B. 500')}${kf('stueckzeit_min','Bearbeitungszeit je Stück (min)')}${kf('stundensatz','Maschinenstundensatz (€/h)','z. B. 65')}${kf('material','Material je Stück (€)','0 bei Kundenmaterial')}${kf('fremd','Fremdleistung je Stück (€)','z. B. Härten')}${kf('aufschlag_pct','Aufschlag (%)','z. B. 15')}</div>
+        <div class="info" style="margin-top:12px" id="kErg"></div><button class="btn" id="kUeb" style="margin-top:8px">Als VK-Preis übernehmen</button>`;
+      const rechneK = () => { const v = n => num($(`.kalk[data-n="${n}"]`).value); const los = v('losgroesse') || 1;
+        const zeit = v('ruestzeit_min') / los + v('stueckzeit_min'); const fert = zeit / 60 * v('stundensatz');
+        const selbst = fert + v('material') + v('fremd'); const vkp = selbst * (1 + v('aufschlag_pct') / 100);
+        a._kalkVK = Math.round(vkp * 100) / 100;
+        $('#kErg').innerHTML = `Zeit je Stück <b>${zahl(Math.round(zeit*100)/100)} min</b> · Fertigung ${eur(fert)} € · Selbstkosten <b>${eur(selbst)} €</b> · <b>Preisvorschlag ${eur(vkp)} € / Stk</b>${a.vk_preis?` <span class="hinweis">(aktuell ${eur(a.vk_preis)} €)</span>`:''}`; };
+      R.querySelectorAll('.kalk').forEach(i => i.oninput = rechneK); rechneK();
+      $('#kUeb').onclick = () => { merken(); a.vk_preis = a._kalkVK; toast(`VK-Preis ${eur(a.vk_preis)} € übernommen – bitte speichern.`); }; }
     if (reiter==='bestaende') R.innerHTML = `<div class="raster">${f('meldebestand','Meldebestand','zahl')}</div>
       ${a.id&&a.lagerfuehrung?`<div class="info" style="margin-top:12px">Bestand <b>${zahl(a.bestand)} ${esc(a.me)}</b> · in Aufträgen ${zahl(a.reserviert)} · verfügbar <b>${zahl(a.verfuegbar)}</b></div>
       <table style="margin-top:8px"><thead><tr><th>Datum</th><th>Beleg</th><th>Text</th><th class="r">Menge</th></tr></thead><tbody>${(a.bewegungen||[]).map(b=>`<tr><td>${fmt(b.datum)}</td><td>${esc(b.nummer||'')}</td><td>${esc(b.text||'')}</td><td class="r" style="color:${b.menge<0?'var(--red)':'var(--green)'}">${b.menge>0?'+':''}${zahl(b.menge)}</td></tr>`).join('')}</tbody></table>`:'<p class="hinweis">Ohne Lagerführung bzw. noch nicht gespeichert.</p>'}`;
@@ -877,6 +909,7 @@ async function artikelDetail(id, neuLaden, gewaehlt, opt = {}){
     if ($('#r_lagerfuehrung')) a.lagerfuehrung = +$('#r_lagerfuehrung').value;
     if ($('#r_inaktiv')) a.inaktiv = +$('#r_inaktiv').value;
     if ($('#r_hauptlieferant_id')) a.hauptlieferant_id = +$('#r_hauptlieferant_id').value || null;
+    if ($$('.kalk').length){ a.kalk = {}; $$('.kalk').forEach(i => { if (i.value.trim() !== '') a.kalk[i.dataset.n] = num(i.value); }); }
   };
   male();
 }
@@ -1038,6 +1071,49 @@ async function seiteEinstellungen(){
     vorschau(); };
   $('#eLogoX').onclick = () => { e.logo = ''; vorschau(); };
   $('#eSp').onclick = async () => { vorschau(); E = await api('einstellungen', {body:e}); $('#navLogo').innerHTML = E.logo ? `<img src="${E.logo}" alt="" style="display:block;max-width:150px;max-height:60px;margin:2px 18px 10px;border-radius:3px">` : ''; thema(E); TABS.forEach(t => t.el.querySelector('.badge-bs').textContent = E.betriebsstaette || ''); toast('Firmendaten gespeichert – gelten ab sofort für Briefansicht und Ausdruck.'); };
+}
+
+// ================================================================ Dokumente
+function dokumenteDialog(objekt, id, liste, neuLaden, hinweis){
+  const zeile = d => `<tr><td><a href="api/dokumente/${d.id}" target="_blank">📄 ${esc(d.name)}</a></td><td class="hinweis">${esc(d.herkunft || '')}</td><td class="hinweis">${fmt(d.hochgeladen)} ${esc(d.von||'')}</td><td class="r hinweis">${Math.max(1, Math.round((d.groesse||0)/1024))} KB</td></tr>`;
+  dialog('Dokumente', hinweis || '', `<table><tbody>${liste.map(zeile).join('') || '<tr><td class="hinweis">Noch keine Dokumente.</td></tr>'}</tbody></table>
+    ${id ? `<label class="btn pri" style="justify-self:start">＋ Datei hochladen<input type="file" id="dokF" multiple style="display:none"></label>` : '<p class="hinweis">Bitte den Beleg zuerst speichern.</p>'}
+    <p class="hinweis">Dokumente am Wareneingang oder an der Charge erscheinen automatisch auch bei Lieferschein und Rechnung dieser Charge.</p>`, [['Schließen','']]);
+  const f = document.getElementById('dokF'); if (!f) return;
+  f.onchange = async () => {
+    for (const datei of f.files){
+      if (datei.size > 25e6){ toast(`${datei.name}: größer als 25 MB`, true); continue; }
+      const daten = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result.split(',')[1]); fr.readAsDataURL(datei); });
+      await api('dokumente', {body:{objekt, objekt_id:id, name:datei.name, mime:datei.type, daten}});
+    }
+    toast('Hochgeladen.'); document.getElementById('dlg').close(); neuLaden();
+  };
+}
+
+// ================================================================ Chargen (Kundenmaterial / Lohnbearbeitung)
+async function seiteChargen(sel){
+  M().innerHTML = `<div class="kopfzeile"><h1>Chargen</h1></div>
+  <div class="card"><div class="werkz"><input class="fi" id="chS" placeholder="Charge, Kunde, Artikel, Kunden-LS, Beleg"><label class="hinweis"><input type="checkbox" id="chO" style="width:auto" checked> nur mit Restmenge</label></div>
+    <div class="liste"><table><thead><tr><th>Charge</th><th>Kunde</th><th>Artikel</th><th>Eingang</th><th>Kunden-LS</th><th class="r">Eingang</th><th class="r">Geliefert</th><th class="r">Ausschuss</th><th class="r">Rest</th></tr></thead><tbody id="chL"></tbody></table></div>
+    <div class="blaettern"><span id="chAnz"></span><span class="sp"></span><button id="chZ">‹</button><button id="chV">›</button></div></div>
+  <div id="chD"></div>`;
+  const liste = blaetternBinden({ tbody:'#chL', anz:'#chAnz', zur:'#chZ', vor:'#chV',
+    zeile: c => `<tr class="klick ${c.id===sel?'sel':''}" data-id="${c.id}"><td><b>${esc(c.chargennr)}</b></td><td>${esc(c.kunde_kurz)}</td><td>${esc(c.artikelnr||'')} ${esc(c.artikel_kurz||'')}</td><td>${fmt(c.datum)} ${esc(c.eingang_nummer||'')}</td><td>${esc(c.kunden_ls||'')}</td><td class="r">${zahl(c.eingang)}</td><td class="r">${zahl(c.geliefert)}</td><td class="r">${c.ausschuss?zahl(c.ausschuss):''}</td><td class="r"><b>${zahl(c.rest)}</b></td></tr>`,
+    klick: id => { sel = id; detail(id); } });
+  const laden = async () => liste.setze(await api(`chargen?suche=${encodeURIComponent($('#chS').value)}&offen=${$('#chO').checked?1:''}`));
+  const detail = async id => { const c = await api('chargen/' + id);
+    $('#chD').innerHTML = `<div class="card"><div class="kopfzeile" style="margin-bottom:6px"><b style="font-size:16px">Charge ${esc(c.chargennr)}</b><span class="hinweis">${esc(c.kunde_kurz)} · ${esc(c.artikelnr||'')} ${esc(c.artikel_kurz||'')} · Kunden-LS ${esc(c.kunden_ls||'–')}</span><span class="sp"></span>
+      <button class="btn" id="chDok">Dokumente (${c.dokumente.length})</button><button class="btn" id="chAus">Ausschuss buchen</button></div>
+      <div class="kpis" style="margin-bottom:10px"><div class="kpi"><div class="z">${zahl(c.eingang)}</div><div class="t">eingegangen</div></div><div class="kpi"><div class="z">${zahl(c.geliefert)}</div><div class="t">geliefert</div></div><div class="kpi"><div class="z">${zahl(c.ausschuss)}</div><div class="t">Ausschuss</div></div><div class="kpi"><div class="z">${zahl(c.rest)}</div><div class="t">Rest im Haus</div></div></div>
+      <b>Rückverfolgung</b><table style="margin-top:6px"><thead><tr><th>Datum</th><th>Vorgang</th><th>Beleg</th><th class="r">Menge</th></tr></thead><tbody>
+      ${c.bewegungen.map(m=>`<tr><td>${fmt(m.datum)}</td><td>${esc(m.text||m.art)}</td><td>${m.beleg_id?`<a href="#/beleg/${m.beleg_id}">${esc(m.nummer||'')}</a>`:''}</td><td class="r" style="color:${m.menge<0?'var(--red)':'var(--green)'}">${m.menge>0?'+':''}${zahl(m.menge)}</td></tr>`).join('')}
+      ${c.rechnungen.map(r=>`<tr><td>${fmt(r.datum)}</td><td>berechnet</td><td><a href="#/beleg/${r.id}">${esc(r.nummer||'Entwurf')}</a></td><td></td></tr>`).join('')}</tbody></table></div>`;
+    $('#chDok').onclick = () => dokumenteDialog('charge', c.id, c.dokumente, () => detail(id), 'Messprotokoll, Werkszeugnis, Prüfbericht …');
+    $('#chAus').onclick = () => dialog('Ausschuss buchen', esc('Charge ' + c.chargennr + ' · Rest ' + zahl(c.rest)), `<div class="zeile"><label>Menge</label><input id="auM"></div><div class="zeile"><label>Grund</label><input id="auG" placeholder="z. B. Gewinde ausgerissen"></div>`,
+      [['Abbrechen',''], ['Buchen','pri', async () => { await api(`chargen/${c.id}/ausschuss`, {body:{menge:num(document.getElementById('auM').value), grund:document.getElementById('auG').value}}); toast('Ausschuss gebucht.'); laden(); detail(id); }]]);
+  };
+  let t; $('#chS').oninput = () => { clearTimeout(t); t = setTimeout(laden, 250); }; $('#chO').onchange = laden;
+  await laden(); if (sel) detail(sel);
 }
 
 // ================================================================ Werkstatt (Tablet in der Produktion)

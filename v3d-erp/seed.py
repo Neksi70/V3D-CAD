@@ -94,21 +94,50 @@ def befuellen(db, benutzer="seed"):
     be = beleg("BE", l1, [pos("200200", 36, 14.20), pos("200100", 20, 6.80)], d(-19), p1["id"], "Material Sondervorrichtung")
     weiter(be, "WE", d(0), verarbeiten=False)   # Wareneingang als Entwurf – zum Ausprobieren
 
-    # ---- Projekt 2: Adapterplatten-Serie
-    p2 = erp.projekt_speichern(db, dict(titel="Adapterplatten Serie 2. Los (60 Stk.)", kunde_id=k2["id"], ansprechpartner="Fr. Beispiel",
+    # ---- Projekt 2: Lohnbearbeitung – Kunde schickt Sinter-Rohteile, GSB bohrt/schneidet Gewinde, liefert in Losen zurück
+    ld = erp.artikel_speichern(db, dict(artikelnr="300400", kurz="LD-40 BEARBEITUNG", bezeichnung="Lagerdeckel LD-40 – Bohren Ø6,8 + Gewinde M8 (Lohnbearbeitung)",
+                                        me="Stk", gruppe="Lohnbearbeitung", vk_preis=0.62, ek_preis=0, lagerfuehrung=0,
+                                        kalk=dict(ruestzeit_min=45, losgroesse=2500, stueckzeit_min=0.42, stundensatz=72, material=0, fremd=0, aufschlag_pct=15)), benutzer)
+    p2 = erp.projekt_speichern(db, dict(titel="Lagerdeckel LD-40 – 5.000 Stk. Bohren/Gewinde", kunde_id=k2["id"], ansprechpartner="Fr. Beispiel",
         meilensteine=[
             dict(titel="Auftrag bestätigt", verantwortlich="Büro", plan_start=d(-20), plan_ende=d(-20), ist_meilenstein=1, ausloeser="AB"),
-            dict(titel="Rohmaterial bestellt", verantwortlich="Einkauf", plan_start=d(-19), plan_ende=d(-18), ausloeser="BE"),
-            dict(titel="Rohmaterial eingetroffen", verantwortlich="Lager", plan_start=d(-18), plan_ende=d(-9), ausloeser="WE"),
-            dict(titel="CNC-Fertigung", verantwortlich="Werkstatt", plan_start=d(-8), plan_ende=d(1)),
-            dict(titel="Oberfläche (Fremdvergabe)", verantwortlich="Einkauf", plan_start=d(2), plan_ende=d(7)),
-            dict(titel="Endkontrolle & Prüfprotokoll", verantwortlich="QS", plan_start=d(8), plan_ende=d(9)),
-            dict(titel="Teillieferung 30 Stk.", verantwortlich="Versand", plan_start=d(10), plan_ende=d(10), ist_meilenstein=1, ausloeser="LS"),
-            dict(titel="Restlieferung 30 Stk.", verantwortlich="Versand", plan_start=d(17), plan_ende=d(17), ist_meilenstein=1, ausloeser="LS"),
+            dict(titel="Rohteile vom Kunden eingetroffen", verantwortlich="Lager", plan_start=d(-16), plan_ende=d(-12), ausloeser="WK"),
+            dict(titel="Erstmuster & Prüfprotokoll", verantwortlich="QS", plan_start=d(-11), plan_ende=d(-9)),
+            dict(titel="Bearbeitung Los 1 (2.500 Stk.)", verantwortlich="Werkstatt", plan_start=d(-8), plan_ende=d(-2)),
+            dict(titel="Lieferung Los 1", verantwortlich="Versand", plan_start=d(-1), plan_ende=d(-1), ist_meilenstein=1, ausloeser="LS"),
+            dict(titel="Bearbeitung Los 2 (2.500 Stk.)", verantwortlich="Werkstatt", plan_start=d(0), plan_ende=d(6)),
+            dict(titel="Restlieferung Los 2", verantwortlich="Versand", plan_start=d(8), plan_ende=d(8), ist_meilenstein=1, ausloeser="LS"),
         ]), benutzer)
-    ab2 = beleg("AB", k2, [pos("100100", 60)], d(-20), p2["id"], "Adapterplatten AP-60, 2. Los")
-    be2 = beleg("BE", l1, [pos("200100", 40, 6.80)], d(-18), p2["id"], "Flachstahl für AP-60")
-    weiter(be2, "WE", d(-10))
+    ab2 = beleg("AB", k2, [dict(artikel_id=ld["id"], text=ld["bezeichnung"], menge=5000, me="Stk", einzelpreis=0.62, steuer_pct=19)],
+                d(-20), p2["id"], "Lohnbearbeitung LD-40, Ihre Bestellung 4500012345")
+    db.execute("UPDATE beleg SET ihre_referenz='4500012345' WHERE id=?", (ab2["id"],))
+    # Wareneingang Kundenmaterial: 3.000 Rohteile Charge SW-2610-A (Rest 2.000 folgt)
+    wk = erp.beleg_weiterverarbeiten(db, ab2["id"], "WK", benutzer)
+    wk["positionen"][0].update(menge=3000, charge_nr="SW-2610-A")
+    wk.update(ihre_referenz="LS 88412", datum=d(-13))
+    wk = erp.beleg_speichern(db, wk, benutzer)
+    erp.beleg_verarbeiten(db, wk["id"], benutzer)
+    if erp.DOK_ORDNER:      # Beispiel-Werkszeugnis (erfunden) als PDF anhängen
+        try:
+            import io
+            from reportlab.pdfgen import canvas as _cv
+            buf = io.BytesIO(); c = _cv.Canvas(buf)
+            c.setFont("Helvetica-Bold", 16); c.drawString(60, 780, "Werkszeugnis 3.1 (Beispiel)")
+            c.setFont("Helvetica", 11)
+            for i, t in enumerate(["Sinterwerk Beispiel GmbH", "Werkstoff: Sint-D11", "Charge: SW-2610-A", "Menge: 3.000 Stk", "Dichte: 6,9 g/cm³ – i. O.", "TESTDOKUMENT – erfundene Daten"]):
+                c.drawString(60, 740 - i * 18, t)
+            c.save()
+            erp.dokument_speichern(db, "beleg", wk["id"], "Werkszeugnis_SW-2610-A.pdf", buf.getvalue(), "application/pdf", benutzer)
+        except Exception:
+            pass
+    # Los 1 geliefert (2.500 aus Charge SW-2610-A)
+    ls2 = erp.beleg_weiterverarbeiten(db, ab2["id"], "LS", benutzer)
+    ls2["positionen"][0]["menge"] = 2500
+    ls2["positionen"] = ls2["positionen"][:1]
+    ls2.update(datum=d(-1), betreff="Lohnbearbeitung LD-40 – Los 1")
+    ls2 = erp.beleg_speichern(db, ls2, benutzer)
+    erp.beleg_verarbeiten(db, ls2["id"], benutzer)
+    db.execute("INSERT INTO charge_bewegung(charge_id,datum,art,menge,text,benutzer) SELECT id, ?, 'ausschuss', -12, 'Ausschuss: Gewinde ausgerissen', 'seed' FROM charge WHERE chargennr='SW-2610-A'", (d(-2),))
 
     # ---- Projekt 3: abgeschlossen
     p3 = erp.projekt_speichern(db, dict(titel="Umbau Prüfstand Linie 3", kunde_id=k3["id"], ansprechpartner="Hr. Probe", status="abgeschlossen",

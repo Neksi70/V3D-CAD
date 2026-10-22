@@ -32,9 +32,15 @@ def schema_anlegen(db):
     if not db.execute("SELECT 1 FROM belegart LIMIT 1").fetchone():
         grundlagen_anlegen(db)
     # nachträglich hinzugekommene Spalten (bestehende Datenbanken)
-    for tab, sp in [("artikel", "memo"), ("beleg", "memo"), ("projekt", "memo")]:
+    for tab, sp in [("artikel", "memo"), ("beleg", "memo"), ("projekt", "memo"), ("artikel", "kalk"),
+                    ("beleg_position", "charge_nr"), ("beleg_position", "charge_id")]:
         if sp not in [r["name"] for r in db.execute(f"PRAGMA table_info({tab})")]:
-            db.execute(f"ALTER TABLE {tab} ADD COLUMN {sp} TEXT")
+            db.execute(f"ALTER TABLE {tab} ADD COLUMN {sp} {'INTEGER' if sp.endswith('_id') else 'TEXT'}")
+    # neue Belegarten/Folgen in bestehenden Datenbanken nachtragen
+    for i, (c, b, n, p, l, o, v) in enumerate(BELEGARTEN):
+        db.execute("INSERT OR IGNORE INTO belegart(code,bereich,name,praefix,lager,op,vorzeichen,reihenfolge) VALUES(?,?,?,?,?,?,?,?)", (c, b, n, p, l, o, v, i))
+        db.execute("UPDATE belegart SET reihenfolge=? WHERE code=?", (i, c))
+    db.executemany("INSERT OR IGNORE INTO belegart_folge(von,nach) VALUES(?,?)", FOLGEN)
 
 
 def jetzt():
@@ -78,6 +84,7 @@ BELEGARTEN = [
     # code, bereich, name, präfix, lager, op, vorzeichen
     ("AN", "VK", "Angebot", "AN", 0, None, 1),
     ("AB", "VK", "Auftragsbestätigung", "AB", 0, None, 1),
+    ("WK", "VK", "Wareneingang Kundenmaterial", "WK", 0, None, 1),
     ("LS", "VK", "Lieferschein", "LS", -1, None, 1),
     ("RE", "VK", "Rechnung", "RE", 0, "debitor", 1),
     ("GS", "VK", "Gutschrift / Storno", "GS", 0, "debitor", -1),
@@ -86,7 +93,7 @@ BELEGARTEN = [
     ("WE", "EK", "Wareneingang", "WE", 1, None, 1),
     ("ER", "EK", "Rechnungseingang", "ER", 0, "kreditor", 1),
 ]
-FOLGEN = [("AN", "AB"), ("AB", "LS"), ("AB", "RE"), ("LS", "RE"), ("RE", "GS"),
+FOLGEN = [("AN", "AB"), ("AB", "WK"), ("AB", "LS"), ("AB", "RE"), ("LS", "RE"), ("RE", "GS"),
           ("PA", "BE"), ("BE", "WE"), ("BE", "ER"), ("WE", "ER")]
 
 
@@ -283,7 +290,7 @@ def adressen_liste(db, suche="", rolle=""):
 
 # ---------------------------------------------------------------- Artikel
 ARTIKEL_FELDER = ["artikelnr", "kurz", "bezeichnung", "me", "gruppe", "vk_preis", "ek_preis", "steuer_pct",
-                  "lagerfuehrung", "meldebestand", "hauptlieferant_id", "inaktiv", "memo"]
+                  "lagerfuehrung", "meldebestand", "hauptlieferant_id", "inaktiv", "memo", "kalk"]
 
 
 def artikel_speichern(db, d, benutzer=None):
@@ -294,7 +301,9 @@ def artikel_speichern(db, d, benutzer=None):
         if not d.get("artikelnr"):
             d["artikelnr"] = naechste_stammnr(db, "artikel", "artikelnr", 100000)
         werte = [d.get(f) for f in ARTIKEL_FELDER]
-        werte = [w if w is not None else dflt for w, dflt in zip(werte, [None, None, None, "Stk", None, 0, 0, 19, 1, 0, None, 0, None])]
+        if isinstance(d.get("kalk"), dict):
+            werte[ARTIKEL_FELDER.index("kalk")] = json.dumps(d["kalk"])
+        werte = [w if w is not None else dflt for w, dflt in zip(werte, [None, None, None, "Stk", None, 0, 0, 19, 1, 0, None, 0, None, None])]
         if d.get("id"):
             db.execute(f"UPDATE artikel SET {', '.join(f + '=?' for f in ARTIKEL_FELDER)} WHERE id=?", werte + [d["id"]])
             aid = d["id"]
@@ -332,6 +341,10 @@ def artikel_lesen(db, aid):
     a = zeile(db.execute("SELECT * FROM artikel WHERE id=?", (aid,)))
     if not a:
         raise Fehler("Artikel nicht gefunden.")
+    try:
+        a["kalk"] = json.loads(a["kalk"]) if a.get("kalk") else None
+    except ValueError:
+        a["kalk"] = None
     a["bestand"] = bestand(db, aid)
     a["reserviert"] = reserviert(db, aid)
     a["verfuegbar"] = a["bestand"] - a["reserviert"]
@@ -405,10 +418,11 @@ def beleg_speichern(db, d, benutzer=None):
             felder.update(angelegt=jetzt(), angelegt_von=benutzer)
             bid = db.execute(f"INSERT INTO beleg({','.join(felder)}) VALUES({','.join('?' * len(felder))})", list(felder.values())).lastrowid
         for i, p in enumerate(pos, 1):
-            db.execute("""INSERT INTO beleg_position(beleg_id,pos,artikel_id,text,menge,me,einzelpreis,rabatt_pct,steuer_pct,gesamt,vorgaenger_pos_id)
-                          VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            db.execute("""INSERT INTO beleg_position(beleg_id,pos,artikel_id,text,menge,me,einzelpreis,rabatt_pct,steuer_pct,gesamt,vorgaenger_pos_id,charge_nr,charge_id)
+                          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                        (bid, i, p.get("artikel_id") or None, p["text"], float(p["menge"]), p["me"], float(p["einzelpreis"]),
-                        float(p.get("rabatt_pct") or 0), float(p["steuer_pct"]), p["gesamt"], p.get("vorgaenger_pos_id")))
+                        float(p.get("rabatt_pct") or 0), float(p["steuer_pct"]), p["gesamt"], p.get("vorgaenger_pos_id"),
+                        (p.get("charge_nr") or "").strip() or None, p.get("charge_id") or None))
         protokoll(db, benutzer, "beleg", bid, "gespeichert")
     return beleg_lesen(db, bid)
 
@@ -434,6 +448,7 @@ def beleg_lesen(db, bid):
     b["folgearten"] = [dict(r) for r in db.execute(
         "SELECT f.nach code, ba.name FROM belegart_folge f JOIN belegart ba ON ba.code=f.nach WHERE f.von=? ORDER BY ba.reihenfolge", (b["belegart"],))]
     b["kette"] = belegkette(db, bid)
+    b["dokumente"] = dokumente_beleg(db, bid)
     return b
 
 
@@ -490,12 +505,15 @@ def beleg_verarbeiten(db, bid, benutzer=None):
                    (nummer, jetzt(), benutzer, bid))
         # Lager
         if art["lager"]:
+            gebucht = 0
             for p in pos:
                 a = db.execute("SELECT lagerfuehrung FROM artikel WHERE id=?", (p["artikel_id"],)).fetchone() if p["artikel_id"] else None
                 if a and a["lagerfuehrung"]:
                     db.execute("INSERT INTO lagerbewegung(datum,artikel_id,lager_id,menge,beleg_id,text) VALUES(?,?,?,?,?,?)",
                                (b["datum"], p["artikel_id"], b["lager_id"] or 1, art["lager"] * p["menge"], bid, f"{art['name']} {nummer}"))
-            meldungen.append("Lager gebucht")
+                    gebucht += 1
+            if gebucht:
+                meldungen.append("Lager gebucht")
             if art["lager"] < 0:
                 for p in pos:
                     if p["artikel_id"]:
@@ -513,6 +531,25 @@ def beleg_verarbeiten(db, bid, benutzer=None):
             db.execute("INSERT INTO offener_posten(art,beleg_id,adresse_id,datum,faellig,betrag,offen) VALUES(?,?,?,?,?,?,?)",
                        (art["op"], bid, b["adresse_id"], b["datum"], faellig, betrag, betrag))
             meldungen.append(f"Offener Posten {'Debitor' if art['op'] == 'debitor' else 'Kreditor'} angelegt")
+        # Chargen (Lohnbearbeitung)
+        if art["code"] == "WK":
+            for p in pos:
+                if not (p["charge_nr"] or "").strip():
+                    raise Fehler(f"Bitte für Position {p['pos']} die Charge eintragen.")
+                cid = _charge_finden_oder_anlegen(db, p["charge_nr"].strip(), b["adresse_id"], p["artikel_id"], bid, p["id"], b["ihre_referenz"], b["datum"])
+                db.execute("UPDATE beleg_position SET charge_id=? WHERE id=?", (cid, p["id"]))
+                db.execute("INSERT INTO charge_bewegung(charge_id,datum,art,menge,beleg_id,pos_id,text,benutzer) VALUES(?,?,?,?,?,?,?,?)",
+                           (cid, b["datum"], "eingang", p["menge"], bid, p["id"], f"Wareneingang {nummer}" + (f" (Ihr LS {b['ihre_referenz']})" if b["ihre_referenz"] else ""), benutzer))
+            meldungen.append(f"{len(pos)} Charge(n) eingebucht")
+        if art["code"] == "LS":
+            for p in pos:
+                if p["charge_id"]:
+                    rest = charge_rest(db, p["charge_id"])
+                    if p["menge"] > rest + 1e-9:
+                        nr = db.execute("SELECT chargennr FROM charge WHERE id=?", (p["charge_id"],)).fetchone()["chargennr"]
+                        raise Fehler(f"Charge {nr} hat nur noch {rest:g} – Position {p['pos']} will {p['menge']:g}.")
+                    db.execute("INSERT INTO charge_bewegung(charge_id,datum,art,menge,beleg_id,pos_id,text,benutzer) VALUES(?,?,?,?,?,?,?,?)",
+                               (p["charge_id"], b["datum"], "lieferung", -p["menge"], bid, p["id"], f"Lieferschein {nummer}", benutzer))
         # Meilensteine im Projekt automatisch erledigen
         if b["projekt_id"]:
             ms = zeilen(db.execute("""SELECT * FROM meilenstein WHERE projekt_id=? AND ist_ende IS NULL
@@ -548,9 +585,17 @@ def beleg_weiterverarbeiten(db, bid, zielart, benutzer=None):
         rest = offene_menge(db, p["id"], zielart) if ziel["vorzeichen"] > 0 else p["menge"]
         if rest <= 0:
             continue
-        pos.append(dict(artikel_id=p["artikel_id"], text=p["text"], menge=rest, me=p["me"], einzelpreis=p["einzelpreis"],
-                        rabatt_pct=p["rabatt_pct"], steuer_pct=p["steuer_pct"], vorgaenger_pos_id=p["id"]))
+        neu_pos = dict(artikel_id=p["artikel_id"], text=p["text"], menge=rest, me=p["me"], einzelpreis=p["einzelpreis"],
+                       rabatt_pct=p["rabatt_pct"], steuer_pct=p["steuer_pct"], vorgaenger_pos_id=p["id"],
+                       charge_nr=p.get("charge_nr") if zielart != "WK" else None, charge_id=p.get("charge_id") if zielart != "WK" else None)
+        if zielart == "LS" and not p.get("charge_id"):
+            pos.extend(_chargen_zuordnen(db, neu_pos, p["id"]))    # älteste Charge zuerst, ggf. aufteilen
+        else:
+            pos.append(neu_pos)
     if not pos:
+        if zielart == "LS" and db.execute("""SELECT 1 FROM beleg_verknuepfung v JOIN beleg w ON w.id=v.nachfolger_id
+                                             WHERE v.vorgaenger_id=? AND w.belegart='WK' LIMIT 1""", (bid,)).fetchone():
+            raise Fehler("Kein Kundenmaterial mehr im Haus (alle Chargen geliefert oder Ausschuss) – erst neuen Wareneingang buchen.")
         raise Fehler(f"Alle Positionen sind bereits vollständig in {ziel['name']} übernommen.")
     if ziel["vorzeichen"] < 0:
         betreff = f"Gutschrift zu {b['nummer']}"
@@ -562,6 +607,142 @@ def beleg_weiterverarbeiten(db, bid, zielart, benutzer=None):
     with transaktion(db):
         db.execute("INSERT INTO beleg_verknuepfung(vorgaenger_id,nachfolger_id) VALUES(?,?)", (bid, neu["id"]))
     return beleg_lesen(db, neu["id"])
+
+
+# ---------------------------------------------------------------- Chargen
+def charge_rest(db, cid):
+    return db.execute("SELECT COALESCE(SUM(menge),0) m FROM charge_bewegung WHERE charge_id=?", (cid,)).fetchone()["m"]
+
+
+def _charge_finden_oder_anlegen(db, nr, adresse_id, artikel_id, beleg_id, pos_id, kunden_ls, datum):
+    r = db.execute("SELECT id FROM charge WHERE chargennr=? AND adresse_id=? AND artikel_id IS ?", (nr, adresse_id, artikel_id)).fetchone()
+    if r:
+        return r["id"]          # Nachlieferung derselben Charge
+    return db.execute("""INSERT INTO charge(chargennr,adresse_id,artikel_id,herkunft,eingang_beleg_id,eingang_pos_id,kunden_ls,datum)
+                         VALUES(?,?,?,?,?,?,?,?)""", (nr, adresse_id, artikel_id, "kunde", beleg_id, pos_id, kunden_ls, datum)).lastrowid
+
+
+def _chargen_zuordnen(db, pos, ab_pos_id):
+    """Lieferschein-Position auf die eingegangenen Chargen dieser Auftragsposition verteilen (älteste zuerst)."""
+    chargen = zeilen(db.execute("""SELECT c.id, c.chargennr FROM charge c JOIN beleg_position wp ON wp.id=c.eingang_pos_id
+                                   WHERE wp.vorgaenger_pos_id=? ORDER BY c.datum, c.id""", (ab_pos_id,)))
+    if not chargen:     # Charge evtl. über eine andere Position eingegangen – gleiche Kunde/Artikel
+        chargen = []
+    offen, teile = pos["menge"], []
+    for c in chargen:
+        rest = charge_rest(db, c["id"]) - db.execute("""SELECT COALESCE(SUM(p.menge),0) m FROM beleg_position p JOIN beleg b ON b.id=p.beleg_id
+                                                         WHERE p.charge_id=? AND b.status='entwurf' AND b.belegart='LS'""", (c["id"],)).fetchone()["m"]
+        if rest <= 0 or offen <= 0:
+            continue
+        m = min(rest, offen)
+        teile.append(dict(pos, menge=m, charge_id=c["id"], charge_nr=c["chargennr"]))
+        offen -= m
+    if offen > 1e-9 and not chargen:
+        teile.append(dict(pos, menge=offen))          # noch kein Wareneingang zu dieser Position → ohne Charge vorschlagen
+    return teile                                       # sonst nur liefern, was an Kundenmaterial im Haus ist
+
+
+def chargen_liste(db, suche="", adresse_id=None, artikel_id=None, nur_offen=False):
+    sql = """SELECT c.*, a.kurz kunde_kurz, ar.artikelnr, ar.kurz artikel_kurz, b.nummer eingang_nummer,
+                    (SELECT COALESCE(SUM(menge),0) FROM charge_bewegung WHERE charge_id=c.id AND art='eingang') eingang,
+                    (SELECT COALESCE(-SUM(menge),0) FROM charge_bewegung WHERE charge_id=c.id AND art='lieferung') geliefert,
+                    (SELECT COALESCE(-SUM(menge),0) FROM charge_bewegung WHERE charge_id=c.id AND art='ausschuss') ausschuss,
+                    (SELECT COALESCE(SUM(menge),0) FROM charge_bewegung WHERE charge_id=c.id) rest
+             FROM charge c JOIN adresse a ON a.id=c.adresse_id LEFT JOIN artikel ar ON ar.id=c.artikel_id
+             LEFT JOIN beleg b ON b.id=c.eingang_beleg_id WHERE 1=1"""
+    par = []
+    if suche:
+        sql += " AND (c.chargennr LIKE ? OR a.kurz LIKE ? OR ar.artikelnr LIKE ? OR c.kunden_ls LIKE ? OR b.nummer LIKE ?)"
+        par += [f"%{suche}%"] * 5
+    if adresse_id:
+        sql += " AND c.adresse_id=?"
+        par.append(adresse_id)
+    if artikel_id:
+        sql += " AND c.artikel_id=?"
+        par.append(artikel_id)
+    l = zeilen(db.execute(sql + " ORDER BY c.datum DESC, c.id DESC LIMIT 500", par))
+    return [c for c in l if c["rest"] > 1e-9] if nur_offen else l
+
+
+def charge_lesen(db, cid):
+    c = next((x for x in chargen_liste(db) if x["id"] == cid), None) or zeile(db.execute("SELECT * FROM charge WHERE id=?", (cid,)))
+    if not c:
+        raise Fehler("Charge nicht gefunden.")
+    c = dict(c)
+    c["bewegungen"] = zeilen(db.execute("""SELECT cb.*, b.nummer, b.belegart FROM charge_bewegung cb LEFT JOIN beleg b ON b.id=cb.beleg_id
+                                           WHERE cb.charge_id=? ORDER BY cb.datum, cb.id""", (cid,)))
+    # Rückverfolgung: Rechnungen zu den Lieferscheinen
+    c["rechnungen"] = zeilen(db.execute("""SELECT DISTINCT r.id, r.nummer, r.datum, r.status FROM charge_bewegung cb
+                                          JOIN beleg_verknuepfung v ON v.vorgaenger_id=cb.beleg_id JOIN beleg r ON r.id=v.nachfolger_id
+                                          WHERE cb.charge_id=? AND cb.art='lieferung' AND r.belegart IN ('RE','GS')""", (cid,)))
+    c["dokumente"] = dokumente_zu(db, "charge", cid)
+    if c.get("eingang_beleg_id"):
+        for d in dokumente_zu(db, "beleg", c["eingang_beleg_id"]):
+            d["herkunft"] = f"Wareneingang {c.get('eingang_nummer') or ''}".strip()
+            c["dokumente"].append(d)
+    return c
+
+
+def charge_ausschuss(db, cid, menge, grund, benutzer=None):
+    menge = float(menge or 0)
+    if menge <= 0:
+        raise Fehler("Bitte eine Menge größer 0 angeben.")
+    with transaktion(db):
+        if menge > charge_rest(db, cid) + 1e-9:
+            raise Fehler("Mehr Ausschuss als Restmenge der Charge.")
+        db.execute("INSERT INTO charge_bewegung(charge_id,datum,art,menge,text,benutzer) VALUES(?,?,?,?,?,?)",
+                   (cid, heute(), "ausschuss", -menge, f"Ausschuss: {grund or 'ohne Angabe'}", benutzer))
+    return charge_lesen(db, cid)
+
+
+# ---------------------------------------------------------------- Dokumente
+DOK_ORDNER = None      # wird vom Server gesetzt
+
+
+def dokument_speichern(db, objekt, objekt_id, name, daten, mime=None, benutzer=None):
+    if objekt not in ("charge", "beleg", "projekt", "adresse", "artikel"):
+        raise Fehler("Unbekanntes Objekt.")
+    if not daten or len(daten) > 25_000_000:
+        raise Fehler("Datei leer oder größer als 25 MB.")
+    name = os.path.basename(name or "datei").replace("/", "_")[:120] or "datei"
+    os.makedirs(DOK_ORDNER, exist_ok=True)
+    datei = f"{secrets.token_hex(8)}_{name}"
+    with open(os.path.join(DOK_ORDNER, datei), "wb") as f:
+        f.write(daten)
+    with transaktion(db):
+        did = db.execute("INSERT INTO dokument(objekt,objekt_id,name,mime,groesse,datei,hochgeladen,von) VALUES(?,?,?,?,?,?,?,?)",
+                         (objekt, objekt_id, name, mime, len(daten), datei, jetzt(), benutzer)).lastrowid
+        protokoll(db, benutzer, objekt, objekt_id, "Dokument hochgeladen", {"name": name})
+    return {"id": did, "name": name}
+
+
+def dokumente_zu(db, objekt, objekt_id):
+    return zeilen(db.execute("SELECT id,name,mime,groesse,hochgeladen,von,objekt,objekt_id FROM dokument WHERE objekt=? AND objekt_id=? ORDER BY id DESC",
+                             (objekt, objekt_id)))
+
+
+def dokumente_beleg(db, bid):
+    """Eigene Dokumente + Dokumente der Chargen in den Positionen + Dokumente des Wareneingangs dieser Chargen."""
+    erg = dokumente_zu(db, "beleg", bid)
+    for r in db.execute("SELECT DISTINCT charge_id FROM beleg_position WHERE beleg_id=? AND charge_id IS NOT NULL", (bid,)):
+        c = db.execute("SELECT chargennr, eingang_beleg_id FROM charge WHERE id=?", (r["charge_id"],)).fetchone()
+        for d in dokumente_zu(db, "charge", r["charge_id"]) + (dokumente_zu(db, "beleg", c["eingang_beleg_id"]) if c["eingang_beleg_id"] and c["eingang_beleg_id"] != bid else []):
+            d["herkunft"] = f"Charge {c['chargennr']}"
+            erg.append(d)
+    seen, out = set(), []
+    for d in erg:
+        if d["id"] not in seen:
+            seen.add(d["id"])
+            out.append(d)
+    return out
+
+
+def dokument_datei(db, did):
+    d = zeile(db.execute("SELECT * FROM dokument WHERE id=?", (did,)))
+    if not d:
+        raise Fehler("Dokument nicht gefunden.")
+    with open(os.path.join(DOK_ORDNER, d["datei"]), "rb") as f:
+        return d, f.read()
 
 
 def beleg_loeschen(db, bid, benutzer=None):

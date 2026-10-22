@@ -238,6 +238,81 @@ class TestWerkstattBericht(Basis):
         self.assertGreater(pdf.count(b"/Type /Page"), 2)                  # 40 Schritte → mehrere Seiten
 
 
+class TestChargen(Basis):
+    """Lohnbearbeitung: Kunde schickt Rohteile mit Charge, GSB bearbeitet und liefert zurück."""
+    def setUp(self):
+        super().setUp()
+        erp.DOK_ORDNER = os.path.join(self.tmp.name, "dok")
+        ab = erp.beleg_speichern(self.db, dict(belegart="AB", adresse_id=self.kunde["id"], ihre_referenz="Best. 4711",
+                                               positionen=[dict(artikel_id=self.art["id"], menge=100, einzelpreis=2.5)]))
+        self.ab = erp.beleg_verarbeiten(self.db, ab["id"])["beleg"]
+
+    def wareneingang(self, menge, charge, ls="KLS-1"):
+        wk = erp.beleg_weiterverarbeiten(self.db, self.ab["id"], "WK")
+        wk["positionen"][0].update(menge=menge, charge_nr=charge)
+        wk["ihre_referenz"] = ls
+        wk = erp.beleg_speichern(self.db, wk)
+        return erp.beleg_verarbeiten(self.db, wk["id"])
+
+    def test_wareneingang_ganzer_auftrag_mit_charge(self):
+        wk = erp.beleg_weiterverarbeiten(self.db, self.ab["id"], "WK")
+        self.assertEqual(wk["positionen"][0]["menge"], 100)                 # ganze AB vorbelegt
+        with self.assertRaises(erp.Fehler):                                  # ohne Charge geht es nicht
+            erp.beleg_verarbeiten(self.db, wk["id"])
+        erp.beleg_loeschen(self.db, wk["id"])
+        r = self.wareneingang(60, "S-0815")
+        self.assertIn("1 Charge(n) eingebucht", r["meldungen"])
+        c = erp.chargen_liste(self.db)[0]
+        self.assertEqual((c["chargennr"], c["kunden_ls"], c["eingang"], c["rest"]), ("S-0815", "KLS-1", 60, 60))
+        self.assertEqual(erp.beleg_weiterverarbeiten(self.db, self.ab["id"], "WK")["positionen"][0]["menge"], 40)   # Rest offen
+
+    def test_lieferschein_verteilt_auf_chargen_und_rechnung_traegt_charge(self):
+        self.wareneingang(60, "S-0815")
+        self.wareneingang(40, "S-0816", "KLS-2")
+        ls = erp.beleg_weiterverarbeiten(self.db, self.ab["id"], "LS")
+        self.assertEqual([(p["charge_nr"], p["menge"]) for p in ls["positionen"]], [("S-0815", 60), ("S-0816", 40)])
+        ls["positionen"][1]["menge"] = 20                                    # nur 80 liefern
+        ls = erp.beleg_speichern(self.db, ls)
+        erp.beleg_verarbeiten(self.db, ls["id"])
+        rest = {c["chargennr"]: c["rest"] for c in erp.chargen_liste(self.db)}
+        self.assertEqual(rest, {"S-0815": 0, "S-0816": 20})
+        re_ = erp.beleg_weiterverarbeiten(self.db, ls["id"], "RE")
+        self.assertEqual([p["charge_nr"] for p in re_["positionen"]], ["S-0815", "S-0816"])
+        erp.beleg_verarbeiten(self.db, re_["id"])
+        c = erp.charge_lesen(self.db, [x for x in erp.chargen_liste(self.db) if x["chargennr"] == "S-0815"][0]["id"])
+        self.assertEqual([b["art"] for b in c["bewegungen"]], ["eingang", "lieferung"])
+        self.assertEqual(len(c["rechnungen"]), 1)                            # Rückverfolgung bis zur Rechnung
+
+    def test_ueberlieferung_und_ausschuss(self):
+        self.wareneingang(50, "S-1")
+        ls = erp.beleg_weiterverarbeiten(self.db, self.ab["id"], "LS")
+        ls["positionen"][0]["menge"] = 60           # mehr als die Charge hergibt
+        ls["positionen"] = ls["positionen"][:1]
+        ls = erp.beleg_speichern(self.db, ls)
+        with self.assertRaises(erp.Fehler):
+            erp.beleg_verarbeiten(self.db, ls["id"])
+        cid = erp.chargen_liste(self.db)[0]["id"]
+        c = erp.charge_ausschuss(self.db, cid, 2, "Gewinde ausgerissen")
+        self.assertEqual((c["ausschuss"], c["rest"]), (2, 48))
+        with self.assertRaises(erp.Fehler):
+            erp.charge_ausschuss(self.db, cid, 100, "zu viel")
+
+    def test_dokument_einmal_hochladen_ueberall_sichtbar(self):
+        r = self.wareneingang(100, "S-9")
+        erp.dokument_speichern(self.db, "beleg", r["beleg"]["id"], "Werkszeugnis.pdf", b"%PDF-1.4 test", "application/pdf")
+        cid = erp.chargen_liste(self.db)[0]["id"]
+        erp.dokument_speichern(self.db, "charge", cid, "Messprotokoll.pdf", b"%PDF-1.4 mess", "application/pdf")
+        ls = erp.beleg_weiterverarbeiten(self.db, self.ab["id"], "LS")
+        namen = sorted(d["name"] for d in erp.beleg_lesen(self.db, ls["id"])["dokumente"])
+        self.assertEqual(namen, ["Messprotokoll.pdf", "Werkszeugnis.pdf"])
+        d, daten = erp.dokument_datei(self.db, erp.charge_lesen(self.db, cid)["dokumente"][0]["id"])
+        self.assertEqual(daten, b"%PDF-1.4 mess")
+
+    def test_kalkulation_am_artikel(self):
+        a = erp.artikel_speichern(self.db, dict(self.art, kalk={"stueckzeit_min": 1.5, "stundensatz": 72}))
+        self.assertEqual(erp.artikel_lesen(self.db, a["id"])["kalk"]["stundensatz"], 72)
+
+
 class TestSeed(unittest.TestCase):
     def test_testdaten_laufen_durch(self):
         with tempfile.TemporaryDirectory() as t:

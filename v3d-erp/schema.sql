@@ -118,7 +118,8 @@ CREATE TABLE IF NOT EXISTS artikel (
   meldebestand  REAL NOT NULL DEFAULT 0,
   hauptlieferant_id INTEGER REFERENCES adresse(id),
   inaktiv       INTEGER NOT NULL DEFAULT 0,
-  memo          TEXT
+  memo          TEXT,
+  kalk          TEXT                      -- einfache Kalkulation als JSON
 );
 
 CREATE TABLE IF NOT EXISTS lagerbewegung (
@@ -181,7 +182,9 @@ CREATE TABLE IF NOT EXISTS beleg_position (
   rabatt_pct    REAL NOT NULL DEFAULT 0,
   steuer_pct    REAL NOT NULL DEFAULT 19,
   gesamt        REAL NOT NULL DEFAULT 0,  -- netto nach Rabatt
-  vorgaenger_pos_id INTEGER REFERENCES beleg_position(id)
+  vorgaenger_pos_id INTEGER REFERENCES beleg_position(id),
+  charge_nr     TEXT,                     -- bei Wareneingang eingegeben bzw. bei Lieferung zugeordnet
+  charge_id     INTEGER REFERENCES charge(id)
 );
 
 -- Belegkette: welcher Beleg ist aus welchem entstanden
@@ -237,6 +240,47 @@ CREATE TABLE IF NOT EXISTS mail (
   projekt_id  INTEGER REFERENCES projekt(id),
   beleg_id    INTEGER REFERENCES beleg(id)
 );
+
+-- ---------- Chargen (Lohnbearbeitung: Kundenmaterial; auch Einkauf möglich) ----------
+CREATE TABLE IF NOT EXISTS charge (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  chargennr     TEXT NOT NULL,             -- Charge des Kunden / Sinterwerks (wie geliefert)
+  adresse_id    INTEGER NOT NULL REFERENCES adresse(id),
+  artikel_id    INTEGER REFERENCES artikel(id),
+  herkunft      TEXT NOT NULL DEFAULT 'kunde',   -- kunde | einkauf
+  eingang_beleg_id INTEGER REFERENCES beleg(id),
+  eingang_pos_id   INTEGER REFERENCES beleg_position(id),
+  kunden_ls     TEXT,                      -- Lieferschein-Nr. des Kunden
+  datum         TEXT NOT NULL,
+  bemerkung     TEXT,
+  UNIQUE (chargennr, adresse_id, artikel_id)
+);
+CREATE TABLE IF NOT EXISTS charge_bewegung (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  charge_id INTEGER NOT NULL REFERENCES charge(id),
+  datum     TEXT NOT NULL,
+  art       TEXT NOT NULL,                 -- eingang | lieferung | ausschuss | korrektur
+  menge     REAL NOT NULL,                 -- + Eingang, − Lieferung/Ausschuss
+  beleg_id  INTEGER REFERENCES beleg(id),
+  pos_id    INTEGER REFERENCES beleg_position(id),
+  text      TEXT,
+  benutzer  TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_cb_charge ON charge_bewegung(charge_id);
+
+-- ---------- Dokumente (Dateien an Charge, Beleg, Projekt, Adresse, Artikel) ----------
+CREATE TABLE IF NOT EXISTS dokument (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  objekt     TEXT NOT NULL,
+  objekt_id  INTEGER NOT NULL,
+  name       TEXT NOT NULL,
+  mime       TEXT,
+  groesse    INTEGER,
+  datei      TEXT NOT NULL,                -- Dateiname im Dokumentenordner
+  hochgeladen TEXT NOT NULL,
+  von        TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_dok ON dokument(objekt, objekt_id);
 
 -- ---------- Einstellungen (Briefkopf, Bank, Standardtexte, Logo als data-URL) ----------
 CREATE TABLE IF NOT EXISTS einstellung (
