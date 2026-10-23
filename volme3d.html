@@ -5473,6 +5473,14 @@ Patrick</textarea>
         <div class="vrow"><label title="Oben im Verhältnis zu unten: über 100 % wird die Dose nach oben weiter, darunter schmaler">Oben</label> <input type="range" id="mds-konisch" min="70" max="130" value="100" step="1" oninput="_mdsSet('konisch',this.value)"><span class="vv" id="mdsv-konisch">100</span><span class="vu">%</span></div>
         <div class="vrow"><label>Wand</label> <input type="range" id="mds-wand" min="1" max="6" value="2" step="0.1" oninput="_mdsSet('wand',this.value)"><span class="vv" id="mdsv-wand">2</span><span class="vu">mm</span></div>
         <div class="vrow"><label>Boden</label> <input type="range" id="mds-boden" min="0.8" max="8" value="2" step="0.1" oninput="_mdsSet('boden',this.value)"><span class="vv" id="mdsv-boden">2</span><span class="vu">mm</span></div>
+        <div class="vtbrow" id="mds-oben-bg" style="display:flex;gap:4px;margin-bottom:7px">
+          <button class="vtb on" data-v="offen" title="Oben offen wie ein Becher" onclick="_mdsStr('oben','offen')">Oben offen</button>
+          <button class="vtb" data-v="deckel" title="Zweites Teil: Deckel mit Steckrand, der in die Öffnung passt" onclick="_mdsStr('oben','deckel')">+ Deckel</button>
+          <button class="vtb" data-v="zu" title="Geschlossener Hohlkörper — die Decke muss beim Druck frei überbrücken" onclick="_mdsStr('oben','zu')">Oben zu</button>
+        </div>
+        <div class="vrow" id="mds-row-decke"><label title="Dicke der Decke bzw. der Deckelplatte">Decke</label> <input type="range" id="mds-decke" min="0.8" max="8" value="2" step="0.1" oninput="_mdsSet('decke',this.value)"><span class="vv" id="mdsv-decke">2</span><span class="vu">mm</span></div>
+        <div class="vrow" id="mds-row-randH"><label title="Wie tief der Steckrand des Deckels in die Dose greift">Steckrand</label> <input type="range" id="mds-randH" min="2" max="20" value="6" step="0.5" oninput="_mdsSet('randH',this.value)"><span class="vv" id="mdsv-randH">6</span><span class="vu">mm</span></div>
+        <div class="vrow" id="mds-row-spiel"><label title="Luft zwischen Steckrand und Dosenwand. 0,2 = stramm, 0,4 = leicht">Spiel</label> <input type="range" id="mds-spiel" min="0" max="1" value="0.3" step="0.05" oninput="_mdsSet('spiel',this.value)"><span class="vv" id="mdsv-spiel">0.3</span><span class="vu">mm</span></div>
         <span class="vsec">Motiv</span>
         <div class="vtbrow" id="mds-quelle-bg" style="display:flex;gap:4px;margin-bottom:7px">
           <button class="vtb on" data-v="text" onclick="_mdsStr('quelle','text')">🔤 Text</button>
@@ -55090,7 +55098,7 @@ function _lwlCreate(){
 // lange Splitter entlang der Diagonale).
 const _MDS_DEF = { breite: 80, tiefe: 80, hoehe: 100, eckR: 15, konisch: 100, wand: 2, boden: 2,
   quelle: 'text', text: 'Mein Name', font: 'helvetiker_bold', motivH: 20, lage: 50, anzahl: 1,
-  art: 'tief', mtiefe: 0.8 };
+  art: 'tief', mtiefe: 0.8, oben: 'offen', decke: 2, randH: 6, spiel: 0.3 };
 const _mdsP = { ..._MDS_DEF };
 let _mdsRT = null, _mdsSvg = null, _mdsSvgName = '';
 
@@ -55129,7 +55137,8 @@ function _mdsGeoMm(p) {
   const n = O.length, k = (p.konisch / 100 - 1) / H;
   const V = [], T = [];
   const vtx = (q, y) => { const f = 1 + k * y; V.push(q[0] * f, y, q[1] * f); return V.length / 3 - 1; };
-  const Ob = O.map(q => vtx(q, 0)), Ot = O.map(q => vtx(q, H)), It = I.map(q => vtx(q, H)), Ib = I.map(q => vtx(q, B));
+  const zu = p.oben === 'zu', yDecke = zu ? H - p.decke : H;
+  const Ob = O.map(q => vtx(q, 0)), Ot = O.map(q => vtx(q, H)), It = I.map(q => vtx(q, yDecke)), Ib = I.map(q => vtx(q, B));
   const P = i => [V[i * 3], V[i * 3 + 1], V[i * 3 + 2]];
   // Dreieck mit gewünschter Normalenrichtung (soll) anlegen
   const tri = (a, b, c, soll) => {
@@ -55143,7 +55152,7 @@ function _mdsGeoMm(p) {
     const j = (i + 1) % n;
     const m = P(Ob[i]), mo = [m[0], 0, m[2]];
     quad(Ob[i], Ob[j], Ot[j], Ot[i], mo);                  // Außenwand: nach außen
-    quad(Ot[i], Ot[j], It[j], It[i], [0, 1, 0]);           // Rand oben
+    if (!zu) quad(Ot[i], Ot[j], It[j], It[i], [0, 1, 0]);  // Rand oben (bei „oben zu“: getrennte Hülle)
     const mi = P(Ib[i]);
     quad(It[i], It[j], Ib[j], Ib[i], [-mi[0], 0, -mi[2]]); // Innenwand: zur Mitte
   }
@@ -55153,6 +55162,7 @@ function _mdsGeoMm(p) {
   };
   kappe(Ob, [0, -1, 0]);                                   // Unterseite
   kappe(Ib, [0, 1, 0]);                                    // Boden innen
+  if (zu) { kappe(Ot, [0, 1, 0]); kappe(It, [0, -1, 0]); } // Decke außen + Decke innen (Hohlraum zeigt nach innen)
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(V, 3));
   g.setIndex(T);
@@ -55161,17 +55171,72 @@ function _mdsGeoMm(p) {
 }
 function _mdsGeo(p) { const g = _mdsGeoMm(p); g.scale(0.1, 0.1, 0.1); g.computeBoundingBox(); g.computeBoundingSphere(); return g; }
 
+// Deckel zum Aufstecken: Platte in der Größe der Öffnung oben, darunter ein Steckrand,
+// der mit „Spiel“ Luft in die Öffnung greift. Gedruckt mit der Platte unten, Rand
+// nach oben (so liegt er hier auch) — ohne Stützen. mm, Y oben.
+function _mdsDeckelMasse(p) {
+  const d = _mdsDims(p), fH = p.konisch / 100;
+  const rw = 1.6;                                          // Wandstärke des Steckrands
+  const aw = d.wi * fH - 2 * p.spiel, ad = d.di * fH - 2 * p.spiel, ar = Math.max(0.4, d.rI * fH - p.spiel);
+  return { d, fH, rw, aw, ad, ar, iw: aw - 2 * rw, id: ad - 2 * rw, ir: Math.max(0.3, ar - rw), ok: aw - 2 * rw > 3 && ad - 2 * rw > 3 };
+}
+function _mdsDeckelGeoMm(p) {
+  const m = _mdsDeckelMasse(p), d = m.d;
+  const nArc = Math.max(6, Math.min(24, Math.round(d.rA / 1.5)));
+  const kw = Math.max(1, Math.ceil((p.breite - 2 * d.rA) / 4)), kt = Math.max(1, Math.ceil((p.tiefe - 2 * d.rA) / 4));
+  const nK = [kw, kt, kw, kt];
+  const P0 = _mdsRing(p.breite * m.fH, p.tiefe * m.fH, d.rA * m.fH, nArc, nK);     // Platte = Dose oben
+  const RA = _mdsRing(m.aw, m.ad, m.ar, nArc, nK), RI = _mdsRing(m.iw, m.id, m.ir, nArc, nK);
+  const n = P0.length, t = p.decke, h = t + p.randH, V = [], T = [];
+  const vtx = (q, y) => { V.push(q[0], y, q[1]); return V.length / 3 - 1; };
+  const Pu = P0.map(q => vtx(q, 0)), Po = P0.map(q => vtx(q, t)), Au = RA.map(q => vtx(q, t)), Ao = RA.map(q => vtx(q, h)),
+        Io = RI.map(q => vtx(q, h)), Iu = RI.map(q => vtx(q, t));
+  const P = i => [V[i * 3], V[i * 3 + 1], V[i * 3 + 2]];
+  const tri = (a, b, c, soll) => {
+    const A = P(a), B = P(b), C = P(c);
+    const ux = B[0] - A[0], uy = B[1] - A[1], uz = B[2] - A[2], vx = C[0] - A[0], vy = C[1] - A[1], vz = C[2] - A[2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    if (nx * soll[0] + ny * soll[1] + nz * soll[2] >= 0) T.push(a, b, c); else T.push(a, c, b);
+  };
+  const quad = (a, b, c, e, soll) => { tri(a, b, c, soll); tri(a, c, e, soll); };
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n, aus = q => { const v = P(q); return [v[0], 0, v[2]]; }, ein = q => { const v = P(q); return [-v[0], 0, -v[2]]; };
+    quad(Pu[i], Pu[j], Po[j], Po[i], aus(Pu[i]));        // Plattenrand
+    quad(Po[i], Po[j], Au[j], Au[i], [0, 1, 0]);         // Plattenoberseite außerhalb des Rands
+    quad(Au[i], Au[j], Ao[j], Ao[i], aus(Au[i]));        // Steckrand außen
+    quad(Ao[i], Ao[j], Io[j], Io[i], [0, 1, 0]);         // Steckrand oben
+    quad(Io[i], Io[j], Iu[j], Iu[i], ein(Io[i]));        // Steckrand innen
+  }
+  const kappe = (ring, soll) => {
+    for (const tr of THREE.ShapeUtils.triangulateShape(ring.map(i => new THREE.Vector2(V[i * 3], V[i * 3 + 2])), []))
+      tri(ring[tr[0]], ring[tr[1]], ring[tr[2]], soll);
+  };
+  kappe(Pu, [0, -1, 0]);                                   // Platte unten
+  kappe(Iu, [0, 1, 0]);                                    // Platte oben innerhalb des Rands
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(V, 3));
+  g.setIndex(T); g.computeVertexNormals();
+  return g;
+}
+function _mdsVorschauGeo(p) {
+  const g = _mdsGeoMm(p);
+  if (p.oben !== 'deckel') { g.scale(0.1, 0.1, 0.1); return g; }
+  const dk = _mdsDeckelGeoMm(p); dk.translate(p.breite * Math.max(1, p.konisch / 100) + 10, 0, 0);
+  const m = THREE.BufferGeometryUtils.mergeBufferGeometries([g.toNonIndexed(), dk.toNonIndexed()]);
+  m.scale(0.1, 0.1, 0.1); m.computeVertexNormals(); return m;
+}
+
 function _mdsOpen() {
   const sel = document.getElementById('mds-font'), src = document.getElementById('text3d-font');
   if (sel && src) { sel.innerHTML = src.innerHTML; sel.value = _mdsP.font; if (!sel.value && sel.options.length) _mdsP.font = sel.value = sel.options[0].value; }
   document.getElementById('mds-modal').classList.add('show');
   _mdsSync();
-  requestAnimationFrame(() => { if (!_gpv['mds']) _gpvInit('mds', () => _mdsGeo(_mdsP)); else { _gpvUpdate('mds'); if (!_gpv['mds'].anim) _gpvLoop('mds'); } });
+  requestAnimationFrame(() => { if (!_gpv['mds']) _gpvInit('mds', () => _mdsVorschauGeo(_mdsP)); else { _gpvUpdate('mds'); if (!_gpv['mds'].anim) _gpvLoop('mds'); } });
 }
 function _mdsClose() { document.getElementById('mds-modal').classList.remove('show'); _gpvStop('mds'); }
 function _mdsRepaint() { if (_mdsRT) clearTimeout(_mdsRT); _mdsRT = setTimeout(() => { _mdsRT = null; if (_gpv['mds']) _gpvUpdate('mds'); }, 120); }
 function _mdsSet(k, v) { _mdsP[k] = parseFloat(v); _mdsSync(); _mdsRepaint(); }
-function _mdsStr(k, v) { _mdsP[k] = v; _mdsSync(); }
+function _mdsStr(k, v) { _mdsP[k] = v; _mdsSync(); if (k === 'oben') _mdsRepaint(); }
 function _mdsReset() { Object.assign(_mdsP, _MDS_DEF); const t = document.getElementById('mds-text'); if (t) t.value = _mdsP.text; _mdsSync(); _mdsRepaint(); }
 function _mdsSvgLaden(inp) {
   const f = inp.files && inp.files[0]; if (!f) return;
@@ -55180,12 +55245,15 @@ function _mdsSvgLaden(inp) {
   r.readAsText(f); inp.value = '';
 }
 function _mdsSync() {
-  for (const k of ['breite', 'tiefe', 'hoehe', 'eckR', 'konisch', 'wand', 'boden', 'motivH', 'lage', 'mtiefe']) {
+  for (const k of ['breite', 'tiefe', 'hoehe', 'eckR', 'konisch', 'wand', 'boden', 'motivH', 'lage', 'mtiefe', 'decke', 'randH', 'spiel']) {
     const s = document.getElementById('mds-' + k), t = document.getElementById('mdsv-' + k);
     if (s) s.value = _mdsP[k]; if (t) t.textContent = _mdsP[k];
   }
   const mark = (sel, val) => document.querySelectorAll(sel + ' .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === String(val)));
-  mark('#mds-quelle-bg', _mdsP.quelle); mark('#mds-anzahl-bg', _mdsP.anzahl); mark('#mds-art-bg', _mdsP.art);
+  mark('#mds-quelle-bg', _mdsP.quelle); mark('#mds-anzahl-bg', _mdsP.anzahl); mark('#mds-art-bg', _mdsP.art); mark('#mds-oben-bg', _mdsP.oben);
+  document.getElementById('mds-row-decke').style.display = _mdsP.oben === 'offen' ? 'none' : '';
+  document.getElementById('mds-row-randH').style.display = _mdsP.oben === 'deckel' ? '' : 'none';
+  document.getElementById('mds-row-spiel').style.display = _mdsP.oben === 'deckel' ? '' : 'none';
   document.getElementById('mds-row-text').style.display = _mdsP.quelle === 'text' ? '' : 'none';
   document.getElementById('mds-row-svg').style.display = _mdsP.quelle === 'svg' ? '' : 'none';
   document.getElementById('mds-svgname').textContent = _mdsSvg ? '✓ ' + _mdsSvgName : 'noch keine Datei';
@@ -55194,12 +55262,19 @@ function _mdsSync() {
   const el = document.getElementById('mds-info'); if (!el) return;
   const d = _mdsDims(_mdsP), warn = [];
   if (!d.ok) warn.push('Wand oder Boden zu dick für diese Größe.');
+  if (_mdsP.oben === 'zu') {
+    if (_mdsP.boden + _mdsP.decke > _mdsP.hoehe - 4) warn.push('Boden und Decke lassen innen keinen Platz mehr.');
+    const spann = Math.min(d.wi, d.di) * Math.max(1, _mdsP.konisch / 100);
+    if (spann > 45) warn.push('Die Decke muss ' + spann.toFixed(0) + ' mm frei überbrücken — im Slicer „Stützen“ einschalten oder kleiner bauen (bis ca. 40–45 mm geht es ohne).');
+  }
+  if (_mdsP.oben === 'deckel' && !_mdsDeckelMasse(_mdsP).ok) warn.push('Die Öffnung ist zu klein für einen Steckrand.');
   if (_mdsP.art === 'tief' && _mdsP.mtiefe > _mdsP.wand - 0.4) warn.push('Gravur ist fast so tief wie die Wand (' + _mdsP.wand + ' mm) — flacher gravieren oder Wand dicker.');
   if (_mdsP.motivH > _mdsP.hoehe - 2) warn.push('Motiv ist höher als die Dose.');
   if (_mdsP.quelle === 'svg' && !_mdsSvg) warn.push('Noch keine SVG-Datei gewählt.');
   if (_mdsP.quelle === 'text' && !String(_mdsP.text || '').trim()) warn.push('Bitte einen Text eingeben.');
   el.innerHTML = 'Dose ' + _mdsP.breite + ' × ' + _mdsP.tiefe + ' × ' + _mdsP.hoehe + ' mm, Ecken R' + d.rA.toFixed(1) +
     ' · Motiv ' + _mdsP.motivH + ' mm hoch, läuft um die Kanten mit' +
+    (_mdsP.oben === 'deckel' ? '<br>Deckel: Platte unten drucken, Steckrand zeigt nach oben – ' + _mdsP.spiel + ' mm Spiel rundum.' : '') +
     '<br>Aufrecht drucken, ohne Stützen. ' + (_mdsP.art === 'durch' ? 'Durchbruch: Buchstaben-Innenteile (z. B. beim „o“) fallen heraus.' : '') +
     (warn.length ? '<br><b style="color:#ffb455">⚠ ' + warn.join('<br>⚠ ') + '</b>' : '');
 }
@@ -55296,8 +55371,21 @@ async function _mdsCreate() {
   if (erg) {
     erg.userData.name = 'Dose mit Motiv #' + nr;
     erg.userData.motivDoseParams = { ...p };
-    selectObjs([erg]); updateTree(); fitToObjects([erg]);
-    notify('Dose mit Motiv erstellt ✓ Aufrecht drucken, ohne Stützen', 'ok');
+    const teile = [erg];
+    if (p.oben === 'deckel') {
+      const dg = _mdsDeckelGeoMm(p); dg.scale(0.1, 0.1, 0.1); dg.computeBoundingBox(); dg.computeBoundingSphere();
+      const dm = new THREE.Mesh(dg, new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide }));
+      dm.castShadow = true; dm.receiveShadow = true;
+      erg.updateMatrixWorld(true);
+      const eb = new THREE.Box3().setFromObject(erg);
+      dm.position.set(eb.max.x + (p.breite * Math.max(1, p.konisch / 100)) / 20 + 1, 0, (eb.min.z + eb.max.z) / 2);
+      dm.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Deckel #' + nr, color, isHole: false,
+        fillet: 0, chamfer: 0, _origGeo: dg, motivDoseParams: { ...p } };
+      scene.add(dm); objects.push(dm); _updateObjEdgeLines(dm); teile.push(dm);
+    }
+    selectObjs(teile); updateTree(); fitToObjects(teile);
+    notify(p.oben === 'deckel' ? 'Dose mit Motiv + Deckel erstellt ✓ Beide ohne Stützen drucken, den Deckel mit der Platte nach unten'
+         : p.oben === 'zu' ? 'Dose mit Motiv (oben zu) erstellt ✓' : 'Dose mit Motiv erstellt ✓ Aufrecht drucken, ohne Stützen', 'ok');
   }
 }
 
@@ -71177,8 +71265,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.252';
+const VOLME3D_VERSION = '1.18.253';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.253', date:'2026-10-23', changes:[
+    ['🥫','<b>Dose mit Motiv: jetzt auch mit Deckel oder oben zu.</b> Neuer Umschalter <b>Oben offen · + Deckel · Oben zu</b>. Mit <b>+ Deckel</b> entsteht ein zweites Teil: Platte in der Größe der Öffnung mit einem Steckrand, der mit einstellbarem <b>Spiel</b> in die Dose greift – beide ohne Stützen druckbar, den Deckel mit der Platte nach unten. <b>Oben zu</b> macht einen geschlossenen Hohlkörper mit eigener Deckenstärke; ist die Decke breiter als ca. 45 mm, weist der Generator auf Stützen hin.'],
+  ]},
   { version:'1.18.252', date:'2026-10-23', changes:[
     ['💾','<b>SVG speichern fragt jetzt, wohin.</b> Bei <b>Bild → SVG</b>, im <b>Muster-Generator</b>, bei <b>Laser-Box</b>, <b>Geldgeschenk</b> und <b>Belohnungstafel</b> öffnet „SVG speichern“ in Chrome und Edge das Fenster „Speichern unter“ – Ordner und Namen wählst du selbst. Bisher landete die Datei kommentarlos im Download-Ordner. In Safari und Firefox wird wie gewohnt heruntergeladen.'],
   ]},
