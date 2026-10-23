@@ -37580,6 +37580,28 @@ function _downloadBlob(blob, name) {
   if (_isSafari) { _downloadViaServer(blob, name).catch(() => _downloadBlobDirekt(blob, name)); return; }
   _downloadBlobDirekt(blob, name);
 }
+// „Speichern unter“ mit Windows-/Mac-Dialog (Ort + Name selbst wählen), wo der Browser
+// es kann (Chrome/Edge: showSaveFilePicker); sonst normaler Download. Muss direkt aus
+// dem Klick gerufen werden — der Dialog braucht die Nutzer-Geste.
+// Rückgabe: Dateiname, 'download' oder null (abgebrochen).
+// SVG speichern lief vorher nur als stiller Download in den Download-Ordner — „es geht
+// kein Fenster auf, wohin ich speichere“ (Volker 23.10.).
+async function _speichernUnter(blob, name, beschreibung, mime, endungen) {
+  if (window.showSaveFilePicker && !_isSafari) {
+    try {
+      const h = await window.showSaveFilePicker({ suggestedName: name,
+        types: [{ description: beschreibung, accept: { [mime]: endungen } }] });
+      const w = await h.createWritable(); await w.write(blob); await w.close();
+      _nutzungExport(h.name);
+      return h.name;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return null;          // Nutzer hat abgebrochen
+      console.warn('[speichern unter] Dialog ging nicht, lade herunter:', e);
+    }
+  }
+  _downloadBlob(blob, name);
+  return 'download';
+}
 function _downloadBlobDirekt(blob, name) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -47257,8 +47279,9 @@ function _vecInfo(){
 function _vecSave(){
   const svg = _vecSvgText();
   if(!svg){ notify('Noch nichts zu speichern','w'); return; }
-  _downloadBlob(new Blob([svg], {type:'image/svg+xml'}), _vec.name + '.svg');
-  notify('SVG gespeichert — nutzbar in V3D CAD, im Slicer und im Schneideplotter','ok');
+  _speichernUnter(new Blob([svg], {type:'image/svg+xml'}), _vec.name + '.svg', 'SVG-Grafik', 'image/svg+xml', ['.svg']).then(r => {
+    if (r) notify('SVG gespeichert' + (r !== 'download' ? ': ' + r : ' (Download-Ordner)') + ' — nutzbar in V3D CAD, im Slicer und im Schneideplotter','ok');
+  });
 }
 
 // Grundplatte + Nachzeichnung als Relief in die Szene: Platte flach, die Linien
@@ -51382,8 +51405,9 @@ function _pgSvgText(){
 function _pgSaveSvg(){
   const svg=_pgSvgText();
   if(!svg){ notify('Noch nichts zu speichern','w'); return; }
-  _downloadBlob(new Blob([svg],{type:'image/svg+xml'}), 'muster-'+_pgP.pat+'.svg');
-  notify('SVG gespeichert — für Laser/Plotter, im Slicer und in V3D CAD nutzbar','ok');
+  _speichernUnter(new Blob([svg],{type:'image/svg+xml'}), 'muster-'+_pgP.pat+'.svg', 'SVG-Grafik', 'image/svg+xml', ['.svg']).then(r => {
+    if (r) notify('SVG gespeichert' + (r !== 'download' ? ': ' + r : ' (Download-Ordner)') + ' — für Laser/Plotter, im Slicer und in V3D CAD nutzbar','ok');
+  });
 }
 
 async function _pgToScene(){
@@ -69066,8 +69090,8 @@ ${eng.join('\n')}
 function _lbExportSVG(){
   if(!_lbValidate()){ notify('Ungültige Box – bitte roten Hinweis beachten','w'); return; }
   let svg; try{ svg=_lbBuildSVG(_lbParams()); }catch(e){ console.error('Laser-Box SVG:',e); notify('SVG-Export fehlgeschlagen','w'); return; }
-  _downloadBlob(new Blob([svg],{type:'image/svg+xml'}), `laserbox_${_lbP.B}x${_lbP.T}x${_lbP.H}_${_lbP.t}mm.svg`);
-  notify('SVG exportiert (cut + engrave)','ok');
+  _speichernUnter(new Blob([svg],{type:'image/svg+xml'}), `laserbox_${_lbP.B}x${_lbP.T}x${_lbP.H}_${_lbP.t}mm.svg`, 'SVG-Grafik', 'image/svg+xml', ['.svg'])
+    .then(r => { if (r) notify('SVG exportiert (cut + engrave)','ok'); });
 }
 
 // ===== GELDGESCHENK-PLATTEN (Laser) — _ggp* ====================================
@@ -69457,9 +69481,9 @@ async function _ggpExportSVG(teil){
   let svg;
   try { svg = await _ggpBuildSVG(_ggpP, teil); } catch (e) { console.error('[ggp] SVG', e); notify('SVG-Export fehlgeschlagen', 'w'); return; }
   const nm = (_ggpP.text1 || 'geldgeschenk').toLowerCase().replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'geldgeschenk';
-  _downloadBlob(new Blob([svg], { type:'image/svg+xml' }), `${nm}_${_ggpP.B}x${_ggpP.H}${{ beide:'', vorne:'_vorderseite', hinten:'_rueckseite' }[teil]}_laser.svg`);
   const ohneGravur = teil === 'hinten' && !(_ggpP.rueck && _ggpP.rueck.trim());
-  notify(ohneGravur ? 'Rückseite gespeichert – nur Schneiden (rot)' : 'SVG gespeichert – Gravur (schwarz) zuerst, dann Schneiden (rot)', 'ok');
+  _speichernUnter(new Blob([svg], { type:'image/svg+xml' }), `${nm}_${_ggpP.B}x${_ggpP.H}${{ beide:'', vorne:'_vorderseite', hinten:'_rueckseite' }[teil]}_laser.svg`, 'SVG-Grafik', 'image/svg+xml', ['.svg'])
+    .then(r => { if (r) notify(ohneGravur ? 'Rückseite gespeichert – nur Schneiden (rot)' : 'SVG gespeichert – Gravur (schwarz) zuerst, dann Schneiden (rot)', 'ok'); });
 }
 // ===== ENDE GELDGESCHENK-PLATTEN ==============================================
 
@@ -69881,8 +69905,8 @@ async function _belExportSVG(teil){
   let svg;
   try { svg = await _belBuildSVG(_belP, teil); } catch (e) { console.error('[bel] SVG', e); notify('SVG-Export fehlgeschlagen', 'w'); return; }
   const nm = (_belP.titel || 'belohnungstafel').toLowerCase().replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'belohnungstafel';
-  _downloadBlob(new Blob([svg], { type:'image/svg+xml' }), `${nm}${{ alles:'', tafel:'_tafel', marker:'_marker' }[teil]}_laser.svg`);
-  notify('SVG gespeichert – Gravur (schwarz) zuerst, dann Schneiden (rot)', 'ok');
+  _speichernUnter(new Blob([svg], { type:'image/svg+xml' }), `${nm}${{ alles:'', tafel:'_tafel', marker:'_marker' }[teil]}_laser.svg`, 'SVG-Grafik', 'image/svg+xml', ['.svg'])
+    .then(r => { if (r) notify('SVG gespeichert – Gravur (schwarz) zuerst, dann Schneiden (rot)', 'ok'); });
 }
 // ===== ENDE BELOHNUNGSTAFEL ===================================================
 
@@ -71153,8 +71177,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.251';
+const VOLME3D_VERSION = '1.18.252';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.252', date:'2026-10-23', changes:[
+    ['💾','<b>SVG speichern fragt jetzt, wohin.</b> Bei <b>Bild → SVG</b>, im <b>Muster-Generator</b>, bei <b>Laser-Box</b>, <b>Geldgeschenk</b> und <b>Belohnungstafel</b> öffnet „SVG speichern“ in Chrome und Edge das Fenster „Speichern unter“ – Ordner und Namen wählst du selbst. Bisher landete die Datei kommentarlos im Download-Ordner. In Safari und Firefox wird wie gewohnt heruntergeladen.'],
+  ]},
   { version:'1.18.251', date:'2026-10-23', changes:[
     ['🥫','<b>Neuer Generator: Dose mit Motiv rundherum.</b> Eckige Dose mit runden Kanten (Breite, Tiefe, Höhe, Eckradius, konisch, Wand, Boden) – dazu ein Name oder ein eigenes SVG, das wie ein Etikett um die Rundungen läuft. Wahlweise 1× vorne, 2× vorn und hinten oder 4× rundum, <b>vertieft</b>, <b>erhaben</b> oder als <b>Durchbruch</b> (z. B. Windlicht). Passen mehrere Motive nicht nebeneinander, werden sie automatisch verkleinert. Zu finden unter <b>GENERATOREN</b> → „Dose mit Motiv“.'],
   ]},
