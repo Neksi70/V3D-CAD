@@ -60,6 +60,7 @@ function Get-Slicers {
         anycubic  = @{ f = @("$pf\Anycubic Slicer Next", "$pf\AnycubicSlicerNext", "$lad\Programs\Anycubic Slicer Next", "$lad\Programs\AnycubicSlicerNext"); e = @('AnycubicSlicerNext.exe', 'AnycubicSlicer.exe', 'anycubic-slicer.exe') }
         elegoo    = @{ f = @("$pf\ElegooSlicer", "$pf\Elegoo Slicer", "$lad\Programs\ElegooSlicer", "$lad\Programs\Elegoo Slicer"); e = @('ElegooSlicer.exe', 'elegoo-slicer.exe') }
         snapmaker = @{ f = @("$pf\Snapmaker Orca", "$pf\SnapmakerOrca", "$lad\Programs\Snapmaker Orca", "$lad\Programs\SnapmakerOrca", "$pf\Snapmaker*Orca*", "$pf86\Snapmaker*Orca*", "$lad\Programs\Snapmaker*Orca*"); e = @('SnapmakerOrca.exe', 'Snapmaker Orca.exe', 'snapmaker-orca.exe', 'orca-slicer.exe') }
+        sovol     = @{ f = @("$pf\SovolSlicer", "$pf\Sovol Slicer", "$lad\Programs\SovolSlicer", "$lad\Programs\Sovol Slicer", "$pf\Sovol*"); e = @('SovolSlicer.exe', 'sovol-slicer.exe') }
         prusa     = @{ f = @("$pf\Prusa3D\PrusaSlicer");                                                                       e = @('prusa-slicer.exe') }
     }
     $found = [ordered]@{}
@@ -219,7 +220,7 @@ function New-Cors($origin) {
     $h = [ordered]@{}
     if (Test-Origin $origin) { $h['Access-Control-Allow-Origin'] = $origin }
     $h['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    $h['Access-Control-Allow-Headers'] = 'Content-Type, X-Slicer, X-Filename, X-LibFile, X-NewName'
+    $h['Access-Control-Allow-Headers'] = 'Content-Type, X-Slicer, X-Filename, X-LibFile, X-NewName, X-Pid'
     $h['Access-Control-Allow-Private-Network'] = 'true'
     return $h
 }
@@ -254,6 +255,196 @@ function Stream-Collect($stream, $origin, $move) {
     $count = (Get-ChildItem -LiteralPath $dst -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() }).Count
     Write-Line $stream (([ordered]@{ done = $true; ok = $true; copied = $copied; skipped = $skipped; dir = $dst; source = ($srcs -join '; '); count = $count }) | ConvertTo-Json -Compress)
 }
+# ===== Slicer-Steuerung fuer den V3D Druck-Assistenten (ab v13) =====
+# Alle fuenf Slicer (Bambu Studio, Snapmaker Orca, ElegooSlicer, Anycubic Slicer Next, SovolSlicer) sind
+# Bambu-/Orca-Ableger: Fenstertitel "[*]Projekt - <Slicer>", Konfig %APPDATA%\<Slicer>\<Slicer>.conf (JSON,
+# recent_projects "001".. = zuletzt), eigene Profile %APPDATA%\<Slicer>\user\<Konto|default>\process|filament\*.json
+$SLICER_KINDS = @(   # Reihenfolge: Snapmaker vor Orca ("Snapmaker Orca" enthaelt "orca")
+    @{ key = 'bambu';     name = 'Bambu Studio';         kw = 'bambu' },
+    @{ key = 'snapmaker'; name = 'Snapmaker Orca';       kw = 'snapmaker' },
+    @{ key = 'elegoo';    name = 'ElegooSlicer';         kw = 'elegoo' },
+    @{ key = 'anycubic';  name = 'Anycubic Slicer Next'; kw = 'anycubic' },
+    @{ key = 'sovol';     name = 'SovolSlicer';          kw = 'sovol' },
+    @{ key = 'orca';      name = 'OrcaSlicer';           kw = 'orca' }
+)
+function Get-SlicerKind($text) {
+    $t = ([string]$text).ToLower() -replace '[^a-z]', ''
+    foreach ($k in $SLICER_KINDS) { if ($t.Contains($k.kw)) { return $k } }
+    return $null
+}
+function Split-SlicerTitle($title) {
+    # "*Halter - Bambu Studio" -> @{ project='Halter'; dirty=$true }
+    $t = ([string]$title).Trim(); $dirty = $t.StartsWith('*'); if ($dirty) { $t = $t.Substring(1) }
+    $i = $t.LastIndexOf(' - '); $proj = if ($i -gt 0) { $t.Substring(0, $i).Trim() } else { '' }
+    return @{ project = $proj; dirty = $dirty }
+}
+function Get-SlicerDataDir($kind) {
+    $root = $env:APPDATA; if (-not $root -or -not (Test-Path -LiteralPath $root)) { return $null }
+    $best = $null; $bestTime = [datetime]::MinValue
+    foreach ($d in (Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
+        $k = Get-SlicerKind $d.Name; if (-not $k -or $k.key -ne $kind.key) { continue }
+        $conf = Join-Path $d.FullName ($d.Name + '.conf')
+        if (-not (Test-Path -LiteralPath $conf)) { $c = Get-ChildItem -LiteralPath $d.FullName -Filter *.conf -File -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $conf = $c.FullName } else { continue } }
+        $tm = (Get-Item -LiteralPath $conf).LastWriteTime
+        if ($tm -gt $bestTime) { $bestTime = $tm; $best = @{ dir = $d.FullName; conf = $conf } }
+    }
+    return $best
+}
+function Get-RecentProjects($confPath) {
+    try {
+        $j = Get-Content -LiteralPath $confPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $rp = $j.recent_projects; if (-not $rp) { return @() }
+        return @($rp.PSObject.Properties | Sort-Object Name | ForEach-Object { ([string]$_.Value) -replace '/', [System.IO.Path]::DirectorySeparatorChar })
+    } catch { return @() }
+}
+function Find-ProjectPath($confPath, $project) {
+    if (-not $project -or -not $confPath) { return $null }
+    foreach ($p in (Get-RecentProjects $confPath)) {
+        if ([System.IO.Path]::GetFileNameWithoutExtension($p) -eq $project -and (Test-Path -LiteralPath $p -PathType Leaf)) { return $p }
+    }
+    return $null
+}
+function Get-RunningSlicers {
+    $out = @()
+    # Testmodus (nur fuer den Container-Test): vorgetaeuschter Slicer, keine Fensterbedienung
+    if ($env:VOLME3D_TEST_SLICER) { $f = $env:VOLME3D_TEST_SLICER | ConvertFrom-Json; $f.dirty = [bool]$f.dirty; if (-not $f.path) { $f.path = Find-ProjectPath (Join-Path $f.dataDir 'BambuStudio.conf') $f.project }; return @($f) }
+    foreach ($pr in (Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })) {
+        $kind = Get-SlicerKind $pr.ProcessName; if (-not $kind) { continue }
+        $t = Split-SlicerTitle $pr.MainWindowTitle
+        $dd = Get-SlicerDataDir $kind
+        $path = if ($dd) { Find-ProjectPath $dd.conf $t.project } else { $null }
+        $users = @(); if ($dd -and (Test-Path -LiteralPath (Join-Path $dd.dir 'user'))) { $users = @(Get-ChildItem -LiteralPath (Join-Path $dd.dir 'user') -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) }
+        $out += [pscustomobject][ordered]@{ key = $kind.key; name = $kind.name; pid = $pr.Id; title = $pr.MainWindowTitle; project = $t.project; dirty = $t.dirty
+            path = $path; dataDir = $(if ($dd) { $dd.dir } else { $null }); userDirs = $users; hwnd = [int64]$pr.MainWindowHandle }
+    }
+    return $out
+}
+function Get-SlicerByPid($procId) { foreach ($s in (Get-RunningSlicers)) { if ([string]$s.pid -eq [string]$procId) { return $s } }; return $null }
+
+$V3DWIN_OK = $false
+function Init-Win {
+    if ($script:V3DWIN_OK) { return }
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -TypeDefinition @'
+using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
+public static class V3dWin {
+  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
+  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int n);
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool f);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  public static bool Focus(IntPtr h) {
+    if (IsIconic(h)) ShowWindow(h, 9);
+    IntPtr fg = GetForegroundWindow(); uint dummy; uint ft = GetWindowThreadProcessId(fg, out dummy); uint me = GetCurrentThreadId();
+    bool att = ft != 0 && ft != me && AttachThreadInput(me, ft, true);
+    BringWindowToTop(h); SetForegroundWindow(h);
+    if (att) AttachThreadInput(me, ft, false);
+    if (GetForegroundWindow() != h) { keybd_event(0x12, 0, 0, UIntPtr.Zero); SetForegroundWindow(h); keybd_event(0x12, 0, 2, UIntPtr.Zero); }
+    return GetForegroundWindow() == h;
+  }
+  // sichtbare Fenster des Prozesses: "Klasse|Titel" (Datei-Dialoge = #32770)
+  public static string[] Windows(uint pid, out IntPtr dialog) {
+    var list = new List<string>(); IntPtr dlg = IntPtr.Zero;
+    EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p);
+      if (p == pid && IsWindowVisible(h)) { var c = new StringBuilder(256); GetClassName(h, c, 256); var t = new StringBuilder(512); GetWindowText(h, t, 512);
+        list.Add(c + "|" + t); if (dlg == IntPtr.Zero && c.ToString() == "#32770") dlg = h; }
+      return true; }, IntPtr.Zero);
+    dialog = dlg; return list.ToArray();
+  }
+}
+'@
+    $script:V3DWIN_OK = $true
+}
+function Find-Dialog($procId) { $d = [IntPtr]::Zero; [void][V3dWin]::Windows([uint32]$procId, [ref]$d); return $d }
+function Wait-Dialog($procId, $sec) {
+    $until = (Get-Date).AddSeconds($sec)
+    while ((Get-Date) -lt $until) { $d = Find-Dialog $procId; if ($d -ne [IntPtr]::Zero) { return $d }; Start-Sleep -Milliseconds 200 }
+    return [IntPtr]::Zero
+}
+function Send-Keys($k) { [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 120 }
+# Pfad in einen offenen Datei-Dialog eintragen (ueber die Zwischenablage, damit Sonderzeichen stimmen)
+function Fill-FileDialog($dlg, $path) {
+    $old = $null; try { $old = Get-Clipboard -Raw -ErrorAction SilentlyContinue } catch {}
+    Set-Clipboard -Value $path
+    [void][V3dWin]::Focus($dlg); Start-Sleep -Milliseconds 250
+    Send-Keys '^a'; Send-Keys '^v'; Start-Sleep -Milliseconds 200; Send-Keys '{ENTER}'
+    Start-Sleep -Milliseconds 400
+    if ($old) { try { Set-Clipboard -Value $old } catch {} }
+}
+function Save-SlicerProject($s) {
+    # gespeichert und ohne Stern: nichts zu tun
+    if ($s.path -and -not $s.dirty) { return @{ ok = $true; path = $s.path; saved = $false } }
+    Init-Win
+    if (-not [V3dWin]::Focus([IntPtr]$s.hwnd)) { return @{ ok = $false; error = 'Slicer-Fenster liess sich nicht nach vorn holen' } }
+    Start-Sleep -Milliseconds 300
+    if ($s.path) {
+        $t0 = (Get-Item -LiteralPath $s.path).LastWriteTime
+        Send-Keys '^s'
+        $until = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $until) {
+            Start-Sleep -Milliseconds 300
+            $n = Get-SlicerByPid $s.pid
+            if ($n -and -not $n.dirty -and (Get-Item -LiteralPath $s.path).LastWriteTime -gt $t0) { return @{ ok = $true; path = $s.path; saved = $true } }
+        }
+        return @{ ok = $false; error = 'Speichern hat nicht geklappt (Stern im Titel blieb)' }
+    }
+    # noch nie gespeichert: "Speichern unter" in die Bibliothek (Unterordner Projekte)
+    $dir = Join-Path (Get-LibDir) 'Projekte'; if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $base = if ($s.project) { $s.project } else { 'Projekt' }
+    $base = ($base.Split([System.IO.Path]::GetInvalidFileNameChars()) -join '_')
+    $target = Get-UniquePath $dir ($base + '.3mf')
+    Send-Keys '^s'
+    $dlg = Wait-Dialog $s.pid 6
+    if ($dlg -eq [IntPtr]::Zero) { [void][V3dWin]::Focus([IntPtr]$s.hwnd); Send-Keys '^%s'; $dlg = Wait-Dialog $s.pid 6 }
+    if ($dlg -eq [IntPtr]::Zero) { return @{ ok = $false; error = 'Der Speichern-Dialog ist nicht aufgegangen. Bitte das Projekt einmal selbst speichern.' } }
+    Fill-FileDialog $dlg $target
+    $until = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $until) { if ((Test-Path -LiteralPath $target) -and (Find-Dialog $s.pid) -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 800; return @{ ok = $true; path = $target; saved = $true } }; Start-Sleep -Milliseconds 300 }
+    return @{ ok = $false; error = 'Projekt wurde nicht gespeichert' }
+}
+function Open-InSlicer($s, $path) {
+    if ([int64]$s.hwnd -eq 0) { return @{ ok = $true; question = '' } }   # Testmodus
+    Init-Win
+    if (-not [V3dWin]::Focus([IntPtr]$s.hwnd)) { return @{ ok = $false; error = 'Slicer-Fenster liess sich nicht nach vorn holen' } }
+    Start-Sleep -Milliseconds 300
+    Send-Keys '^o'
+    $dlg = Wait-Dialog $s.pid 6
+    if ($dlg -eq [IntPtr]::Zero) { return @{ ok = $false; error = 'Der Oeffnen-Dialog ist nicht aufgegangen' } }
+    Fill-FileDialog $dlg $path
+    # Rueckfrage des Slicers (z. B. ungespeicherte Profil-Aenderungen)? Dann nicht selbst entscheiden, nur melden.
+    Start-Sleep -Seconds 3
+    $n = Get-SlicerByPid $s.pid; $main = if ($n) { $n.title } else { $s.title }
+    $d = [IntPtr]::Zero; $w = @([V3dWin]::Windows([uint32]$s.pid, [ref]$d))
+    $ask = @($w | ForEach-Object { $p = $_ -split '\|', 2; if ($p[1] -and $p[1] -ne $main -and ($p[0] -eq '#32770' -or $p[0] -like 'wx*')) { $p[1] } }) -join '; '
+    return @{ ok = $true; question = $ask }
+}
+function Write-SlicerPreset($s, $type, $name, $jsonText) {
+    if ($type -ne 'process' -and $type -ne 'filament') { return @{ ok = $false; error = 'Typ muss process oder filament sein' } }
+    if (-not $s.dataDir) { return @{ ok = $false; error = 'Profilordner des Slicers nicht gefunden' } }
+    if ($name -notmatch 'V3D' -or $name.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) { return @{ ok = $false; error = 'ungueltiger Profilname' } }
+    try { $j = $jsonText | ConvertFrom-Json } catch { return @{ ok = $false; error = 'Profil ist kein gueltiges JSON' } }
+    if ($j.name -ne $name -or -not $j.inherits -or $j.from -ne 'User') { return @{ ok = $false; error = 'Profil unvollstaendig (name/inherits/from)' } }
+    $userRoot = Join-Path $s.dataDir 'user'
+    $subs = @(); if (Test-Path -LiteralPath $userRoot) { $subs = @(Get-ChildItem -LiteralPath $userRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) }
+    if ($subs.Count -eq 0) { $subs = @(Join-Path $userRoot 'default') }
+    $utf8 = New-Object System.Text.UTF8Encoding $false; $files = @()
+    foreach ($sub in $subs) {
+        $dir = Join-Path $sub $type; if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $fp = Join-Path $dir ($name + '.json')
+        if (Test-Path -LiteralPath $fp) { Copy-Item -LiteralPath $fp -Destination ($fp + '.bak') -Force }
+        [System.IO.File]::WriteAllText($fp, $jsonText, $utf8); $files += $fp
+    }
+    return @{ ok = $true; files = $files }
+}
 function Handle-Client($client) {
     $stream = $client.GetStream()
     $headerText = Read-Headers $stream
@@ -266,7 +457,55 @@ function Handle-Client($client) {
     for ($i = 1; $i -lt $lines.Count; $i++) { $ln = $lines[$i]; $idx = $ln.IndexOf(':'); if ($idx -gt 0) { $headers[$ln.Substring(0, $idx).Trim().ToLower()] = $ln.Substring($idx + 1).Trim() } }
     $origin = $headers['origin']; $cors = New-Cors $origin
     if ($method -eq 'OPTIONS') { Send-Bytes $stream '204 No Content' $cors 'text/plain' (New-Object byte[] 0); return }
-    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 12; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir); dir = (Get-RootDir); custom = [bool](Get-CustomDir) }) $origin; return }
+    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 13; assistant = $true; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir); dir = (Get-RootDir); custom = [bool](Get-CustomDir) }) $origin; return }
+    if ($path -like '/slicer/*') {
+        # Druck-Assistent: alles nur fuer erlaubte Web-Adressen (Projektdateien, Tastendruecke, Profile)
+        if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = "origin not allowed: $origin" }) $origin; return }
+        $len = 0; if ($headers.ContainsKey('content-length')) { [void][int]::TryParse($headers['content-length'], [ref]$len) }
+        $body = if ($len -gt 0) { Read-Body $stream $len } else { New-Object byte[] 0 }
+        $qpid = ''; if ($query -match '(?:^|&)pid=(\d+)') { $qpid = $Matches[1] }
+        if ($headers.ContainsKey('x-pid')) { $qpid = $headers['x-pid'] }
+        if ($method -eq 'GET' -and $path -eq '/slicer/state') {
+            $run = @(Get-RunningSlicers | ForEach-Object { $_ | Select-Object key, name, pid, title, project, dirty, path, dataDir, userDirs })
+            Send-Json $stream '200 OK' ([ordered]@{ ok = $true; version = 13; running = $run; installed = @((Get-Slicers).Keys) }) $origin; return
+        }
+        $s = if ($qpid) { Get-SlicerByPid $qpid } else { $null }
+        if (-not $s) { Send-Json $stream '404 Not Found' (@{ ok = $false; error = 'Slicer laeuft nicht (mehr)' }) $origin; return }
+        try {
+            if ($method -eq 'POST' -and $path -eq '/slicer/save') { $r = Save-SlicerProject $s; Send-Json $stream ($(if ($r.ok) { '200 OK' } else { '409 Conflict' })) $r $origin; return }
+            if ($method -eq 'GET' -and $path -eq '/slicer/file') {
+                if (-not $s.path) { Send-Json $stream '409 Conflict' (@{ ok = $false; error = 'Projekt ist noch nicht gespeichert' }) $origin; return }
+                $h = New-Cors $origin; $h['X-Filename'] = [System.Uri]::EscapeDataString((Split-Path -Leaf $s.path)); $h['Access-Control-Expose-Headers'] = 'X-Filename'
+                Send-Bytes $stream '200 OK' $h 'application/octet-stream' ([System.IO.File]::ReadAllBytes($s.path)); return
+            }
+            if ($method -eq 'POST' -and $path -eq '/slicer/apply') {
+                if (-not $s.path -or $s.path -notlike '*.3mf') { Send-Json $stream '409 Conflict' (@{ ok = $false; error = 'Kein gespeichertes 3MF-Projekt offen' }) $origin; return }
+                if ($s.dirty) { Send-Json $stream '409 Conflict' (@{ ok = $false; error = 'Im Slicer wurde inzwischen etwas geaendert. Bitte neu pruefen.' }) $origin; return }
+                if ($body.Length -lt 100 -or $body[0] -ne 0x50 -or $body[1] -ne 0x4B) { Send-Json $stream '400 Bad Request' (@{ ok = $false; error = 'kein 3MF' }) $origin; return }
+                $bdir = Join-Path (Get-LibDir) 'Projekte\Vorher'; if (-not (Test-Path -LiteralPath $bdir)) { New-Item -ItemType Directory -Path $bdir -Force | Out-Null }
+                $backup = Join-Path $bdir ([System.IO.Path]::GetFileNameWithoutExtension($s.path) + '_' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.3mf')
+                Copy-Item -LiteralPath $s.path -Destination $backup -Force
+                [System.IO.File]::WriteAllBytes($s.path, $body)
+                $o = Open-InSlicer $s $s.path
+                Send-Json $stream '200 OK' ([ordered]@{ ok = $o.ok; path = $s.path; backup = $backup; reopened = $o.ok; question = $o.question; error = $o.error }) $origin; return
+            }
+            if ($method -eq 'POST' -and $path -eq '/slicer/undo') {
+                $j = [System.Text.Encoding]::UTF8.GetString($body) | ConvertFrom-Json
+                $bdir = (Join-Path (Get-LibDir) 'Projekte\Vorher').TrimEnd('\')
+                $b = [string]$j.backup
+                if (-not $s.path -or -not $b -or (Split-Path -Parent $b).TrimEnd('\') -ne $bdir -or -not (Test-Path -LiteralPath $b)) { Send-Json $stream '400 Bad Request' (@{ ok = $false; error = 'Sicherung nicht gefunden' }) $origin; return }
+                Copy-Item -LiteralPath $b -Destination $s.path -Force
+                $o = Open-InSlicer $s $s.path
+                Send-Json $stream '200 OK' ([ordered]@{ ok = $o.ok; path = $s.path; question = $o.question; error = $o.error }) $origin; return
+            }
+            if ($method -eq 'POST' -and $path -eq '/slicer/preset') {
+                $j = [System.Text.Encoding]::UTF8.GetString($body) | ConvertFrom-Json
+                $r = Write-SlicerPreset $s ([string]$j.type) ([string]$j.name) ([string]$j.json)
+                Send-Json $stream ($(if ($r.ok) { '200 OK' } else { '400 Bad Request' })) $r $origin; return
+            }
+        } catch { Send-Json $stream '500 Error' (@{ ok = $false; error = "$_" }) $origin; return }
+        Send-Json $stream '404 Not Found' (@{ ok = $false; error = 'not found' }) $origin; return
+    }
     if ($method -eq 'GET' -and $path -eq '/list') {
         if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = 'origin not allowed' }) $origin; return }
         Send-Json $stream '200 OK' ([ordered]@{ ok = $true; dir = (Get-RootDir); custom = [bool](Get-CustomDir); files = @(Get-LibList) }) $origin; return

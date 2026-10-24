@@ -122,6 +122,27 @@
   #improve .dl .row { display: flex; gap: .45rem; } #improve .dl .row button { flex: 1; }
   #improve .hint { color: #c4cdd6; font-size: .8rem; margin-top: .55rem; }
 
+  /* Slicer-Leiste (Druck-Assistent über den Druck-Helfer) */
+  .slBar { margin: 0 auto 1.4rem; max-width: 720px; background: linear-gradient(160deg, rgba(46,162,216,.16), rgba(240,124,30,.08)); border: 1px solid #2c6f93;
+           border-radius: 14px; padding: .8rem .95rem; text-align: left; }
+  .slBar .t { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; font-size: .95rem; }
+  .slBar .dot { width: .6rem; height: .6rem; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); flex: 0 0 auto; }
+  .slBar .dot.off { background: var(--dim); box-shadow: none; }
+  .slBar .pj { color: var(--dim); font-size: .85rem; }
+  .slBar .row { display: flex; gap: .5rem; align-items: center; margin-top: .6rem; flex-wrap: wrap; }
+  .slBar select { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: .45rem .5rem; font: inherit; }
+  .slBar .go { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 800; padding: .6rem 1rem; flex: 1 1 16rem; }
+  .slBar .msg { margin-top: .5rem; font-size: .84rem; color: #c4cdd6; } .slBar .msg.err { color: var(--err); }
+  .slBar a { color: var(--accent2); font-weight: 700; }
+  .purpose { margin-top: .9rem; display: grid; grid-template-columns: 1fr 14rem; align-items: center; gap: .5rem; font-size: .9rem; font-weight: 600; }
+  .purpose select { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: .4rem .5rem; font: inherit; font-weight: 400; }
+  #improve li.pf { display: flex; gap: .5rem; align-items: flex-start; } #improve li.pf > span { flex: 1; }
+  #improve li.pf label { flex: 0 0 auto; font-size: .74rem; color: #c4cdd6; display: flex; gap: .25rem; align-items: center; cursor: pointer; white-space: nowrap; }
+  #improve li.pf input { accent-color: var(--blue); }
+  #improve .pfNames { font-size: .78rem; color: #c4cdd6; margin: -.3rem 0 .7rem; } #improve .pfNames b { color: #fff; }
+  #improve .dl .sl { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 800; padding: .75rem; }
+  #improve .slRes { font-size: .85rem; margin-top: .55rem; line-height: 1.55; } #improve .slRes .err { color: var(--err); }
+
   #viewWrap { position: relative; min-height: 300px; background: #171c22; }
   #view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
   #viewMsg { position: absolute; inset: 0; display: flex; flex-direction: column; gap: .5rem; align-items: center; justify-content: center;
@@ -156,6 +177,15 @@
 
 <section id="start">
   <div class="hero">
+    <div class="slBar" id="slBar" hidden>
+      <div class="t"><span class="dot" id="slDot"></span><b id="slName"></b><span class="pj" id="slProj"></span></div>
+      <div class="row" id="slRow">
+        <select id="slPick" hidden title="Welcher Slicer?"></select>
+        <select id="slPurpose" title="Wofür ist das Teil?"><option value="">Wofür ist das Teil? – egal</option><option value="funktion">🔩 Funktionsteil (stabil)</option><option value="deko">🌸 Deko / Sichtteil</option><option value="figur">🗿 Figur / feine Details</option><option value="entwurf">⚡ Schneller Entwurf</option></select>
+        <button class="go" id="slGo">🪄 Bauteil im Slicer prüfen und optimieren</button>
+      </div>
+      <div class="msg" id="slMsg" hidden></div>
+    </div>
     <h2>Passt dein <span>Druck?</span></h2>
     <p class="lead">Datei reinziehen – in Sekunden siehst du, was schiefgehen kann. Die Verbesserung bekommst du gleich mit, als fertiges 3MF für Bambu Studio.</p>
     <div class="tiles">
@@ -200,6 +230,8 @@
       <label>Randtyp (Brim) <select id="bBrim"><option value="auto_brim">Automatisch (Auto)</option><option value="no_brim">Keine Umrandung (No-brim)</option><option value="outer_only">Nur äußerer Rand (Outer brim only)</option></select></label>
     </details>
 
+    <label class="purpose" id="purposeBox">🎯 Wofür ist das Teil?
+      <select id="purpose"><option value="">egal</option><option value="funktion">🔩 Funktionsteil (stabil)</option><option value="deko">🌸 Deko / Sichtteil</option><option value="figur">🗿 Figur / feine Details</option><option value="entwurf">⚡ Schneller Entwurf</option></select></label>
     <button class="magic" id="magic" hidden></button>
     <div id="improve" hidden></div>
 
@@ -241,7 +273,7 @@ document.addEventListener('dragover', e => e.preventDefault());
 document.addEventListener('drop', e => { e.preventDefault(); dragDepth = 0; $('dropHint').hidden = true; const f = e.dataTransfer?.files[0]; if (f) openFile(f); });
 
 async function openFile(file) { return openBytes(file.name, new Uint8Array(await file.arrayBuffer())); }
-async function openBytes(name, u8) {
+async function openBytes(name, u8, opts = {}) {
   showScreen('result');
   window._dc = null;
   $('fName').textContent = name; $('fSrc').textContent = ''; $('fSub').textContent = '';
@@ -251,7 +283,7 @@ async function openBytes(name, u8) {
   try {
     const r = await PC.loadAny(name, u8);
     const models = r.meshes.map(m => PC.analyzeMesh(m.pos, m.index, { name: m.name }));
-    cur = { name, r, models };
+    cur = { name, r, models, slicer: opts.slicer || null };
     showModel(r.meshes, models);
     evaluate();
     window._dc = cur;
@@ -304,7 +336,83 @@ function baseCfg() {
   return PC.baselineConfig({ material: $('bMat').value, nozzle: parseFloat($('bNoz').value), bedType: $('bBed').value,
     support: $('bSup').value === '1', brim: $('bBrim').value, printable: $('bPrn').value.split(',').map(Number) });
 }
-function check(cfg) { return PC.checkSettings(cfg, { models: cur.models, gcode: cur.r.gcode, usedFilaments: cur.r.gcode?.usedFilaments }); }
+function check(cfg) { return PC.checkSettings(cfg, { models: cur.models, gcode: cur.r.gcode, usedFilaments: cur.r.gcode?.usedFilaments, purpose: $('purpose').value || undefined }); }
+
+// ---------- 🎯 Wofür ist das Teil? (Start-Leiste und Ergebnis zeigen dieselbe Wahl) ----------
+const ls = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+$('purpose').value = $('slPurpose').value = ls.get('dc_purpose') || '';
+const setPurpose = v => { $('purpose').value = $('slPurpose').value = v; ls.set('dc_purpose', v); };
+$('purpose').onchange = () => { setPurpose($('purpose').value); if (cur) evaluate(); };
+$('slPurpose').onchange = () => setPurpose($('slPurpose').value);
+
+// ---------- 🔗 Slicer verbunden (Druck-Helfer ab v13 auf diesem Rechner) ----------
+// Der Helfer erkennt Bambu Studio, Snapmaker Orca, ElegooSlicer, Anycubic Slicer Next, SovolSlicer und OrcaSlicer,
+// speichert das offene Projekt, gibt es zum Prüfen her, schreibt das verbesserte 3MF zurück (mit Sicherung) und lädt es neu.
+const HELPER = 'http://127.0.0.1:7777';
+const helper = async (path, { method = 'GET', body, pid, json = true, timeout = 90000 } = {}) => {
+  const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), timeout);
+  try {
+    const headers = {}; if (pid) headers['X-Pid'] = String(pid);
+    if (body && !(body instanceof Blob)) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(body); }
+    const r = await fetch(HELPER + path, { method, body, headers, signal: ctl.signal });
+    if (!json) { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status); return r; }
+    const j = await r.json(); if (!r.ok && !j.error) j.error = 'HTTP ' + r.status; return j;
+  } finally { clearTimeout(tm); }
+};
+let slState = { running: [], version: 0 }, slBusy = false;
+const slSel = () => slState.running.find(x => String(x.pid) === $('slPick').value) || slState.running[0];
+function slMsg(html, err) { $('slMsg').hidden = !html; $('slMsg').innerHTML = html || ''; $('slMsg').classList.toggle('err', !!err); }
+async function slPoll() {
+  if (document.hidden || slBusy) return;
+  let st = null, ping = null;
+  try { st = await helper('/slicer/state', { timeout: 4000 }); } catch {}
+  if (!st || !st.ok) { try { ping = await helper('/ping', { timeout: 3000 }); } catch {} }
+  const bar = $('slBar');
+  if (!st?.ok) {
+    // alter Helfer ohne Assistent → Update anbieten; gar kein Helfer → Leiste bleibt weg (kein Rauschen für Besucher ohne Helfer)
+    if (ping?.ok && !ping.assistant) {
+      bar.hidden = false; $('slDot').classList.add('off'); $('slName').textContent = 'Druck-Helfer gefunden (v' + ping.version + ')'; $('slProj').textContent = '';
+      $('slRow').hidden = true; slMsg('Für die Slicer-Steuerung braucht es den neuen Helfer: <a href="https://v3da.tailf05fe9.ts.net/Volme3D-Druck-Helfer.bat" download>⬇ Druck-Helfer aktualisieren</a> – herunterladen und doppelklicken.');
+    } else bar.hidden = true;
+    return;
+  }
+  slState = st; bar.hidden = false; $('slRow').hidden = false;
+  const run = st.running || [];
+  const pick = $('slPick'), was = pick.value;
+  pick.innerHTML = run.map(x => `<option value="${x.pid}">${esc(x.name)}</option>`).join(''); pick.hidden = run.length < 2;
+  if (run.some(x => String(x.pid) === was)) pick.value = was;
+  const s = slSel();
+  $('slDot').classList.toggle('off', !s);
+  if (!s) {
+    $('slName').textContent = 'Kein Slicer geöffnet'; $('slProj').textContent = '';
+    $('slGo').disabled = true;
+    if (!$('slMsg').classList.contains('keep')) slMsg('Öffne Bambu Studio, Snapmaker Orca, ElegooSlicer, Anycubic Slicer Next oder SovolSlicer mit deinem Bauteil – der Assistent verbindet sich dann von selbst.');
+    return;
+  }
+  $('slName').textContent = s.name + ' ist offen';
+  $('slProj').textContent = s.project ? `· ${s.project}${s.dirty ? ' (ungespeichert)' : ''}` : '· noch kein Bauteil geladen';
+  $('slGo').disabled = !s.project;
+  if (!$('slMsg').classList.contains('keep')) slMsg('');
+}
+$('slPick').onchange = slPoll;
+$('slGo').onclick = async () => {
+  const s = slSel(); if (!s || slBusy) return;
+  slBusy = true; $('slGo').disabled = true; $('slMsg').classList.remove('keep');
+  try {
+    slMsg(s.path && !s.dirty ? '⏳ Projekt wird gelesen …' : '⏳ Projekt wird im Slicer gespeichert …');
+    const sv = await helper('/slicer/save', { method: 'POST', pid: s.pid });
+    if (!sv.ok) throw new Error(sv.error);
+    slMsg('⏳ Projekt wird gelesen …');
+    const r = await helper('/slicer/file', { pid: s.pid, json: false });
+    const name = decodeURIComponent(r.headers.get('X-Filename') || (s.project + '.3mf'));
+    slMsg('');
+    await openBytes(name, new Uint8Array(await r.arrayBuffer()), { slicer: { pid: s.pid, name: s.name, project: s.project } });
+  } catch (e) { slMsg('⚠️ ' + esc(e.message || e), true); $('slMsg').classList.add('keep'); }
+  finally { slBusy = false; slPoll(); }
+};
+slPoll(); setInterval(slPoll, 4000);
+document.addEventListener('visibilitychange', slPoll);
+window._slPoll = slPoll;
 
 function evaluate() {
   const { r } = cur;
@@ -401,9 +509,12 @@ $('magic').onclick = () => {
   el.innerHTML = `<div class="ba"><div class="ring">${ringSvg(before, 78, 8)}</div><span class="to">➜</span><div class="ring">${ringSvg(after, 78, 8)}</div></div>
     <h3>${after > before ? `+${after - before} Punkte – ` : ''}das habe ich geändert:</h3>
     <ul>${rows.map(x => `<li>${esc(x.label)}: <span style="color:var(--dim);text-decoration:line-through">${esc(PC.valueText(x.key, x.from) || '–')}</span> → <b>${esc(PC.valueText(x.key, x.to))}</b><span class="wh">${esc(x.where)}</span></li>`).join('')}</ul>
-    <div class="dl">${can3mf ? '<button class="primary" id="o3mf">📦 Verbessertes 3MF herunterladen</button>' : ''}
+    ${cur.slicer && can3mf ? slProfileHtml(rows) : ''}
+    <div class="dl">${cur.slicer && can3mf ? `<button class="sl" id="oSl">✔ In ${esc(cur.slicer.name)} übernehmen</button>` : ''}
+      ${can3mf ? `<button class="${cur.slicer ? '' : 'primary'}" id="o3mf">📦 Verbessertes 3MF herunterladen</button>` : ''}
       <div class="row"><button id="oCopy">📋 Liste kopieren</button><button id="oTxt">⬇ Als Text</button></div></div>
-    <div class="hint">${can3mf ? '👉 In Bambu Studio / OrcaSlicer öffnen, <b>neu slicen</b>, drucken – die neuen Werte sind schon eingetragen.'
+    <div class="slRes" id="slRes" hidden></div>
+    <div class="hint">${cur.slicer && can3mf ? '👉 Übernehmen schreibt die Werte ins offene Projekt (die alte Fassung wird gesichert) und lädt es im Slicer neu. Häkchen „ins Profil“ legt zusätzlich ein eigenes Profil an.' : can3mf ? '👉 In Bambu Studio / OrcaSlicer öffnen, <b>neu slicen</b>, drucken – die neuen Werte sind schon eingetragen.'
       : r.source === 'gcode' ? '👉 Ein G-Code enthält kein Modell: die Werte in Bambu Studio / OrcaSlicer ändern (Fundort steht jeweils drunter) und neu slicen.'
       : '👉 Diese Werte in Bambu Studio, OrcaSlicer oder im V3D Slicer einstellen.'}</div>`;
   animateRings(el);
@@ -414,10 +525,74 @@ $('magic').onclick = () => {
     catch (e) { $('o3mf').textContent = 'Fehler: ' + e.message; }
     finally { $('o3mf').disabled = false; }
   };
+  if (cur.slicer && can3mf) { wireProfileRows(rows); $('oSl').onclick = () => applyToSlicer(fixes, rows); }
   $('oCopy').onclick = async () => { try { await navigator.clipboard.writeText(txt()); $('oCopy').textContent = '✓ Kopiert'; } catch { $('oCopy').textContent = 'Kopieren nicht erlaubt'; } };
   $('oTxt').onclick = () => download(new Blob([txt()], { type: 'text/plain;charset=utf-8' }), cur.name.replace(/\.[^.]+$/, '') + '_aenderungen.txt');
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 };
+// Welche Änderung soll auch ins eigene Profil? Material-Werte und Zweck-Werte: ja; Bauteil-Besonderheiten (Stützen, Rand …): nur Projekt
+function slProfileDefault(row) {
+  const t = PC.settingType(row.key);
+  if (t === 'project') return null;
+  if (t === 'filament') return true;
+  return cur.findings.some(f => f.cat === 'Zweck' && f.fixes.some(x => x.key === row.key));
+}
+function slProfileHtml(rows) {
+  return `<div class="pfNames" id="pfNames"></div>`;
+}
+function wireProfileRows(rows) {
+  const lis = $('improve').querySelectorAll('ul li');
+  rows.forEach((row, i) => {
+    const d = slProfileDefault(row), li = lis[i]; if (!li || d === null) return;
+    li.classList.add('pf'); li.innerHTML = `<span>${li.innerHTML}</span><label title="Auch dauerhaft im eigenen Profil speichern"><input type="checkbox" data-pf="${i}" ${d ? 'checked' : ''}>ins Profil</label>`;
+  });
+  $('improve').querySelectorAll('input[data-pf]').forEach(el => el.onchange = () => showProfileNames(rows));
+  showProfileNames(rows);
+}
+function profileRows(rows) { return [...$('improve').querySelectorAll('input[data-pf]:checked')].map(el => rows[+el.dataset.pf]); }
+function profilePlan(rows) {
+  const cfg = cur.r.cfg, purpose = $('purpose').value || undefined, sel = profileRows(rows), plan = [];
+  const fx = sel.map(r => ({ key: r.key, value: r.to, idx: r.idx }));
+  if (sel.some(r => PC.settingType(r.key) === 'process')) {
+    const p = PC.buildPreset(cfg, fx.filter(x => PC.settingType(x.key) === 'process'), { type: 'process', name: PC.presetName(cfg, 'process', { purpose }) });
+    if (p) plan.push(p);
+  }
+  for (const fi of new Set(sel.filter(r => PC.settingType(r.key) === 'filament').map(r => r.idx || 0))) {
+    const p = PC.buildPreset(cfg, fx.filter(x => PC.settingType(x.key) === 'filament' && (x.idx || 0) === fi), { type: 'filament', fi, name: PC.presetName(cfg, 'filament', { fi }) });
+    if (p) plan.push(p);
+  }
+  return plan;
+}
+function showProfileNames(rows) {
+  const plan = profilePlan(rows);
+  $('pfNames').innerHTML = plan.length ? '📌 Wird als eigenes Profil gespeichert: ' + plan.map(p => `<b>${esc(p.name)}</b> <small>(${p.type === 'process' ? 'Prozess' : 'Filament'}, erbt von ${esc(p.inherits)})</small>`).join(' · ')
+    : '📌 Nur dieses Projekt wird geändert – kein Profil.';
+}
+async function applyToSlicer(fixes, rows) {
+  const btn = $('oSl'), res = $('slRes'), sl = cur.slicer;
+  btn.disabled = true; btn.textContent = '⏳ wird übernommen …'; res.hidden = false; res.innerHTML = '';
+  const out = [];
+  try {
+    const blob = await PC.patched3mf(cur.r.zip, cur.r.cfg, fixes);
+    const a = await helper('/slicer/apply', { method: 'POST', pid: sl.pid, body: blob });
+    if (!a.ok && !a.backup) throw new Error(a.error);
+    cur.slicer.backup = a.backup;
+    out.push(a.reopened ? `✅ ${esc(sl.name)} hat das verbesserte Projekt neu geladen – jetzt <b>slicen</b>.` : `⚠️ Projekt ist geschrieben, aber das Neuladen hat nicht geklappt (${esc(a.error || '')}). Bitte in ${esc(sl.name)} „Datei › Projekt öffnen“ wählen.`);
+    if (a.question) out.push(`❓ ${esc(sl.name)} fragt gerade etwas („${esc(a.question)}“) – bitte dort beantworten.`);
+    for (const p of profilePlan(rows)) {
+      const r = await helper('/slicer/preset', { method: 'POST', pid: sl.pid, body: { type: p.type, name: p.name, json: JSON.stringify(p.data, null, '\t') } });
+      out.push(r.ok ? `📌 Profil <b>${esc(p.name)}</b> gespeichert – erscheint nach dem nächsten Start von ${esc(sl.name)} in der Liste.` : `⚠️ Profil ${esc(p.name)}: ${esc(r.error)}`);
+    }
+    out.push(`<button class="ghost" id="slUndo">↶ Rückgängig (alte Fassung zurück)</button>`);
+    btn.textContent = '✓ Übernommen';
+  } catch (e) { out.push(`<span class="err">⚠️ ${esc(e.message || e)}</span>`); btn.disabled = false; btn.textContent = `✔ In ${sl.name} übernehmen`; }
+  res.innerHTML = out.join('<br>');
+  const u = $('slUndo'); if (u) u.onclick = async () => {
+    u.disabled = true;
+    const r = await helper('/slicer/undo', { method: 'POST', pid: sl.pid, body: { backup: sl.backup } }).catch(e => ({ error: e.message }));
+    u.outerHTML = r.ok ? '↶ Alte Fassung ist wieder geladen.' : `<span class="err">⚠️ ${esc(r.error)}</span>`;
+  };
+}
 function download(blob, name) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = name;

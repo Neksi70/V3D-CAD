@@ -789,7 +789,61 @@ export function thinFraction(thick, d) {
 // ctx: { models:[analyzeMesh…], gcode:{features,stats}|null, usedFilaments:[i]|null,
 //        adaptive:bool (Slicer: adaptive Schichthöhe aktiv) }
 // Symbole je Thema (Karten im Slicer + Standalone)
-export const CAT_ICONS = { Material: '🌡️', Stützen: '🏗️', Haftung: '🧲', Festigkeit: '🧱', Modell: '📐', Qualität: '✨', Abgleich: '🔁' };
+export const CAT_ICONS = { Material: '🌡️', Stützen: '🏗️', Haftung: '🧲', Festigkeit: '🧱', Modell: '📐', Qualität: '✨', Abgleich: '🔁', Zweck: '🎯' };
+
+// Wofür ist das Teil? (ctx.purpose) — Zielbereiche; layer = Anteil des Düsendurchmessers
+export const PURPOSES = {
+  funktion: { name: 'Funktionsteile', short: 'Funktionsteil', walls: [4, 6], infill: [25, 60],
+    why: 'Belastete Teile (Halter, Clips, Gewinde) brechen fast immer an den Wänden: 4 Wände und mindestens 25 % Füllung machen sie deutlich stabiler.' },
+  deko: { name: 'Deko und Sichtteile', short: 'Deko', walls: [2, 3], infill: [10, 15],
+    why: 'Deko trägt nichts: 2–3 Wände und 10–15 % Füllung reichen und sparen Zeit und Material.' },
+  figur: { name: 'Figuren und feine Details', short: 'Figur', walls: [2, 3], infill: [10, 15], layer: 0.3, arachne: true,
+    why: 'Feine Schichten (≈ 0,12 mm bei 0,4er Düse) zeigen Gesichter und Kanten sauber; Arachne druckt dünne Stellen vollständig.' },
+  entwurf: { name: 'schnelle Entwürfe', short: 'Entwurf', walls: [2, 2], infill: [8, 10], layer: 0.7,
+    why: 'Zum Ausprobieren zählt die Zeit: dicke Schichten (≈ 0,28 mm), 2 Wände und wenig Füllung halbieren die Druckzeit grob.' },
+};
+
+// Wohin gehört ein Wert? 'filament' (Materialprofil), 'process' (Prozessprofil) oder 'project' (nur im Projekt)
+export function settingType(key) {
+  if (key === 'curr_bed_type') return 'project';
+  if (/^(filament_|nozzle_temperature|[a-z_]*_plate_temp|fan_|overhang_fan|close_fan|slow_down|reduce_fan|additional_cooling|full_fan|enable_pressure_advance|pressure_advance|temperature_vitrification|chamber_temperature|activate_air_filtration|during_print_exhaust|complete_print_exhaust)/.test(key)) return 'filament';
+  return 'process';
+}
+
+// Eigenes Profil (Bambu Studio / Orca-Ableger) aus dem verbesserten Projekt bauen:
+// erbt vom Herstellerprofil (inherits_group) und enthält nur die Werte, die davon abweichen —
+// die schon vorher selbst geänderten (different_settings_to_system) plus die neuen Korrekturen.
+// type 'process' | 'filament'; fi = Filament-Index. Ergebnis { name, inherits, data } oder null.
+export function buildPreset(cfg, fixes, { type, fi = 0, name, description = 'Angelegt vom V3D Druck-Assistenten' }) {
+  const out = applyFixes(cfg, fixes);
+  const slot = type === 'process' ? 0 : 1 + fi;
+  const own = type === 'process' ? cfgStr(cfg, 'print_settings_id') : cfgStr(cfg, 'filament_settings_id', fi);
+  const inh = cfgList(cfg, 'inherits_group')[slot];
+  const inherits = (inh && inh.trim()) || own;
+  if (!inherits || !name) return null;
+  const keys = new Set(String(cfgList(cfg, 'different_settings_to_system')[slot] || '').split(';').map(s => s.trim()).filter(Boolean));
+  for (const x of fixes) if (settingType(x.key) === type && (type === 'process' || (x.idx || 0) === fi)) keys.add(x.key);
+  const data = {};
+  for (const k of keys) {
+    if (settingType(k) !== type || !(k in out) || /(_settings_id|^inherits|^compatible_|^version$|^name$|^from$)/.test(k)) continue;
+    const v = out[k];
+    data[k] = type === 'filament' ? [String(Array.isArray(v) ? (v[fi] ?? v[0]) : String(v).split(/[;,]/)[fi] ?? v)] : v;
+  }
+  const ver = String(cfg.version || '').match(/^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?/);
+  const version = ver ? ver.slice(1, 5).map(n => String(parseInt(n || '0', 10))).join('.') : '1.0.0.0';
+  const head = { version, name, from: 'User', inherits, description };
+  if (type === 'filament') head.filament_settings_id = [name];
+  else head.print_settings_id = name;
+  return { name, inherits, type, keys: Object.keys(data), data: { ...head, ...data } };
+}
+
+// Vorgeschlagener Profilname: „<Basis> · V3D [Zweck]“ — ein schon vorhandenes V3D-Profil wird weiterbenutzt
+export function presetName(cfg, type, { fi = 0, purpose } = {}) {
+  const own = type === 'process' ? cfgStr(cfg, 'print_settings_id') : cfgStr(cfg, 'filament_settings_id', fi);
+  const base = String(own || '').replace(/\s*·\s*V3D.*$/, '').trim() || (type === 'process' ? 'Prozess' : 'Filament');
+  const p = type === 'process' && PURPOSES[purpose] ? ' ' + PURPOSES[purpose].short : '';
+  return `${base} · V3D${p}`.replace(/[\\/:*?"<>|]/g, '-');
+}
 
 export function checkSettings(cfg, ctx = {}) {
   const F = [];
@@ -1068,6 +1122,21 @@ export function checkSettings(cfg, ctx = {}) {
     if (sup && !supportOn) add(LEVEL.INFO, 'Stützen', 'g_sup', 'Im G-Code sind trotzdem Stützen', 'Kommen von bemalten/erzwungenen Stützen.');
     if (!anyModel && supportOn && !sup) add(LEVEL.INFO, 'Stützen', 'g_nosup', 'Stützen an, aber keine erzeugt', 'Das Modell braucht offenbar keine — ausschalten spart nichts, schadet aber auch nicht.');
   }
+  // --- Zweck des Teils (nur wenn angegeben, z. B. vom Druck-Assistenten) ---
+  const P = PURPOSES[ctx.purpose];
+  if (P && !spiral) {
+    const pw = cfgNum(cfg, 'wall_loops', 0, NaN), pi = parseFloat(cfgStr(cfg, 'sparse_infill_density'));
+    const fx = [];
+    if (P.walls && Number.isFinite(pw) && (pw < P.walls[0] || pw > P.walls[1])) fx.push({ key: 'wall_loops', value: String(pw < P.walls[0] ? P.walls[0] : P.walls[1]) });
+    if (P.infill && Number.isFinite(pi) && (pi < P.infill[0] || pi > P.infill[1])) fx.push({ key: 'sparse_infill_density', value: (pi < P.infill[0] ? P.infill[0] : P.infill[1]) + '%' });
+    if (P.layer && Number.isFinite(lh)) {
+      const want = r2(Math.max(0.08, Math.round(d * P.layer / 0.02) * 0.02));
+      if (Math.abs(lh - want) > 0.011) fx.push({ key: 'layer_height', value: String(want) });
+    }
+    if (P.arachne && cfgStr(cfg, 'wall_generator') && cfgStr(cfg, 'wall_generator') !== 'arachne') fx.push({ key: 'wall_generator', value: 'arachne' });
+    if (fx.length) add(LEVEL.INFO, 'Zweck', 'zweck_' + ctx.purpose, `Passend für ${P.name}`, P.why, fx);
+  }
+
   const diff = cfgList(cfg, 'different_settings_to_system').join(';').split(/[;,]/).map(s => s.trim()).filter(Boolean);
   if (diff.length)
     add(LEVEL.INFO, 'Abgleich', 'diff', `${diff.length} Wert${diff.length > 1 ? 'e' : ''} gegenüber dem Bambu-/Orca-Standardprofil geändert`,

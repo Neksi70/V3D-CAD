@@ -38,3 +38,25 @@ server.py liest index.html je Aufruf → kein Neustart nötig.
 cd ~ && node v3ddruckcheck/tests/ui-test.mjs        # Server :8810 muss laufen
 cd ~/orca-wasm && node test/print-check-test.mjs    # Regeln des Prüfkerns
 ```
+
+## Druck-Assistent (Slicer verbunden, ab Druck-Helfer v13)
+
+Läuft auf dem Windows-Rechner der Druck-Helfer (`~/Volme3D-Druck-Helfer.bat`, Port 7777), zeigt die Startseite
+eine Slicer-Leiste: erkannt werden **Bambu Studio, Snapmaker Orca, ElegooSlicer, Anycubic Slicer Next, SovolSlicer,
+OrcaSlicer** (alle Bambu-/Orca-Ableger: Titel `[*]Projekt - Slicer`, `%APPDATA%\<Slicer>\<Slicer>.conf` mit
+`recent_projects`, eigene Profile unter `user\<Konto|default>\process|filament`).
+
+Ablauf: 🪄 → Helfer speichert das Projekt (Strg+S; ungespeichert → „Speichern unter“ nach
+`<Bibliothek>\Projekte`) → Seite prüft (mit „🎯 Wofür ist das Teil?“ = `ctx.purpose`) → ✔ Übernehmen:
+gepatchtes 3MF zurück (alte Fassung nach `Projekte\Vorher`), Slicer lädt per Strg+O neu, Häkchen „ins Profil“
+legt `<Basis> · V3D [Zweck]` an (erbt vom Herstellerprofil, nur Abweichungen; sichtbar nach Slicer-Neustart).
+↶ Rückgängig spielt die Sicherung zurück. Rückfragen des Slicers beantwortet der Helfer NIE selbst, er meldet sie.
+
+Helfer-Befehle (nur erlaubte Origins): `GET /slicer/state`, `POST /slicer/save|apply|undo|preset`, `GET /slicer/file` (je `X-Pid`).
+
+Tests:
+```
+cd ~ && node v3ddruckcheck/tests/assistent-test.mjs   # Seite ↔ Helfer im pwsh-Container, Slicer vorgetäuscht
+v3ddruckcheck/tests/preset_check.sh /tmp/x            # Profile mit dem echten Orca-Lader (libslic3r) laden
+```
+Fensterbedienung (Strg+S/Strg+O, Datei-Dialog) ist nur unter Windows prüfbar.
