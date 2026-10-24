@@ -59,7 +59,7 @@ const sidOf = (req) => (req.headers.authorization || '').replace(/^Bearer\s+/i, 
 // IDs bekommen das Präfix "fleet:", damit sie in denselben Endpunkten wie die
 // Bambu-Seriennummern laufen. Kein Bambu-Login nötig — wer die Brücke erreicht
 // (LAN/Tailnet), darf die Flotte sehen und steuern.
-const FLEET_FILE = path.join(__dirname, 'printers.json');
+const FLEET_FILE = process.env.BRIDGE_PRINTERS || path.join(__dirname, 'printers.json');   // BRIDGE_PRINTERS: nur für Tests
 let fleet = [];
 let fleetCode = null;   // printers.json "fleetCode": Druckcode für Funnel-Zugriff
 function loadFleet() {
@@ -439,6 +439,73 @@ app.post('/api/control/:serial', async (req, res) => {
       : await cloud.sendCommand(sid, req.params.serial, payload, { waitMs: 0 });
     res.json({ ok: true, sent: r.sent });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Klipper-Live (V3D Druck-Assistent): Werte während des Drucks nachregeln + Profile in der
+// Moonraker-Datenbank. Nur Flotten-Drucker vom Typ moonraker; gleiche Policy wie /api/control
+// (LAN/Tailnet frei, öffentlich nur mit Druckcode). Browser schickt nur Wunschwerte, nie G-Code.
+const klive = require('./adapters/klipper-live');
+const kBaseline = new Map();   // "<id>|<datei>" -> Werte beim ersten Blick auf diesen Druck (für „Zurück auf Start“)
+function klipperPrinter(req, res) {
+  const fp = fleetOf(req.params.serial);
+  if (!fp || fp.type !== 'moonraker') { res.status(404).json({ error: 'kein Klipper-Drucker' }); return null; }
+  if (!fleetOk(req)) { needCode(res); return null; }
+  return fp;
+}
+function kRemember(fp, live) {
+  if (!live.printing || !live.file) return null;
+  const k = fp.id + '|' + live.file;
+  if (!kBaseline.has(k)) kBaseline.set(k, { ...live.values });
+  return kBaseline.get(k);
+}
+const kErr = (res, e) => /fetch failed|timeout|aborted|ECONNREFUSED|EHOSTUNREACH/i.test(e.message + (e.cause?.code || ''))
+  ? res.status(504).json({ error: 'Drucker nicht erreichbar – ist er eingeschaltet und im Netz?' })
+  : res.status(e.status === 404 ? 404 : /gesperrt|unbekannt|keine Zahl|fehlt|nicht gefunden|keine Werte/.test(e.message) ? 400 : 502).json({ error: e.message });
+app.get('/api/klipper/:serial/live', async (req, res) => {
+  const fp = klipperPrinter(req, res); if (!fp) return;
+  try {
+    const live = await klive.readLive(fp);
+    res.json({ ok: true, name: fp.name, ...live, baseline: kRemember(fp, live),
+               knobs: Object.fromEntries(Object.entries(klive.KNOBS).map(([k, v]) => [k, { label: v.label, unit: v.unit, min: v.min, max: v.max, step: v.step, dec: v.dec || 0 }])),
+               problems: Object.fromEntries(Object.entries(klive.PROBLEMS).map(([k, v]) => [k, v.label])) });
+  } catch (e) { kErr(res, e); }
+});
+app.post('/api/klipper/:serial/suggest', async (req, res) => {
+  const fp = klipperPrinter(req, res); if (!fp) return;
+  try { res.json({ ok: true, ...klive.suggest(await klive.readLive(fp), String((req.body || {}).problem || '')) }); } catch (e) { kErr(res, e); }
+});
+app.post('/api/klipper/:serial/tune', async (req, res) => {
+  const fp = klipperPrinter(req, res); if (!fp) return;
+  try {
+    const b = req.body || {};
+    let wish = b.values || {};
+    if (b.reset) {   // zurück auf die Werte vom Druckbeginn (bzw. vom ersten Blick darauf)
+      const live = await klive.readLive(fp); const base = kRemember(fp, live);
+      if (!base) return res.status(400).json({ error: 'kein Startwert bekannt (läuft ein Druck?)' });
+      wish = {}; for (const [k, v] of Object.entries(base)) if (v != null && v !== live.values[k]) wish[k] = v;
+    }
+    const r = await klive.applyChanges(fp, wish);
+    console.log(`[klipper] ${fp.id} ${b.reset ? 'reset ' : ''}${r.lines.join(' | ') || '(nichts)'}${r.notes.length ? ' · ' + r.notes.join('; ') : ''}`);
+    res.json({ ok: true, applied: r.applied, notes: r.notes, sent: r.lines, live: r.live });
+  } catch (e) { console.log(`[klipper] ${fp.id} FEHLER ${e.message}`); kErr(res, e); }
+});
+app.get('/api/klipper/:serial/profiles', async (req, res) => {
+  const fp = klipperPrinter(req, res); if (!fp) return;
+  try { res.json({ ok: true, profiles: await klive.listProfiles(fp) }); } catch (e) { kErr(res, e); }
+});
+app.post('/api/klipper/:serial/profiles', async (req, res) => {
+  const fp = klipperPrinter(req, res); if (!fp) return;
+  const b = req.body || {};
+  try {
+    if (b.action === 'save') { const all = await klive.saveProfile(fp, b.name, { values: b.values, material: b.material, note: b.note }); console.log(`[klipper] ${fp.id} Profil gespeichert: ${b.name}`); return res.json({ ok: true, profiles: all }); }
+    if (b.action === 'delete') { const all = await klive.deleteProfile(fp, String(b.name)); console.log(`[klipper] ${fp.id} Profil gelöscht: ${b.name}`); return res.json({ ok: true, profiles: all }); }
+    if (b.action === 'apply') {
+      const r = await klive.applyProfile(fp, String(b.name), { skip: Array.isArray(b.skip) ? b.skip : [] });
+      console.log(`[klipper] ${fp.id} Profil ${b.name}: ${r.lines.join(' | ')}`);
+      return res.json({ ok: true, applied: r.applied, notes: r.notes, sent: r.lines, live: r.live });
+    }
+    res.status(400).json({ error: 'action muss save|delete|apply sein' });
+  } catch (e) { kErr(res, e); }
 });
 
 // G-Code senden: { serial, filename, gcode, start } + Druckoptionen

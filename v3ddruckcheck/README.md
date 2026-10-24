@@ -60,3 +60,17 @@ cd ~ && node v3ddruckcheck/tests/assistent-test.mjs   # Seite ↔ Helfer im pwsh
 v3ddruckcheck/tests/preset_check.sh /tmp/x            # Profile mit dem echten Orca-Lader (libslic3r) laden
 ```
 Fensterbedienung (Strg+S/Strg+O, Datei-Dialog) ist nur unter Windows prüfbar.
+
+## 📡 Drucker live (Klipper / Snapmaker U1)
+
+Knopf „📡 Drucker live“ oben: Klipper-Drucker aus der Flotte der V3D-Bridge (`orca-wasm/bridge`, printers.json Typ
+`moonraker`) während des Drucks nachregeln — Geschwindigkeit, Fluss, Düse/Bett, Lüfter, Pressure Advance,
+Beschleunigung, max. Geschwindigkeit, SCV. „🩺 Was stimmt nicht?“ schlägt kleine Schritte vor (Fäden, Lücken,
+Ghosting …), „↶ Zurück auf Druckbeginn“, Profile in der Moonraker-Datenbank (Namespace `v3d`, Schlüssel `profiles`).
+
+Sicherheit: Browser schickt nur Wunschwerte, die Bridge (`adapters/klipper-live.js`) klemmt auf feste Grenzen,
+begrenzt Sprünge im Druck (z. B. Düse ±20 °C, Fluss ±10 %), sperrt „Düse aus“ im Druck, schaltet keine Heizung
+über Vorschläge/Profile ein, wenn nichts druckt. Öffentlich (Funnel /bridge) nur mit Druckcode.
+
+Tests: `node ~/orca-wasm/test/klipper-live-test.mjs` (Baustein gegen Moonraker-Attrappe),
+`node v3ddruckcheck/tests/live-test.mjs` (Seite → Test-Bridge :17781 → Attrappe).
