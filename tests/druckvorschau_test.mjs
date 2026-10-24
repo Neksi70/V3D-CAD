@@ -56,6 +56,8 @@ try {
     const cfg = JSON.parse(execSync('unzip -p /tmp/dv_proj.3mf Metadata/project_settings.config').toString());
     ok(cfg.printer_settings_id === 'Snapmaker U1 (0.4 nozzle)' && cfg.layer_height === '0.28' && cfg.wall_loops === '3' && cfg.sparse_infill_density === '25%' && cfg.enable_support === '1',
        `Projekt-3MF trägt die Einstellungen: ${cfg.printer_settings_id}, ${cfg.layer_height} mm, ${cfg.wall_loops} Wände, ${cfg.sparse_infill_density}, Stützen ${cfg.support_type}`);
+    const plt = { 'Textured PEI Plate': 'textured_plate_temp', 'High Temp Plate': 'hot_plate_temp', 'Cool Plate': 'cool_plate_temp', 'Engineering Plate': 'eng_plate_temp' }[cfg.curr_bed_type];
+    ok(plt && parseFloat(cfg[plt][0]) > 0, `Druckplatte ${cfg.curr_bed_type} hat eine Betttemperatur fürs Filament (${plt && cfg[plt][0]} °C)`);
     let prof = ''; try { prof = execSync('unzip -p /tmp/dv_proj.3mf Metadata/layer_heights_profile.txt').toString(); } catch (e) {}
     const pv = (prof.split('|')[1] || '').split(';').map(Number);
     ok(/^object_id=1\|/.test(prof) && Math.abs(pv[pv.length - 2] - 20) < 0.01, 'Projekt-3MF trägt die variable Schichthöhe (Profil bis 20 mm): ' + prof.slice(0, 60));
