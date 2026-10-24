@@ -55,6 +55,19 @@ const c = await pg.evaluate(async () => {
   return { name: o.userData.name, teile: mf.decompose().length, hoehe: +((bb.max.y - bb.min.y) * 10).toFixed(1), vol: +mf.volume().toFixed(2) };
 });
 ok('Erstellen mit Öse: ein zusammenhängender Körper, höher als die Kugel', c.teile === 1 && c.hoehe > 80, c);
+// Mehrere Bilder: Felder rundum, Bild 1 vorn, Wiederholen wiederholt die Reihe
+const mb = await pg.evaluate(async () => {
+  const mk = async (t) => { const c = document.createElement('canvas'); c.width = 300; c.height = 400; const x = c.getContext('2d');
+    x.fillStyle = '#ddd'; x.fillRect(0, 0, 300, 400); x.fillStyle = '#000'; x.font = 'bold 200px sans-serif'; x.fillText(t, 60, 280);
+    const img = new Image(); await new Promise(r => { img.onload = r; img.src = c.toDataURL(); }); return { img, url: img.src, aspect: 0.75, name: t }; };
+  _litho.bilder.length = 0; for (const t of ['A', 'B', 'C']) _litho.bilder.push(await mk(t));
+  Object.assign(_litho.p, { form: 'kugel', kWinkel: 360, kWdh: 2, kFit: 'einpassen', kDeckel: false });
+  _lithoBilderNeu();
+  const M = _lithoKugelMap(), g = _buildLithoKugelGeo(false), w = await _mfInit(), mf = _mfFromSoup(w, _lithoTris(g));
+  const r = { felder: M.felder.map(f => f.bi).join(''), vorn: M.felder[0].m, teile: mf.decompose().length, erste: _litho.img === _litho.bilder[0].img };
+  _litho.bilder.length = 0; _lithoBilderNeu(); r.leer = !_litho.lum; return r;
+});
+ok('3 Bilder × 2: Felder 012012, Bild 1 vorn, Netz dicht; alle entfernt = kein Bild', mb.felder === '012012' && mb.vorn === 0 && mb.teile === 1 && mb.erste && mb.leer, mb);
 // Teelicht-Deckel (Bajonett): zwei Teile, Passung per Schnittvolumen
 await pg.reload(); await pg.waitForFunction(() => typeof _lithoDeckelGeo === 'function', null, { timeout: 30000 });
 await pg.evaluate(async () => {
