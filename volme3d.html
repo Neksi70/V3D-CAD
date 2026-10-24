@@ -6050,6 +6050,11 @@ Patrick</textarea>
         <div class="vrow"><label>Durchmesser</label> <input type="range" id="lp-kD" min="40" max="150" value="80" step="1" oninput="document.getElementById('lv-kD').textContent=this.value;_lithoSet('kD',this.value)"><span class="vv" id="lv-kD">80</span><span class="vu">mm</span></div>
         <div class="vrow"><label title="Loch für die LED / das Teelicht. Die Kugel steht beim Druck auf diesem Rand. 0 = unten zu">Öffnung unten</label> <input type="range" id="lp-kUnten" min="0" max="80" value="30" step="1" oninput="document.getElementById('lv-kUnten').textContent=this.value;_lithoSet('kUnten',this.value)"><span class="vv" id="lv-kUnten">30</span><span class="vu">mm</span></div>
         <div class="vrow"><label title="0 = oben zu (dann mit Aufhänge-Öse)">Öffnung oben</label> <input type="range" id="lp-kOben" min="0" max="60" value="0" step="1" oninput="document.getElementById('lv-kOben').textContent=this.value;_lithoSet('kOben',this.value)"><span class="vv" id="lv-kOben">0</span><span class="vu">mm</span></div>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin:2px 0 4px" title="Zweites Teil: Deckel mit Mulde für ein LED-Teelicht, wird unten per Bajonett eingedreht. Die Öffnung unten passt sich automatisch an."><input type="checkbox" id="lp-kDeckel" checked onchange="_lithoSet('kDeckel',this.checked)"> ＋ Teelicht-Deckel (Bajonett)</label>
+        <div id="litho-deckel-box" style="display:none">
+          <div class="vrow"><label title="Durchmesser des LED-Teelichts. Standard-Teelicht und die OriFiil-Unterwasser-Teelichter: 38 mm">Teelicht-Ø</label> <input type="range" id="lp-tlD" min="25" max="60" value="38" step="0.5" oninput="document.getElementById('lv-tlD').textContent=this.value;_lithoSet('tlD',this.value)"><span class="vv" id="lv-tlD">38</span><span class="vu">mm</span></div>
+          <div class="vrow"><label title="Luft rund ums Teelicht und am Bajonett. 0,3 = stramm, 0,5 = leicht">Spiel</label> <input type="range" id="lp-tlSpiel" min="0.2" max="0.8" value="0.4" step="0.05" oninput="document.getElementById('lv-tlSpiel').textContent=this.value;_lithoSet('tlSpiel',this.value)"><span class="vv" id="lv-tlSpiel">0.4</span><span class="vu">mm</span></div>
+        </div>
         <div class="vrow"><label title="Unterkante des Fotos als Breitengrad (0° = Äquator, −90° = unten)">Bild von</label> <input type="range" id="lp-kVon" min="-85" max="0" value="-45" step="1" oninput="document.getElementById('lv-kVon').textContent=this.value;_lithoSet('kVon',this.value)"><span class="vv" id="lv-kVon">-45</span><span class="vu">°</span></div>
         <div class="vrow"><label title="Oberkante des Fotos als Breitengrad (90° = ganz oben)">Bild bis</label> <input type="range" id="lp-kBis" min="0" max="89" value="60" step="1" oninput="document.getElementById('lv-kBis').textContent=this.value;_lithoSet('kBis',this.value)"><span class="vv" id="lv-kBis">60</span><span class="vu">°</span></div>
         <div class="vrow"><label title="Wie weit das Foto um die Kugel läuft. 360° = ganz herum">Rundum</label> <input type="range" id="lp-kWinkel" min="30" max="360" value="360" step="5" oninput="document.getElementById('lv-kWinkel').textContent=this.value;_lithoSet('kWinkel',this.value)"><span class="vv" id="lv-kWinkel">360</span><span class="vu">°</span></div>
@@ -63745,7 +63750,7 @@ function _createRk(){
 const _litho = { img:null, lum:null, cols:0, rows:0, aspect:1,
   p:{ width:100, maxT:3.0, minT:0.8, res:500, frame:0, invert:false,
        form:'flach', kD:80, kUnten:30, kOben:0, kVon:-45, kBis:60, kWinkel:360, kWdh:1,
-       kRand:3, kFit:'einpassen', kInnen:true, kOese:true } };
+       kRand:3, kFit:'einpassen', kInnen:true, kOese:true, kDeckel:true, tlD:38, tlSpiel:0.4 } };
 function _lithoSample(){
   if(!_litho.img) return;
   // Der Deckel lag bei 360 Spalten — damit blieb das Relief auch am Reglerende
@@ -63864,7 +63869,7 @@ function _buildLithoKugelGeo(vorschau){
     for(let it=0;it<6;it++){ w=Math.min(tMax/Math.max(0.2,Math.sin(phi)), R*0.5); phi=Math.acos(Math.min(0.999,(rh+w)/R)); }
     return {phi, rLoch:R*Math.cos(phi)-w};
   };
-  const ou=oeffnung(P.kUnten), oo=oeffnung(P.kOben);
+  const ou=oeffnung(P.kDeckel? _lithoDeckelMasse().Rh*20 : P.kUnten), oo=oeffnung(P.kOben);
   const phiB=ou?-ou.phi:-Math.PI/2, phiT=oo?oo.phi:Math.PI/2;
   const wrap=a=>{ while(a>Math.PI)a-=2*Math.PI; while(a<-Math.PI)a+=2*Math.PI; return a; };
   const lumAt=(u,v)=>{                                        // bilinear, u/v ∈ [0,1]
@@ -63944,18 +63949,86 @@ function _buildLithoKugelGeo(vorschau){
   // Unterkante auf y = 0
   const yMin=ou? R*Math.sin(phiB) : -(P.kInnen?R:R-tMax+thick(0,-Math.PI/2));
   g.translate(0,-yMin,0);
-  if(vorschau && _lithoOeseAn()){
-    const oe=_lithoOeseGeo(R-yMin, tMax);
-    const gc=g.toNonIndexed().getAttribute('color').array, n0=gc.length;
-    g=_lithoNurPos([g, oe]); oe.dispose();
-    const c=new Float32Array(g.attributes.position.count*3); c.set(gc);
-    for(let i=n0;i<c.length;i+=3){ c[i]=0.92; c[i+1]=0.92; c[i+2]=0.9; }   // Öse: Filamentfarbe
-    g.setAttribute('color',new THREE.BufferAttribute(c,3));
+  _litho._fussR=ou? R*Math.cos(phiB) : 0;          // Außenradius des Standrings (für den Deckel)
+  if(vorschau){
+    const extra=[], grau=[];
+    if(_lithoOeseAn()) extra.push(_lithoOeseGeo(R-yMin, tMax));
+    if(_lithoDeckelAn()){
+      extra.push(_lithoHalsGeo());
+      // Deckel auseinandergezogen darunter, dazu das Teelicht (dunkel)
+      const dk=_lithoDeckelGeo(); dk.translate(0,-(_lithoDeckelMasse().hoch+1.2),0); extra.push(dk);
+      const M=_lithoDeckelMasse(), tl=new THREE.CylinderGeometry(M.tl,M.tl,P.tlD>0?2.16/3.8*M.tl*2:2,40);
+      tl.translate(0,-(M.hoch+1.2)+M.platte+1.08,0); grau.push(tl);
+    }
+    if(extra.length||grau.length){
+      const gc=g.toNonIndexed().getAttribute('color').array, n0=gc.length;
+      const ex=_lithoNurPos(extra), gr=grau.length?_lithoNurPos(grau):null;
+      g=_lithoNurPos(gr?[g,ex,gr]:[g,ex]);
+      const n1=n0+ex.attributes.position.count*3;
+      const c=new Float32Array(g.attributes.position.count*3); c.set(gc);
+      for(let i=n0;i<c.length;i+=3){ const dunkel=i>=n1; c[i]=dunkel?0.25:0.92; c[i+1]=dunkel?0.27:0.92; c[i+2]=dunkel?0.32:0.9; }   // Filamentfarbe / Teelicht
+      g.setAttribute('color',new THREE.BufferAttribute(c,3));
+      extra.forEach(e=>e.dispose()); grau.forEach(e=>e.dispose());
+    }
   }
   if(vorschau) g.userData.leuchten=true;
   g.computeVertexNormals(); g.computeBoundingBox();
   return g;
 }
+// ── Teelicht-Deckel mit Bajonett ─────────────────────────────────────────────
+// Kugel bekommt innen am Loch einen kurzen Hals (Rohr) mit 3 Kerben. Der Deckel
+// ist eine Platte mit Kragen; der Kragen trägt oben 3 Nasen. Einsetzen: Nasen
+// durch die Kerben, 60° drehen → Nasen liegen auf dem Hals und rutschen in eine
+// flache Rast-Mulde (Schwerkraft hält sie dort, zum Lösen leicht anheben).
+// Beide Teile drucken ohne Stützen: Kugel auf dem Standring, Deckel Platte unten.
+// Alle Maße in App-Einheiten (cm).
+function _lithoDeckelAn(){ const P=_litho.p; return P.form==='kugel' && !!P.kDeckel; }
+function _lithoDeckelMasse(){
+  const P=_litho.p, sp=Math.max(0.02,P.tlSpiel/10), tl=Math.max(1,P.tlD/20);
+  const rCi=tl+sp, rCo=rCi+0.16, Rh=rCo+0.03, rLug=Rh+0.12, rKerb=rLug+0.04, rHals=rKerb+0.14;
+  const hHals=0.6, rast=0.08, luft=0.03, hNase=0.25, platte=0.2;
+  return {tl, rCi, rCo, Rh, rLug, rKerb, rHals, hHals, rast, luft, hNase, platte,
+    hoch: platte+hHals+luft+hNase,
+    rPlatte: Math.max(Rh+0.5, (_litho._fussR||0)+0.1)};
+}
+// Kreisring/Sektoren als THREE.Shape; segs = [[a0,a1,r],…] rundum für den Innenrand
+function _lithoBogen(pts, r, a0, a1){ const n=Math.max(2,Math.ceil(Math.abs(a1-a0)/(Math.PI/90))); for(let i=0;i<=n;i++){ const a=a0+(a1-a0)*i/n; pts.push(new THREE.Vector2(r*Math.cos(a), r*Math.sin(a))); } }
+function _lithoRingShape(rAussen, segs){
+  const sh=new THREE.Shape(), o=[]; _lithoBogen(o, rAussen, 0, 2*Math.PI); o.pop(); sh.setFromPoints(o);
+  const h=[]; for(const [a0,a1,r] of segs) _lithoBogen(h, r, a0, a1);
+  h.pop(); sh.holes.push(new THREE.Path(h)); return sh;
+}
+function _lithoSektorShape(r1, r2, a0, a1){
+  const p=[]; _lithoBogen(p, r2, a0, a1); const q=[]; _lithoBogen(q, r1, a0, a1); q.reverse();
+  return new THREE.Shape(p.concat(q));
+}
+function _lithoExtr(sh, y0, h){
+  const g=new THREE.ExtrudeGeometry(sh,{depth:h, bevelEnabled:false, curveSegments:2});
+  g.rotateX(-Math.PI/2); g.translate(0,y0,0); return g;
+}
+const _LITHO_NASE=28*Math.PI/180, _LITHO_KERBE=36*Math.PI/180, _LITHO_RAST=34*Math.PI/180;
+function _lithoHalsTeile(){
+  const M=_lithoDeckelMasse(), T=2*Math.PI/3, kb=_LITHO_KERBE/2, ra=_LITHO_RAST/2;
+  const segs=[]; for(let k=0;k<3;k++){ const c=k*T; segs.push([c-kb,c+kb,M.rKerb],[c+kb,c+T-kb,M.Rh]); }
+  segs.push([segs[0][0]+2*Math.PI, segs[0][0]+2*Math.PI, M.Rh]);
+  const teile=[_lithoExtr(_lithoRingShape(M.rHals, segs), 0, M.hHals-M.rast)];
+  for(let k=0;k<3;k++){                          // obere Lage mit Rast-Mulde bei +60°
+    const c=k*T, m=c+T/2;
+    teile.push(_lithoExtr(_lithoSektorShape(M.Rh, M.rHals, c+kb, m-ra), M.hHals-M.rast-0.01, M.rast+0.01));
+    teile.push(_lithoExtr(_lithoSektorShape(M.Rh, M.rHals, m+ra, c+T-kb), M.hHals-M.rast-0.01, M.rast+0.01));
+  }
+  return teile;
+}
+function _lithoDeckelTeile(){
+  const M=_lithoDeckelMasse(), T=2*Math.PI/3, nb=_LITHO_NASE/2;
+  const platte=_lithoExtr(_lithoRingShape(M.rPlatte, [[0,2*Math.PI,0.8]]), 0, M.platte);   // Ø16-Loch zum Herausdrücken
+  const kragen=_lithoExtr(_lithoRingShape(M.rCo, [[0,2*Math.PI,M.rCi]]), M.platte*0.5, M.hoch-M.platte*0.5);
+  const teile=[platte, kragen];
+  for(let k=0;k<3;k++) teile.push(_lithoExtr(_lithoSektorShape(M.rCi+0.05, M.rLug, k*T-nb, k*T+nb), M.platte+M.hHals+M.luft, M.hNase));
+  return teile;
+}
+function _lithoHalsGeo(){ const t=_lithoHalsTeile(), g=_lithoNurPos(t); t.forEach(x=>x.dispose()); return g; }
+function _lithoDeckelGeo(){ const t=_lithoDeckelTeile(), g=_lithoNurPos(t); t.forEach(x=>x.dispose()); return g; }
 function _lithoOeseAn(){ const P=_litho.p; return P.form==='kugel' && P.kOese && !(P.kOben>0); }
 // Öse: senkrechter Ring auf einem kurzen Sockel, beides steckt ein Stück in
 // der (dort voll dicken) Wand — vereint wird beim Erstellen per Manifold.
@@ -64018,7 +64091,12 @@ function _lithoInfo(){
   if(_litho.p.form==='kugel'){
     const P=_litho.p;
     t+=' · Druck: auf die untere Öffnung stellen, Stützen (Baum) für die untere Hälfte, weißes Filament, 100 % Füllung, 0,12 mm Schichten.';
-    if(!(P.kUnten>0)) t+=' ⚠️ Ohne Öffnung unten steht die Kugel nur auf einem Punkt.';
+    if(!(P.kUnten>0) && !P.kDeckel) t+=' ⚠️ Ohne Öffnung unten steht die Kugel nur auf einem Punkt.';
+    if(P.kDeckel){
+      const M=_lithoDeckelMasse();
+      t+=` · Teelicht-Deckel: Öffnung ${(M.Rh*20).toFixed(1).replace('.',',')} mm, Deckel Ø ${(M.rPlatte*20).toFixed(0)} mm. Einsetzen: Nasen in die Kerben, 60° drehen. Die IR-Fernbedienung wirkt durch weißes Filament – an dicken Stellen schwächer.`;
+      if(M.rHals>P.kD/20*0.72) t+=' ⚠️ Für dieses Teelicht ist die Kugel zu klein – Durchmesser vergrößern.';
+    }
     if(P.kOese && P.kOben>0) t+=' (Öse nur, wenn oben zu)';
   } else t+=` · rund ${Math.round(2*(_litho.cols-1)*(_litho.rows-1)/1000)}k Dreiecke`+(_litho.cols<_litho.p.res?` (Vorlage gibt nicht mehr her)`:``);
   info.textContent=t;
@@ -64037,6 +64115,12 @@ function _lithoSyncUI(){
   const P=_litho.p, kugel=P.form==='kugel';
   for(const k of ['kD','kUnten','kOben','kVon','kBis','kWinkel','kWdh','kRand']) set('lp-'+k,'lv-'+k,P[k]);
   { const c=document.getElementById('lp-kOese'); if(c) c.checked=!!P.kOese; }
+  { const c=document.getElementById('lp-kDeckel'); if(c) c.checked=!!P.kDeckel; }
+  set('lp-tlD','lv-tlD',P.tlD); set('lp-tlSpiel','lv-tlSpiel',P.tlSpiel);
+  { const e=document.getElementById('litho-deckel-box'); if(e) e.style.display=P.kDeckel?'':'none'; }
+  { const u=document.getElementById('lp-kUnten'), uv=document.getElementById('lv-kUnten');
+    if(u){ u.disabled=!!P.kDeckel; }
+    if(P.kDeckel && uv) uv.textContent=(Math.round(_lithoDeckelMasse().Rh*200)/10).toString(); }
   const bg=(id,v)=>document.querySelectorAll('#'+id+' .vtb').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   bg('litho-form-bg',P.form); bg('litho-fit-bg',P.kFit); bg('litho-innen-bg',P.kInnen?'1':'0');
   const show=(id,on)=>{ const e=document.getElementById(id); if(e) e.style.display=on?'':'none'; };
@@ -64046,9 +64130,9 @@ function _lithoSyncUI(){
 }
 let _lithoRT=null;
 function _lithoSet(k,v){
-  _litho.p[k]=(k==='invert'||k==='kInnen'||k==='kOese')?!!v:parseFloat(v);
+  _litho.p[k]=(k==='invert'||k==='kInnen'||k==='kOese'||k==='kDeckel')?!!v:parseFloat(v);
   if(k==='res' && _litho.img) _lithoSample();
-  if(k==='kOben'||k==='kUnten'||k==='kOese'||k==='kInnen'){ _lithoSyncUI(); }
+  if(k==='kOben'||k==='kUnten'||k==='kOese'||k==='kInnen'||k==='kDeckel'||k==='tlD'||k==='tlSpiel'){ _lithoSyncUI(); }
   _lithoInfo();
   if(_lithoRT)clearTimeout(_lithoRT); _lithoRT=setTimeout(()=>{_lithoRT=null; if(_litho.img||_litho.p.form==='kugel')_gpvUpdate('litho');},90);
 }
@@ -64070,18 +64154,34 @@ async function _createLitho(){
   if(!_litho.lum){ notify('Erst ein Bild wählen','w'); return; }
   const kugel=_litho.p.form==='kugel';
   let geo; try{ geo=_buildLithoGeo(); }catch(e){ console.error('Lithophane:',e); notify('Fehler beim Erstellen','w'); return; }
-  if(kugel && _lithoOeseAn()){
-    // Öse fest anfügen: Kugel ∪ Ring ∪ Sockel als EIN Körper (überlappende
+  let deckelGeo=null;
+  if(kugel && (_lithoOeseAn() || _lithoDeckelAn())){
+    // Öse/Hals fest anfügen: Kugel ∪ Anbauteile als EIN Körper (überlappende
     // Hüllen in einem Netz machen beim späteren Abziehen schwarze Taschen)
     const btn=document.getElementById('litho-create-btn'); if(btn) btn.disabled=true;
+    const vereinen=async(teile)=>{
+      // Zwischenstände freigeben – Manifold-Objekte liegen im WASM-Speicher, den
+      // der Garbage Collector nicht sieht (bei 1 Mio. Dreiecken sonst schnell voll)
+      const mf=await _mfRetry(async()=>{ const w=await _mfInit(); let acc=null;
+        for(const t of teile){ const m=_mfFromSoup(w,_lithoTris(t));
+          if(!acc){ acc=m; continue; } const u=w.Manifold.union(acc,m); acc.delete(); m.delete(); acc=u; }
+        return acc; });
+      const g2=_mfToGeo(mf); try{ mf.delete(); }catch(_){}
+      g2.computeVertexNormals(); g2.computeBoundingBox(); return g2;
+    };
     try{
       geo.computeBoundingBox();
-      const oe=_lithoOeseGeo(geo.boundingBox.max.y, Math.max(0.2,_litho.p.maxT)/10);
-      const mf=await _mfRetry(async()=>{ const w=await _mfInit(); return w.Manifold.union(_mfFromSoup(w,_lithoTris(geo)), _mfFromSoup(w,_lithoTris(oe))); });
-      const g2=_mfToGeo(mf); g2.computeVertexNormals(); g2.computeBoundingBox();
+      const anbau=[];
+      if(_lithoOeseAn()) anbau.push(_lithoOeseGeo(geo.boundingBox.max.y, Math.max(0.2,_litho.p.maxT)/10));
+      if(_lithoDeckelAn()) anbau.push(..._lithoHalsTeile());
+      const g2=await vereinen([geo, ...anbau]); anbau.forEach(a=>a.dispose());
       geo.dispose(); geo=g2;
-    }catch(e){ console.error('Lithophane-Öse:',e); notify('Öse konnte nicht angefügt werden – Kugel ohne Öse erstellt','w'); }
-    finally{ if(btn) btn.disabled=false; }
+    }catch(e){ console.error('Lithophane-Anbau:',e); notify('Öse/Bajonett-Hals konnten nicht angefügt werden – Kugel ohne erstellt','w'); }
+    if(_lithoDeckelAn()){
+      try{ const t=_lithoDeckelTeile(); deckelGeo=await vereinen(t); t.forEach(x=>x.dispose()); }
+      catch(e){ console.error('Teelicht-Deckel:',e); notify('Teelicht-Deckel konnte nicht erstellt werden','w'); }
+    }
+    if(btn) btn.disabled=false;
   }
   saveUndo();
   const color=currentColor;
@@ -64093,8 +64193,21 @@ async function _createLitho(){
   mesh.userData={id:idCtr++,type:'litho',shapeType:'custom',name:lbl+' #'+typeCounts['litho'],
     color,isHole:false,fillet:0,chamfer:0};
   scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
-  selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
-  notify(kugel? 'Lithophane-Kugel erstellt — auf der unteren Öffnung stehend drucken, Baum-Stützen, weißes Filament, 100 % Füllung'
+  const neu=[mesh];
+  if(deckelGeo){                                   // Deckel neben der Kugel, Platte unten
+    geo.computeBoundingBox(); deckelGeo.computeBoundingBox();
+    const M=_lithoDeckelMasse();
+    const dm=new THREE.Mesh(deckelGeo, new THREE.MeshStandardMaterial({color:new THREE.Color(color),roughness:0.6,metalness:0.0,side:THREE.DoubleSide}));
+    dm.castShadow=true; dm.receiveShadow=true;
+    dm.quaternion.copy(mesh.quaternion); dm.position.copy(workplanePoint);
+    dm.position.add(new THREE.Vector3(geo.boundingBox.max.x+M.rPlatte+1.0,0,0).applyQuaternion(mesh.quaternion));
+    dm.userData={id:idCtr++,type:'litho',shapeType:'custom',name:'Teelicht-Deckel Ø'+_litho.p.tlD+'mm #'+typeCounts['litho'],
+      color,isHole:false,fillet:0,chamfer:0};
+    scene.add(dm); objects.push(dm); _updateObjEdgeLines(dm); neu.push(dm);
+  }
+  selectObjs(neu); updateTree(); fitToObjects(neu);
+  if(deckelGeo) notify('Kugel + Teelicht-Deckel erstellt — Deckel mit der Platte nach unten drucken. Einsetzen: Nasen in die Kerben, 60° drehen, einrasten lassen.','ok');
+  else notify(kugel? 'Lithophane-Kugel erstellt — auf der unteren Öffnung stehend drucken, Baum-Stützen, weißes Filament, 100 % Füllung'
               : 'Lithophane erstellt — Tipp: für Hintergrundlicht am besten stehend drucken','ok');
   _closeLithoModal();
 }
@@ -71523,8 +71636,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.257';
+const VOLME3D_VERSION = '1.18.258';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.258', date:'2026-10-24', changes:[
+    ['🕯️','<b>Kugel-Lithophane mit Teelicht-Deckel.</b> Der Haken <b>＋ Teelicht-Deckel (Bajonett)</b> ist voreingestellt und erzeugt ein zweites Teil mit Mulde für ein LED-Teelicht (Standard Ø 38 mm, passt z. B. für die Unterwasser-Teelichter mit Fernbedienung). Die Öffnung unten passt sich automatisch an. Innen am Loch bekommt die Kugel einen kurzen Hals mit 3 Kerben. Einsetzen: Nasen in die Kerben, 60° drehen, der Deckel rastet ein. Zum Lösen leicht anheben und zurückdrehen. Beide Teile lassen sich ohne Stützen drucken, den Deckel mit der Platte nach unten. Durch das Loch in der Platte lässt sich das Teelicht herausdrücken. Teelicht-Ø und Spiel sind einstellbar.'],
+  ]},
   { version:'1.18.257', date:'2026-10-24', changes:[
     ['🎄','<b>Kugel-Lithophane: Relief innen oder außen als eigene Wahl.</b> Statt eines Hakens gibt es zwei Knöpfe <b>Relief innen · Relief außen</b>. Innen bleibt die Kugel außen glatt und die Stützen liegen nicht auf dem Bild. Außen ist das Bild auch ausgeschaltet als Struktur zu sehen. Beim Leuchten sehen beide gleich aus.'],
   ]},

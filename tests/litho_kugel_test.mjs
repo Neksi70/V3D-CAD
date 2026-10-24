@@ -55,6 +55,31 @@ const c = await pg.evaluate(async () => {
   return { name: o.userData.name, teile: mf.decompose().length, hoehe: +((bb.max.y - bb.min.y) * 10).toFixed(1), vol: +mf.volume().toFixed(2) };
 });
 ok('Erstellen mit Öse: ein zusammenhängender Körper, höher als die Kugel', c.teile === 1 && c.hoehe > 80, c);
+// Teelicht-Deckel (Bajonett): zwei Teile, Passung per Schnittvolumen
+await pg.reload(); await pg.waitForFunction(() => typeof _lithoDeckelGeo === 'function', null, { timeout: 30000 });
+await pg.evaluate(async () => {
+  hideStarter(); _newCreate(false);               // Auto-Speichern hat die alte Szene zurückgeholt
+  const c = document.createElement('canvas'); c.width = 400; c.height = 300; const x = c.getContext('2d');
+  x.fillStyle = '#888'; x.fillRect(0, 0, 400, 300); x.fillStyle = '#000'; x.font = 'bold 160px sans-serif'; x.fillText('★', 120, 220);
+  const img = new Image(); await new Promise(r => { img.onload = r; img.src = c.toDataURL(); });
+  _litho.img = img; _litho.aspect = 400 / 300; _litho.p.res = 400; _lithoSample();
+});
+const d = await pg.evaluate(async () => {
+  Object.assign(_litho.p, { form: 'kugel', kD: 80, kOben: 0, kOese: true, kDeckel: true, tlD: 38, tlSpiel: 0.4 });
+  await _createLitho();
+  const ku = objects.find(o => /Lithophane-Kugel/.test(o.userData.name)), de = objects.find(o => /Teelicht-Deckel/.test(o.userData.name));
+  if (!ku || !de) return { fehlt: true };
+  const w = await _mfInit(), M = _lithoDeckelMasse();
+  const mk = _mfFromSoup(w, _lithoTris(ku.geometry)), dk = _mfFromSoup(w, _lithoTris(de.geometry));
+  const x = (m) => +w.Manifold.intersection(mk, m).volume().toFixed(5);
+  return { kTeile: mk.decompose().length, dTeile: dk.decompose().length, muldeDm: +(M.rCi * 20).toFixed(2),
+    einsetzen: x(dk.translate([0, -M.platte, 0])),
+    halbGedreht: x(dk.rotate([0, 30, 0]).translate([0, -M.platte - M.luft + 0.005, 0])),
+    eingerastet: x(dk.rotate([0, 60, 0]).translate([0, -M.platte - M.luft - M.rast + 0.005, 0])),
+    traegt: x(dk.rotate([0, 60, 0]).translate([0, -M.platte - M.luft - M.rast - 0.04, 0])) };
+});
+ok('Deckel: Kugel und Deckel je ein Teil, Mulde = Teelicht + 2× Spiel', d.kTeile === 1 && d.dTeile === 1 && Math.abs(d.muldeDm - 38.8) < 0.01, d);
+ok('Bajonett: einsetzen, drehen, einrasten ohne Kollision; Nasen tragen', d.einsetzen === 0 && d.halbGedreht === 0 && d.eingerastet === 0 && d.traegt > 0, d);
 // Vorschau-Bild
 await pg.evaluate(async () => { Object.assign(_litho.p, { kWdh: 1 }); _openLithoModal(); _lithoSyncUI(); _gpvUpdate('litho'); await new Promise(r => setTimeout(r, 600)); });
 await pg.locator('#litho-modal .g3box').screenshot({ path: '/tmp/litho_kugel_dialog.png' });
