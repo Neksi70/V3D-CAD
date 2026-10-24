@@ -1596,6 +1596,7 @@ const firebaseConfig = {
           <div class="sli-sep"></div>
           <div class="sli-item" onclick="exportSTL()">⬇ STL</div>
           <div class="sli-item" onclick="export3MF()">⬇ 3MF (zum Einfärben)</div>
+          <div class="sli-item" id="sli-schicht" onclick="event.stopPropagation();_schichtModusWeiter()" title="Variable Schichthöhe schon im 3MF mitgeben: flache Stellen (Kuppeln, Reliefs) fein, steile Wände grob. Bambu Studio / Orca übernehmen das Profil, wenn Düse und Erste Schicht passen (Drucker aus der Druck-Vorschau). Klick schaltet um."></div>
           <div class="sli-item" onclick="exportPartsSTL()">⬇ STL pro Körper</div>
           <div class="sli-item" onclick="exportOBJ()">⬇ OBJ</div>
           <div class="sli-item" onclick="exportSTEP()" title="STEP-Datei fürs CAD (Fusion, FreeCAD, …)">⬇ STEP</div>
@@ -7081,6 +7082,7 @@ Patrick</textarea>
 })();
 </script>
 <script src="cam-kern.js"></script>
+<script src="schicht-kern.js"></script>
 <script src="lib/fflate.min.js"></script>
 <script src="lib/p3mf.js"></script>
 <script src="lib/SimplifyModifier.js"></script>
@@ -38014,6 +38016,33 @@ function _exportPartsSTL() {
 // wasserdicht (keine "open edges").
 // Mehrere Platten: liegt die Quelle auf EINER Platte ≥ 2, auf deren Mitte zurückrücken
 function export3MF() { return _withPlateShift(_exportSrc(), _export3MF); }
+
+// ── Variable Schichthöhe im 3MF (Rechenkern = V3D Slicer, schicht-kern.js) ──
+// Modus: 'auto' = nur wenn ein Lithophane dabei ist, 'an' = immer, 'aus'.
+// Bambu Studio verwirft das GANZE Profil, wenn eine Höhe außerhalb min/max der
+// Düse liegt oder die erste Schicht nicht exakt der des Prozesses entspricht —
+// darum Düse aus der Druck-Vorschau (Standard 0,4) und Bambu-Grenzen Düse×0,2…×0,7.
+const _SCHICHT_MODI = { auto: 'automatisch (bei Lithophanes)', an: 'immer', aus: 'aus' };
+function _schichtModus() { const m = localStorage.getItem('v3d_3mf_schicht'); return _SCHICHT_MODI[m] ? m : 'auto'; }
+function _schichtModusWeiter() {
+  const f = ['auto', 'an', 'aus'], m = f[(f.indexOf(_schichtModus()) + 1) % 3];
+  localStorage.setItem('v3d_3mf_schicht', m); _schichtMenuSync();
+}
+function _schichtMenuSync() {
+  const e = document.getElementById('sli-schicht'); if (!e) return;
+  const o = _schichtOpts(false);
+  e.innerHTML = `📐 Variable Schichthöhe im 3MF: <b>${_SCHICHT_MODI[_schichtModus()]}</b><br><span style="font-size:11px;opacity:.7">für ${String(o.nozzle).replace('.', ',')}-mm-Düse · Erste Schicht ${String(o.hFirst).replace('.', ',')} mm</span>`;
+}
+function _schichtOpts(litho) {
+  const p = (typeof _dv !== 'undefined' && _dv.p) || {};
+  let noz = NaN;
+  try { const m = typeof _dvMachine === 'function' && _dvListe ? _dvMachine() : null; if (m) noz = parseFloat(m.noz); } catch (_) {}
+  if (!(noz > 0)) { const mm = /([0-9.]+)\s*nozzle/i.exec(p.machine || ''); noz = mm ? parseFloat(mm[1]) : 0.4; }
+  const r2 = v => Math.round(v * 100) / 100;
+  const hMin = r2(noz * 0.2), hMax = r2(noz * 0.7), hFirst = r2(noz * 0.5);
+  const hBase = Math.min(hMax, Math.max(hMin, parseFloat(p.lh) || r2(noz * 0.5)));
+  return { nozzle: noz, hFirst, hMin, hMax, hBase, quality: litho ? 0.8 : 0.5 };
+}
 function _export3MF() {
   document.getElementById('stl-menu').classList.remove('show');
   if (typeof fflate === 'undefined') { notify('Zip-Bibliothek lädt noch — kurz warten, erneut versuchen', 'w'); return; }
@@ -38027,6 +38056,7 @@ function _export3MF() {
       notify(`3MF „${fname}" ${res.wrote ? '→ ' + res.dir : ''} — ${r.parts} Teile, ${r.colors} Farbe/n ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok');
       if (r.colors > 1) notify('Filament-Zuordnung im Slicer: ' + r.legend.join('  '), 'ok');
       if (r.chroma) notify(r.chroma, /NICHT/.test(r.chroma) ? 'w' : 'ok');
+      if (r.schicht) notify(r.schicht, 'ok');
     });
   } catch(e) {
     console.error('3MF Export Fehler:', e);
@@ -38036,7 +38066,7 @@ function _export3MF() {
 
 // Baut das 3MF-Paket (Assembly + Extruder-Zuordnung pro Farbe) aus einer Objektliste.
 // Liefert {blob, parts, colors} oder null (keine Flächen). Wirft bei Zip-Fehlern.
-function _build3mfBlob(expSrc) {
+function _build3mfBlob(expSrc, opt = {}) {
     const meshes = [];
     (function tr(list){ list.forEach(o => {
       if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false) meshes.push(o);
@@ -38049,6 +38079,10 @@ function _build3mfBlob(expSrc) {
     // pro Farbe einen Extruder zu → Teil = Filament 1, Gravur = Filament 2.
     const IDENT = '1 0 0 0 1 0 0 0 1 0 0 0';
     const colorIndex = new Map();
+    const sm = opt.schicht === false ? 'aus' : _schichtModus();
+    const mitSchicht = typeof window.V3D_SCHICHT !== 'undefined'
+      && (sm === 'an' || (sm === 'auto' && meshes.some(m => m.userData.type === 'litho')));
+    const schichtTeile = [];
     const objXml = [], compXml = [], partXml = [];
     // 🎨 Chroma: Filamente in Druck-Reihenfolge zuerst vergeben (Filament 1 = Basis),
     // damit die Wechsel unten auf die richtigen Slots zeigen. Von Hand = alles auf 1.
@@ -38095,6 +38129,7 @@ function _build3mfBlob(expSrc) {
       for (const n in geo.attributes) if (n !== 'position') geo.deleteAttribute(n);
       geo = THREE.BufferGeometryUtils.mergeVertices(geo, 1e-4); // pro Teil wasserdicht
       const pos = geo.attributes.position, idx = geo.index ? geo.index.array : null;
+      if (mitSchicht) schichtTeile.push({ pos: pos.array.slice(), idx: idx ? idx.slice() : null });
       let v = '', t = '';
       for (let k = 0; k < pos.count; k++)
         v += `<vertex x="${pos.getX(k).toFixed(5)}" y="${pos.getY(k).toFixed(5)}" z="${pos.getZ(k).toFixed(5)}"/>`;
@@ -38143,6 +38178,26 @@ function _build3mfBlob(expSrc) {
         chrHinweis = `Chroma von Hand: im Slicer Pause/Farbwechsel setzen bei Schicht ${von.slice(1).join(', ')} (Z ${von.slice(1).map(n => top(n).toFixed(2)).join(' / ')} mm) — Rechtsklick auf den Schichtregler. Erste Schicht ${chrC.flh} mm`;
       }
     }
+    // Schichtprofil fürs GANZE Objekt (alle Teile hängen an einem <item>): Bambu/Orca
+    // lesen object_id 1-basiert in Objekt-Reihenfolge → 1. Chroma hat eigene Höhen.
+    let schichtTxt = null, schichtHinweis = null;
+    if (mitSchicht && !chrC && schichtTeile.length) {
+      try {
+        let nv = 0, ni = 0; schichtTeile.forEach(t => { nv += t.pos.length; ni += t.idx ? t.idx.length : t.pos.length / 3; });
+        const P = new Float32Array(nv), I = new Uint32Array(ni); let ov = 0, oi = 0;
+        schichtTeile.forEach(t => { P.set(t.pos, ov); const b = ov / 3, n = t.idx ? t.idx.length : t.pos.length / 3;
+          for (let k = 0; k < n; k++) I[oi + k] = b + (t.idx ? t.idx[k] : k); ov += t.pos.length; oi += n; });
+        const so = _schichtOpts(meshes.some(m => m.userData.type === 'litho'));
+        const plan = V3D_SCHICHT.computeLayerPlan(P, I, so);
+        if (plan && plan.profile && plan.profile.length >= 6) {
+          schichtTxt = `object_id=1|${plan.profile.map(v => v.toFixed(6)).join(';')}\n`;
+          const fein = plan.layers.reduce((a, L) => Math.min(a, L.h), 9), grob = plan.layers.reduce((a, L) => Math.max(a, L.h), 0);
+          const f = v => String(+v.toFixed(2)).replace('.', ',');
+          schichtHinweis = `📐 Variable Schichthöhe eingetragen: ${plan.nLayers} statt ${plan.nUniform} Schichten, ${f(fein)}–${f(grob)} mm. `
+            + `Im Slicer ${f(so.nozzle)}-mm-Düse und Erste Schicht ${f(so.hFirst)} mm wählen, sonst verwirft er das Profil.`;
+        }
+      } catch (e) { console.warn('[3mf] Schichtprofil fehlgeschlagen:', e); }
+    }
     const model = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
  <resources>
@@ -38171,10 +38226,14 @@ ${partXml.join('\n')}
     };
     if (chrXml) dateien['Metadata/custom_gcode_per_layer.xml'] = u8(chrXml);
     if (chrRanges) dateien['Metadata/layer_config_ranges.xml'] = u8(chrRanges);
+    if (schichtTxt) {
+      dateien['Metadata/layer_heights_profile.txt'] = u8(schichtTxt);              // Bambu Studio / OrcaSlicer
+      dateien['Metadata/Slic3r_PE_layer_heights_profile.txt'] = u8(schichtTxt);    // PrusaSlicer
+    }
     const zipped = fflate.zipSync(dateien, { level: 6 });
     const blob3mf = new Blob([zipped], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
     const legend = [...colorIndex.entries()].sort((a, b) => a[1] - b[1]).map(([h, ix]) => (ix + 1) + '=#' + h);
-    return { blob: blob3mf, parts: meshes.length, colors: colorIndex.size, legend, chroma: chrHinweis };
+    return { blob: blob3mf, parts: meshes.length, colors: colorIndex.size, legend, chroma: chrHinweis, schicht: schichtHinweis };
 }
 
 // ═══ STEP LOKAL IM BROWSER ═══════════════════════════════════════════════════
@@ -38353,7 +38412,7 @@ function toggleStlMenu(e) {
   e.stopPropagation();
   const m = document.getElementById('stl-menu');
   m.classList.toggle('show');
-  if (m.classList.contains('show')) { _refreshOutDirMenu(); _refreshSendSlicerItem(); }   // Ausgabeordner + Slicer-Übergabe aktualisieren
+  if (m.classList.contains('show')) { _refreshOutDirMenu(); _refreshSendSlicerItem(); _schichtMenuSync(); }   // Ausgabeordner + Slicer-Übergabe aktualisieren
 }
 
 const _SLICER_NAMES = { bambu:'Bambu Studio', orca:'OrcaSlicer', anycubic:'Anycubic Slicer Next', elegoo:'ElegooSlicer', snapmaker:'Snapmaker Orca', prusa:'PrusaSlicer' };
@@ -38516,7 +38575,7 @@ async function _dvSend(was) {
   }); })(src);
   let blob = null, fname;
   if (colors.size > 1 && typeof fflate !== 'undefined') {
-    try { const r3 = _withPlateShift(src, () => _build3mfBlob(src)); if (r3) { blob = r3.blob; fname = _designFilename('3mf'); } }
+    try { const r3 = _withPlateShift(src, () => _build3mfBlob(src, { schicht: false })); if (r3) { blob = r3.blob; fname = _designFilename('3mf'); } }
     catch (e) { console.error('[dv] 3MF fehlgeschlagen, nehme STL:', e); }
   }
   if (!blob) { const rs = _withPlateShift(src, () => _buildStlBlob(src)); if (!rs) { notify('Keine Objekte zum Slicen', 'w'); return; } blob = rs.blob; fname = _designFilename('stl'); }
@@ -38551,7 +38610,7 @@ async function _openInV3DSlicer() {
   let blob = null, fname;
   if (colors.size > 1 && typeof fflate !== 'undefined') {
     try {
-      const r3 = _withPlateShift(src, () => _build3mfBlob(src));
+      const r3 = _withPlateShift(src, () => _build3mfBlob(src, { schicht: false }));   // V3D Slicer rechnet selbst
       if (r3) { blob = r3.blob; fname = _designFilename('3mf'); }
     } catch (e) { console.error('3MF für V3D Slicer fehlgeschlagen, nehme STL:', e); }
   }
@@ -71636,8 +71695,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.258';
+const VOLME3D_VERSION = '1.18.259';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.259', date:'2026-10-24', changes:[
+    ['📐','<b>Variable Schichthöhe schon im 3MF.</b> Beim <b>⬇ 3MF</b>-Export rechnet V3D CAD jetzt auf Wunsch die variable Schichthöhe mit, mit demselben Rechenkern wie der V3D Slicer: flache Stellen (Kuppeln, Reliefs, die Oberseite einer Kugel) werden fein, steile Wände grob gedruckt. Bambu Studio, OrcaSlicer und PrusaSlicer übernehmen das Profil direkt. Bei der Lithophane-Kugel sind es z. B. 549 Schichten von 0,09 bis 0,22 mm statt 425 mit festen 0,2 mm (getestet mit Bambu Studio). Einstellbar im Export-Menü unter <b>📐 Variable Schichthöhe im 3MF</b>: <b>automatisch</b> (nur bei Lithophanes, Standard), <b>immer</b> oder <b>aus</b>. Die Düse kommt aus der Druck-Vorschau (Standard 0,4 mm). Im Slicer müssen Düse und Erste Schicht dazu passen, sonst verwirft er das Profil. Auch die <b>📦 Projekt-3MF</b> aus Druck-Vorschau und V3D Slicer enthält die variable Schichthöhe jetzt.'],
+  ]},
   { version:'1.18.258', date:'2026-10-24', changes:[
     ['🕯️','<b>Kugel-Lithophane mit Teelicht-Deckel.</b> Der Haken <b>＋ Teelicht-Deckel (Bajonett)</b> ist voreingestellt und erzeugt ein zweites Teil mit Mulde für ein LED-Teelicht (Standard Ø 38 mm, passt z. B. für die Unterwasser-Teelichter mit Fernbedienung). Die Öffnung unten passt sich automatisch an. Innen am Loch bekommt die Kugel einen kurzen Hals mit 3 Kerben. Einsetzen: Nasen in die Kerben, 60° drehen, der Deckel rastet ein. Zum Lösen leicht anheben und zurückdrehen. Beide Teile lassen sich ohne Stützen drucken, den Deckel mit der Platte nach unten. Durch das Loch in der Platte lässt sich das Teelicht herausdrücken. Teelicht-Ø und Spiel sind einstellbar.'],
   ]},

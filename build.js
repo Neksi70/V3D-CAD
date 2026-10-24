@@ -27,6 +27,12 @@ const OUT = path.join(__dirname, 'volme3d.dist.html');
 
 // Matcht <script ...>INHALT</script>. Vorab verifiziert: in volme3d.html
 // kommt "</script" nur als echtes Tag-Ende vor, nie in Strings -> sicher.
+// schicht-kern.js entsteht aus dem Rechenkern des V3D Slicers — vor dem
+// Einbetten frisch erzeugen, damit CAD und Slicer nicht auseinanderlaufen
+if (fs.existsSync(path.join(__dirname, 'orca-wasm/web/adaptive-layers.js'))) {
+  require('child_process').execFileSync(process.execPath, [path.join(__dirname, 'tools/bau_schicht_kern.mjs')], { stdio: 'inherit' });
+}
+
 const SCRIPT_RE = /<script\b([^>]*)>([\s\S]*?)<\/script>/g;
 
 async function build() {
@@ -54,7 +60,7 @@ async function build() {
     // Auslieferung soll eine einzige Datei bleiben. Nur was hier steht —
     // lib/three.min.js & Co. bleiben absichtlich draussen, die sind gross
     // und aendern sich nie.
-    const EINBETTEN = ['cam-kern.js'];
+    const EINBETTEN = ['cam-kern.js', 'schicht-kern.js'];
     if (hasSrc) {
       const m2 = /\bsrc\s*=\s*["']([^"']+)["']/.exec(match.attrs);
       const datei = m2 && m2[1];

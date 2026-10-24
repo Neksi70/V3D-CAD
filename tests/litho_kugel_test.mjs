@@ -80,6 +80,17 @@ const d = await pg.evaluate(async () => {
 });
 ok('Deckel: Kugel und Deckel je ein Teil, Mulde = Teelicht + 2× Spiel', d.kTeile === 1 && d.dTeile === 1 && Math.abs(d.muldeDm - 38.8) < 0.01, d);
 ok('Bajonett: einsetzen, drehen, einrasten ohne Kollision; Nasen tragen', d.einsetzen === 0 && d.halbGedreht === 0 && d.eingerastet === 0 && d.traegt > 0, d);
+// 3MF mit variabler Schichthöhe (automatisch bei Lithophanes)
+const s3 = await pg.evaluate(() => {
+  localStorage.removeItem('v3d_3mf_schicht');
+  const r = _build3mfBlob(objects), aus = _build3mfBlob(objects, { schicht: false });
+  return r.blob.arrayBuffer().then(buf => {
+    const f = fflate.unzipSync(new Uint8Array(buf)), t = f['Metadata/layer_heights_profile.txt'] ? fflate.strFromU8(f['Metadata/layer_heights_profile.txt']) : '';
+    const v = (t.split('|')[1] || '').split(';').map(Number);
+    return aus.blob.arrayBuffer().then(b2 => ({ hinweis: r.schicht, erste: v[1], n: v.length, ohne: !fflate.unzipSync(new Uint8Array(b2))['Metadata/layer_heights_profile.txt'] }));
+  });
+});
+ok('3MF: Schichtprofil bei Lithophane drin (Erste Schicht 0,2), ohne wenn abgeschaltet', s3.erste === 0.2 && s3.n > 100 && s3.ohne && /Schichthöhe eingetragen/.test(s3.hinweis || ''), s3);
 // Vorschau-Bild
 await pg.evaluate(async () => { Object.assign(_litho.p, { kWdh: 1 }); _openLithoModal(); _lithoSyncUI(); _gpvUpdate('litho'); await new Promise(r => setTimeout(r, 600)); });
 await pg.locator('#litho-modal .g3box').screenshot({ path: '/tmp/litho_kugel_dialog.png' });
