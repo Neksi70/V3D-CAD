@@ -38023,6 +38023,7 @@ function export3MF() { return _withPlateShift(_exportSrc(), _export3MF); }
 // Düse liegt oder die erste Schicht nicht exakt der des Prozesses entspricht —
 // darum Düse aus der Druck-Vorschau (Standard 0,4) und Bambu-Grenzen Düse×0,2…×0,7.
 const _SCHICHT_MODI = { auto: 'automatisch (bei Lithophanes)', an: 'immer', aus: 'aus' };
+const _LITHO_WAENDE = 12;
 function _schichtModus() { const m = localStorage.getItem('v3d_3mf_schicht'); return _SCHICHT_MODI[m] ? m : 'auto'; }
 function _schichtModusWeiter() {
   const f = ['auto', 'an', 'aus'], m = f[(f.indexOf(_schichtModus()) + 1) % 3];
@@ -38057,6 +38058,7 @@ function _export3MF() {
       if (r.colors > 1) notify('Filament-Zuordnung im Slicer: ' + r.legend.join('  '), 'ok');
       if (r.chroma) notify(r.chroma, /NICHT/.test(r.chroma) ? 'w' : 'ok');
       if (r.schicht) notify(r.schicht, 'ok');
+      if (r.litho) notify(r.litho, 'ok');
     });
   } catch(e) {
     console.error('3MF Export Fehler:', e);
@@ -38148,6 +38150,9 @@ function _build3mfBlob(expSrc, opt = {}) {
       geo.dispose();
     });
     const asmId = meshes.length + 1;
+    // Lithophane: Wand komplett aus Wandlinien (sauberere Helligkeitsverläufe als
+    // Füllmuster) — als Objekt-Einstellung, die Bambu Studio / Orca übernehmen
+    const litho = meshes.some(m => m.userData.type === 'litho');
     const modelName = _designFilename('3mf').replace(/\.3mf$/i, '');
     // 🎨 Chroma-Farbwechsel. Geprüft mit Bambu Studio 02.08 (CLI) und Orca-Quellcode:
     //  · Metadata/custom_gcode_per_layer.xml (Farbwechsel/Pause je Schicht) liest der
@@ -38209,7 +38214,7 @@ ${objXml.join('\n')}
     const cfg = `<?xml version="1.0" encoding="UTF-8"?>
 <config>
  <object id="${asmId}">
-  <metadata key="name" value="${modelName}"/>${(chrXml || chrRanges) ? `\n  <metadata key="layer_height" value="${chrC.lh}"/>` : ''}
+  <metadata key="name" value="${modelName}"/>${(chrXml || chrRanges) ? `\n  <metadata key="layer_height" value="${chrC.lh}"/>` : ''}${litho ? `\n  <metadata key="wall_loops" value="${_LITHO_WAENDE}"/>\n  <metadata key="sparse_infill_density" value="100%"/>` : ''}
 ${partXml.join('\n')}
  </object>
 </config>`;
@@ -38233,7 +38238,8 @@ ${partXml.join('\n')}
     const zipped = fflate.zipSync(dateien, { level: 6 });
     const blob3mf = new Blob([zipped], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
     const legend = [...colorIndex.entries()].sort((a, b) => a[1] - b[1]).map(([h, ix]) => (ix + 1) + '=#' + h);
-    return { blob: blob3mf, parts: meshes.length, colors: colorIndex.size, legend, chroma: chrHinweis, schicht: schichtHinweis };
+    return { blob: blob3mf, parts: meshes.length, colors: colorIndex.size, legend, chroma: chrHinweis, schicht: schichtHinweis,
+      litho: litho ? `🖼️ Lithophane: ${_LITHO_WAENDE} Wandschleifen + 100 % Füllung als Objekt-Einstellung eingetragen` : null };
 }
 
 // ═══ STEP LOKAL IM BROWSER ═══════════════════════════════════════════════════
@@ -38587,8 +38593,13 @@ async function _dvSend(was) {
     const h = await (await fetch(_V3D_HANDOFF_BASE + '/api/handoff', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: fname, dataB64: b64 }) })).json();
     if (!h.ok) throw new Error(h.error || 'Übergabe fehlgeschlagen');
-    const q = new URLSearchParams({ cad: '1', vendor: p.vendor, machine: p.machine, ftype: p.ftype, lh: p.lh, walls: p.walls,
-      infill: p.infill, support: p.support, load: h.url, name: fname });
+    // Lithophane: ganze Wand aus Wandlinien, sonst zeichnet das Füllmuster mit
+    let litho = false;
+    (function tr(list){ list.forEach(o => { if (o.userData && o.userData.type === 'litho') litho = true; if (o.children) tr(o.children); }); })(src);
+    const q = new URLSearchParams({ cad: '1', vendor: p.vendor, machine: p.machine, ftype: p.ftype, lh: p.lh,
+      walls: litho ? Math.max(p.walls, _LITHO_WAENDE) : p.walls,
+      infill: litho ? 100 : p.infill, support: p.support, load: h.url, name: fname });
+    if (litho && (p.walls < _LITHO_WAENDE || p.infill < 100)) notify(`Lithophane: an den Slicer gehen ${Math.max(p.walls, _LITHO_WAENDE)} Wände und 100 % Füllung`, 'ok');
     if (was === 'slice') q.set('autoslice', '1'); else q.set('then', 'proj');
     const url = _V3D_SLICER_URL + '?' + q.toString();
     if (win && !win.closed) win.location.href = url; else window.open(url, '_blank');
@@ -71695,8 +71706,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.259';
+const VOLME3D_VERSION = '1.18.260';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.260', date:'2026-10-24', changes:[
+    ['🖼️','<b>Lithophanes kommen mit passenden Druck-Einstellungen in den Slicer.</b> Beim <b>⬇ 3MF</b> bekommt ein Lithophane <b>12 Wandschleifen</b> und <b>100 % Füllung</b> als Objekt-Einstellung, die Bambu Studio und Orca direkt übernehmen. So besteht die Wand ganz aus Wandlinien, und das Füllmuster zeichnet sich im Licht nicht ab. Auch über die Druck-Vorschau gehen bei Lithophanes mindestens 12 Wände und 100 % an den Slicer. Den Vasenmodus bitte nicht verwenden: Er druckt nur eine gleich dicke Linie, damit wäre das Bild weg.'],
+  ]},
   { version:'1.18.259', date:'2026-10-24', changes:[
     ['📐','<b>Variable Schichthöhe schon im 3MF.</b> Beim <b>⬇ 3MF</b>-Export rechnet V3D CAD jetzt auf Wunsch die variable Schichthöhe mit, mit demselben Rechenkern wie der V3D Slicer: flache Stellen (Kuppeln, Reliefs, die Oberseite einer Kugel) werden fein, steile Wände grob gedruckt. Bambu Studio, OrcaSlicer und PrusaSlicer übernehmen das Profil direkt. Bei der Lithophane-Kugel sind es z. B. 549 Schichten von 0,09 bis 0,22 mm statt 425 mit festen 0,2 mm (getestet mit Bambu Studio). Einstellbar im Export-Menü unter <b>📐 Variable Schichthöhe im 3MF</b>: <b>automatisch</b> (nur bei Lithophanes, Standard), <b>immer</b> oder <b>aus</b>. Die Düse kommt aus der Druck-Vorschau (Standard 0,4 mm). Im Slicer müssen Düse und Erste Schicht dazu passen, sonst verwirft er das Profil. Auch die <b>📦 Projekt-3MF</b> aus Druck-Vorschau und V3D Slicer enthält die variable Schichthöhe jetzt.'],
   ]},

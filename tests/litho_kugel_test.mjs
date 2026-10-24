@@ -87,10 +87,12 @@ const s3 = await pg.evaluate(() => {
   return r.blob.arrayBuffer().then(buf => {
     const f = fflate.unzipSync(new Uint8Array(buf)), t = f['Metadata/layer_heights_profile.txt'] ? fflate.strFromU8(f['Metadata/layer_heights_profile.txt']) : '';
     const v = (t.split('|')[1] || '').split(';').map(Number);
-    return aus.blob.arrayBuffer().then(b2 => ({ hinweis: r.schicht, erste: v[1], n: v.length, ohne: !fflate.unzipSync(new Uint8Array(b2))['Metadata/layer_heights_profile.txt'] }));
+    const cfg = fflate.strFromU8(f['Metadata/model_settings.config']);
+    return aus.blob.arrayBuffer().then(b2 => ({ hinweis: r.schicht, erste: v[1], n: v.length, ohne: !fflate.unzipSync(new Uint8Array(b2))['Metadata/layer_heights_profile.txt'],
+      waende: /key="wall_loops" value="12"/.test(cfg) && /key="sparse_infill_density" value="100%"/.test(cfg) }));
   });
 });
-ok('3MF: Schichtprofil bei Lithophane drin (Erste Schicht 0,2), ohne wenn abgeschaltet', s3.erste === 0.2 && s3.n > 100 && s3.ohne && /Schichthöhe eingetragen/.test(s3.hinweis || ''), s3);
+ok('3MF: Schichtprofil (Erste Schicht 0,2) + 12 Wände/100 % bei Lithophane, Profil weg wenn abgeschaltet', s3.erste === 0.2 && s3.n > 100 && s3.ohne && s3.waende && /Schichthöhe eingetragen/.test(s3.hinweis || ''), s3);
 // Vorschau-Bild
 await pg.evaluate(async () => { Object.assign(_litho.p, { kWdh: 1 }); _openLithoModal(); _lithoSyncUI(); _gpvUpdate('litho'); await new Promise(r => setTimeout(r, 600)); });
 await pg.locator('#litho-modal .g3box').screenshot({ path: '/tmp/litho_kugel_dialog.png' });
