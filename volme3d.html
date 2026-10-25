@@ -6072,6 +6072,14 @@ Patrick</textarea>
           <button class="vtb on" data-v="1" title="Außen glatt wie eine Christbaumkugel, ausgeschaltet ist das Bild nur zu ahnen. Stützen liegen auf glatter Fläche statt auf dem Bild." onclick="_lithoSet('kInnen',true)">Relief innen</button>
           <button class="vtb" data-v="0" title="Das Bild ist auch ausgeschaltet als Struktur zu sehen und zu fühlen. Die Stützen der unteren Hälfte liegen aber auf dem Bild." onclick="_lithoSet('kInnen',false)">Relief außen</button>
         </div>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:4px" title="Die Außenhaut bekommt die Farben des Bildes – gedruckt mit mehreren Filamenten (AMS). Weiß bleibt das Lithophane."><input type="checkbox" id="lp-kFarbe" onchange="_lithoSet('kFarbe',this.checked)"> 🎨 Farbig (Mehrfarbdruck / AMS)</label>
+        <div id="litho-farb-box" style="display:none;margin:4px 0 6px;padding:6px 8px;border:1px solid #3a4256;border-radius:7px">
+          <div class="vrow"><label title="Wie viele Farben neben Weiß (= Filamente 2 …)">Farben</label> <input type="range" id="lp-kFarbN" min="1" max="8" value="4" step="1" oninput="document.getElementById('lv-kFarbN').textContent=this.value;_lithoSet('kFarbN',this.value)"><span class="vv" id="lv-kFarbN">4</span><span class="vu">+W</span></div>
+          <div class="vrow"><label title="Wie tief die Farbe von außen in die Wand geht – dahinter bleibt das weiße Lithophane. Wird als „Maximum width of a segmented region“ ins 3MF geschrieben.">Farbschicht</label> <input type="range" id="lp-kFarbTiefe" min="0.4" max="3" value="0.8" step="0.1" oninput="document.getElementById('lv-kFarbTiefe').textContent=this.value;_lithoSet('kFarbTiefe',this.value)"><span class="vv" id="lv-kFarbTiefe">0.8</span><span class="vu">mm</span></div>
+          <div id="litho-palette" style="display:flex;gap:6px;flex-wrap:wrap;margin:4px 0"></div>
+          <button class="vtb" onclick="_lithoPaletteAusBild()" title="Farben neu aus den Bildern bestimmen">↺ Farben aus Bild</button>
+          <div style="font-size:11px;color:#9fb0c4;margin-top:4px">Farbfelder auf deine echten Filamente stellen. Durchscheinende (Translucent) Filamente leuchten am schönsten.</div>
+        </div>
         <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:4px" title="Öse oben zum Aufhängen, fest angedruckt (nur wenn oben zu)"><input type="checkbox" id="lp-kOese" checked onchange="_lithoSet('kOese',this.checked)"> Aufhänge-Öse</label>
         </div>
         <span class="vsec" id="litho-mass-sec">Maße</span>
@@ -23139,6 +23147,7 @@ function buildObjectFromData(data) {
     if (data._mmuBase)  obj.userData._mmuBase  = data._mmuBase;
     if (data._mmuSlots) obj.userData._mmuSlots = data._mmuSlots;
   }
+  if (data._lithoFarbTiefe) obj.userData._lithoFarbTiefe = data._lithoFarbTiefe;
   if (data._dispKeep) obj.userData._dispKeep = data._dispKeep;
   if (data._origGeoData) obj.userData._origGeo = data._origGeoData.__snap
     ? _geoFromSnap(data._origGeoData.__snap)
@@ -23649,6 +23658,7 @@ function objectToData(o, modus) {
   }
   // Mehrfarb-Bemalung: Farben stecken im Geometrie-Attribut, hier nur Flag+Palette
   if (o.userData._mmuPaint) { d._mmuPaint = 1; d._mmuBase = o.userData._mmuBase; d._mmuSlots = o.userData._mmuSlots; }
+  if (o.userData._lithoFarbTiefe) d._lithoFarbTiefe = o.userData._lithoFarbTiefe;
   if (o.userData._hollowFlip)  d._hollowFlip = true;
   if (o.userData.bausatz)      d.bausatz = o.userData.bausatz;   // Rahmen kennt seine Originale (Teile freigeben)
   if (o.userData.displacementPattern && o.userData.displacementPattern !== 'keine') {
@@ -38154,6 +38164,7 @@ function _build3mfBlob(expSrc, opt = {}) {
     // Lithophane: Wand komplett aus Wandlinien (sauberere Helligkeitsverläufe als
     // Füllmuster) — als Objekt-Einstellung, die Bambu Studio / Orca übernehmen
     const litho = meshes.some(m => m.userData.type === 'litho');
+    const farbTiefe = meshes.reduce((a, m) => m.userData._lithoFarbTiefe > 0 ? m.userData._lithoFarbTiefe : a, 0);
     const modelName = _designFilename('3mf').replace(/\.3mf$/i, '');
     // 🎨 Chroma-Farbwechsel. Geprüft mit Bambu Studio 02.08 (CLI) und Orca-Quellcode:
     //  · Metadata/custom_gcode_per_layer.xml (Farbwechsel/Pause je Schicht) liest der
@@ -38215,7 +38226,7 @@ ${objXml.join('\n')}
     const cfg = `<?xml version="1.0" encoding="UTF-8"?>
 <config>
  <object id="${asmId}">
-  <metadata key="name" value="${modelName}"/>${(chrXml || chrRanges) ? `\n  <metadata key="layer_height" value="${chrC.lh}"/>` : ''}${litho ? `\n  <metadata key="wall_loops" value="${_LITHO_WAENDE}"/>\n  <metadata key="sparse_infill_density" value="100%"/>` : ''}
+  <metadata key="name" value="${modelName}"/>${(chrXml || chrRanges) ? `\n  <metadata key="layer_height" value="${chrC.lh}"/>` : ''}${litho ? `\n  <metadata key="wall_loops" value="${_LITHO_WAENDE}"/>\n  <metadata key="sparse_infill_density" value="100%"/>` : ''}${farbTiefe ? `\n  <metadata key="mmu_segmented_region_max_width" value="${farbTiefe}"/>` : ''}
 ${partXml.join('\n')}
  </object>
 </config>`;
@@ -63821,7 +63832,8 @@ function _createRk(){
 const _litho = { img:null, lum:null, cols:0, rows:0, aspect:1,
   p:{ width:100, maxT:3.0, minT:0.8, res:500, frame:0, invert:false,
        form:'flach', kD:80, kUnten:30, kOben:0, kVon:-45, kBis:60, kWinkel:360, kWdh:1,
-       kRand:3, kFit:'einpassen', kInnen:true, kOese:true, kDeckel:true, tlD:38, tlSpiel:0.4 } };
+       kRand:3, kFit:'einpassen', kInnen:true, kOese:true, kDeckel:true, tlD:38, tlSpiel:0.4,
+       kFarbe:false, kFarbN:4, kFarbTiefe:0.8, kPalette:[] } };
 function _lithoSampleIn(T){
   if(!T.img) return;
   // Der Deckel lag bei 360 Spalten — damit blieb das Relief auch am Reglerende
@@ -63836,19 +63848,21 @@ function _lithoSampleIn(T){
   ctx.drawImage(T.img,0,0,cols,rows);
   const d=ctx.getImageData(0,0,cols,rows).data, lum=new Float32Array(cols*rows);
   for(let i=0;i<cols*rows;i++){ lum[i]=(0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2])/255; }
-  T.lum=lum; T.cols=cols; T.rows=rows;
+  const rgb=new Uint8Array(cols*rows*3); for(let i=0;i<cols*rows;i++){ rgb[i*3]=d[i*4]; rgb[i*3+1]=d[i*4+1]; rgb[i*3+2]=d[i*4+2]; }
+  T.lum=lum; T.rgb=rgb; T.cols=cols; T.rows=rows;
   // Zweites, grobes Raster nur für die Vorschau: bei 900 Spalten dauert ein
   // Aufbau über eine halbe Sekunde — beim Reglerziehen wäre das zäh. Erstellt
   // wird natürlich mit der vollen Auflösung.
   const pc=Math.max(20,Math.min(cols,240)), pr=Math.max(20,Math.round(pc/T.aspect));
-  if(pc===cols){ T.prev={lum,cols,rows}; return; }
+  if(pc===cols){ T.prev={lum,rgb,cols,rows}; return; }
   const c2=document.createElement('canvas'); c2.width=pc; c2.height=pr;
   const x2=c2.getContext('2d');
   x2.imageSmoothingEnabled=true; x2.imageSmoothingQuality='high';
   x2.drawImage(T.img,0,0,pc,pr);
   const d2=x2.getImageData(0,0,pc,pr).data, l2=new Float32Array(pc*pr);
   for(let i=0;i<pc*pr;i++){ l2[i]=(0.299*d2[i*4]+0.587*d2[i*4+1]+0.114*d2[i*4+2])/255; }
-  T.prev={lum:l2, cols:pc, rows:pr};
+  const c2rgb=new Uint8Array(pc*pr*3); for(let i=0;i<pc*pr;i++){ c2rgb[i*3]=d2[i*4]; c2rgb[i*3+1]=d2[i*4+1]; c2rgb[i*3+2]=d2[i*4+2]; }
+  T.prev={lum:l2, rgb:c2rgb, cols:pc, rows:pr};
 }
 // Mehrere Bilder (Kugel: nebeneinander rundum, bis 5). Das erste spiegelt sich
 // in _litho.img/lum/… — die flache Platte und alte Aufrufe nutzen nur das.
@@ -63858,11 +63872,11 @@ function _lithoSample(){
   if(!_litho.bilder.length){ if(_litho.img) _lithoSampleIn(_litho); return; }
   _litho.bilder.forEach(_lithoSampleIn);
   const b=_litho.bilder[0];
-  Object.assign(_litho,{img:b.img, aspect:b.aspect, lum:b.lum, cols:b.cols, rows:b.rows, prev:b.prev});
+  Object.assign(_litho,{img:b.img, aspect:b.aspect, lum:b.lum, rgb:b.rgb, cols:b.cols, rows:b.rows, prev:b.prev});
 }
 function _lithoBilder(){
   if(_litho.bilder.length) return _litho.bilder;
-  return _litho.lum ? [{img:_litho.img, aspect:_litho.aspect||1, lum:_litho.lum, cols:_litho.cols, rows:_litho.rows, prev:_litho.prev}] : [];
+  return _litho.lum ? [{img:_litho.img, aspect:_litho.aspect||1, lum:_litho.lum, rgb:_litho.rgb, cols:_litho.cols, rows:_litho.rows, prev:_litho.prev}] : [];
 }
 function _buildLithoGeo(vorschau){
   if(_litho.p.form==='kugel') return _buildLithoKugelGeo(vorschau);
@@ -63998,6 +64012,9 @@ function _buildLithoKugelGeo(vorschau){
   // Sonst sieht man bei Relief innen nur eine glatte Kugel und kein Foto.
   const glow=t=>{ const b=0.38+0.62*Math.pow(1-Math.max(0,Math.min(1,(t-tMin)/Math.max(1e-6,tMax-tMin))),1.3); col.push(b,b*0.86,b*0.62); };
   const pt=(r,th,ph)=>[r*Math.cos(ph)*Math.sin(th), r*Math.sin(ph), r*Math.cos(ph)*Math.cos(th)];
+  // 🎨 Farbig: Palettenfarbe (0…1) der Außenhaut, null = Grundfarbe
+  const farbe=(vorschau && P.kFarbe && lum) ? (()=>{ const fi=_lithoKugelFarbIdx(true), pal=_lithoPaletteRGB();
+    return (th,ph)=>{ const k=fi(th,ph); return k>0 ? pal[k] : null; }; })() : null;
   const j0=ou?0:1, j1=oo?Nv:Nv-1;                             // Ringe (Pole getrennt)
   const nR=j1-j0+1;
   const O=(j,i)=>((j-j0)*Nu+((i%Nu)+Nu)%Nu)*2, I=(j,i)=>O(j,i)+1;
@@ -64013,7 +64030,11 @@ function _buildLithoKugelGeo(vorschau){
         o=pt(R,th,ph); n=[ro.rLoch*Math.sin(th), y, ro.rLoch*Math.cos(th)];
       }
       pos.push(o[0],o[1],o[2], n[0],n[1],n[2]);
-      if(vorschau){ glow(t); glow(t); }
+      if(vorschau){
+        glow(t);
+        if(farbe){ const c=farbe(th,ph); if(c){ const L=col.length; col[L-3]*=c[0]*1.15; col[L-2]*=c[1]*1.15/0.86; col[L-1]*=c[2]*1.15/0.62; } }
+        glow(t);
+      }
     }
   }
   for(let j=j0;j<j1;j++) for(let i=0;i<Nu;i++){               // Außen + Innen
@@ -64042,6 +64063,7 @@ function _buildLithoKugelGeo(vorschau){
   g.setIndex(idx);
   // Unterkante auf y = 0
   const yMin=ou? R*Math.sin(phiB) : -(P.kInnen?R:R-tMax+thick(0,-Math.PI/2));
+  _litho._kugelMitteY=-yMin;
   g.translate(0,-yMin,0);
   _litho._fussR=ou? R*Math.cos(phiB) : 0;          // Außenradius des Standrings (für den Deckel)
   if(vorschau){
@@ -64076,6 +64098,105 @@ function _buildLithoKugelGeo(vorschau){
 // flache Rast-Mulde (Schwerkraft hält sie dort, zum Lösen leicht anheben).
 // Beide Teile drucken ohne Stützen: Kugel auf dem Standring, Deckel Platte unten.
 // Alle Maße in App-Einheiten (cm).
+// ── 🎨 Farbige Kugel: Außenhaut je Dreieck in einer Filamentfarbe ───────────
+// Palette = Weiß (Filament 1, das Lithophane) + N Farben, automatisch per k-Means
+// (Lab) aus den Bildern, von Hand änderbar. Die Bemalung läuft im Format des
+// 🖍️ Facettenmalens (flache Vertexfarben, _mmuPaint/_mmuBase/_mmuSlots) → der
+// 3MF-Export schreibt paint_color. Wie tief die Farbe in die Wand geht, regelt
+// mmu_segmented_region_max_width (Objekt-Einstellung) — dahinter bleibt Weiß.
+function _lithoLab(r,g,b){ const o=[0,0,0]; _chrLab(_chrLin(r/255),_chrLin(g/255),_chrLin(b/255),o,0); return o; }
+function _lithoHexRGB(h){ const n=parseInt(String(h).slice(1),16); return [(n>>16&255)/255,(n>>8&255)/255,(n&255)/255]; }
+function _lithoPaletteRGB(){ return [[1,1,1], ..._litho.p.kPalette.map(_lithoHexRGB)]; }
+function _lithoPaletteAusBild(still){
+  const B=_lithoBilder(), N=Math.max(1,Math.min(8,Math.round(_litho.p.kFarbN)));
+  const pts=[];
+  for(const b of B){ const q=b.prev&&b.prev.rgb?b.prev:b; if(!q.rgb) continue;
+    const n=q.cols*q.rows, step=Math.max(1,Math.floor(n/6000));
+    for(let i=0;i<n;i+=step) pts.push(_lithoLab(q.rgb[i*3],q.rgb[i*3+1],q.rgb[i*3+2])); }
+  if(!pts.length){ _litho.p.kPalette=[]; return; }
+  const d2=(a,b)=>(a[0]-b[0])**2+(a[1]-b[1])**2+(a[2]-b[2])**2;
+  // Start: die HÄUFIGSTEN Farben (grobes Lab-Raster), untereinander und zu Weiß
+  // deutlich verschieden. k-Means++ (entfernteste zuerst) griff Kantenpixel
+  // zwischen Rot und Blau als eigenes Lila heraus. Weiß ist festes Zentrum 0.
+  const C=[[100,0,0]], fach=new Map();
+  for(const p of pts){ const k=Math.round(p[0]/8)+'|'+Math.round(p[1]/10)+'|'+Math.round(p[2]/10);
+    const e=fach.get(k); if(e){ e.n++; e.s[0]+=p[0]; e.s[1]+=p[1]; e.s[2]+=p[2]; } else fach.set(k,{n:1,s:p.slice()}); }
+  const kand=[...fach.values()].sort((a,b)=>b.n-a.n).map(e=>[e.s[0]/e.n,e.s[1]/e.n,e.s[2]/e.n]);
+  for(const minD of [25,15,8,0]){
+    for(const c of kand){ if(C.length>=N+1) break; if(C.every(z=>d2(z,c)>=minD*minD)) C.push(c); }
+    if(C.length>=N+1) break;
+  }
+  for(let it=0;it<14;it++){
+    const S=C.map(()=>[0,0,0,0]);
+    for(const p of pts){ let k=0, bd=1e18; for(let j=0;j<C.length;j++){ const d=d2(C[j],p); if(d<bd){ bd=d; k=j; } } const s=S[k]; s[0]+=p[0]; s[1]+=p[1]; s[2]+=p[2]; s[3]++; }
+    for(let j=1;j<C.length;j++) if(S[j][3]) C[j]=[S[j][0]/S[j][3], S[j][1]/S[j][3], S[j][2]/S[j][3]];
+  }
+  // Lab → sRGB-Hex
+  const hex=L=>{ const fy=(L[0]+16)/116, fx=fy+L[1]/500, fz=fy-L[2]/200, f=t=>t**3>0.008856?t**3:(t-16/116)/7.787;
+    const X=0.95047*f(fx), Y=f(fy), Z=1.08883*f(fz);
+    const r=3.2406*X-1.5372*Y-0.4986*Z, g=-0.9689*X+1.8758*Y+0.0415*Z, b=0.0557*X-0.2040*Y+1.0570*Z;
+    return '#'+[r,g,b].map(v=>Math.max(0,Math.min(255,Math.round(_chrGam(Math.max(0,v))*255))).toString(16).padStart(2,'0')).join(''); };
+  _litho.p.kPalette=C.slice(1).sort((a,b)=>a[0]-b[0]).map(hex);
+  if(!still){ _lithoFarbUI(); if(_gpv['litho']) _gpvUpdate('litho'); }
+}
+// (θ,φ) → Palettenindex (0 = Weiß/Grundfarbe), über dieselben Bildfelder wie die Wandstärke
+function _lithoKugelFarbIdx(vorschau){
+  const B=_lithoBilder(), M=_lithoKugelMap(), Q=B.map(b=>(vorschau&&b.prev&&b.prev.rgb)?b.prev:b);
+  const palLab=_lithoPaletteRGB().map(c=>_lithoLab(c[0]*255,c[1]*255,c[2]*255));
+  const wrap=a=>{ while(a>Math.PI)a-=2*Math.PI; while(a<-Math.PI)a+=2*Math.PI; return a; };
+  const cache=new Map();
+  return (th,ph)=>{
+    if(ph<M.vMin||ph>M.vMax) return 0;
+    for(const f of M.felder){
+      if(ph<f.vA||ph>f.vB) continue;
+      const d=wrap(th-f.m); if(Math.abs(d)>f.Hc/2) continue;
+      const q=Q[f.bi]; if(!q||!q.rgb) return 0;
+      const u=f.u0+(d/f.Hc+0.5)*(f.u1-f.u0), v=f.v0+((f.vB-ph)/(f.vB-f.vA))*(f.v1-f.v0);
+      const x=Math.max(0,Math.min(q.cols-1,Math.round(u*(q.cols-1)))), z=Math.max(0,Math.min(q.rows-1,Math.round(v*(q.rows-1))));
+      const o=(z*q.cols+x)*3, key=(q.rgb[o]<<16)|(q.rgb[o+1]<<8)|q.rgb[o+2];
+      let k=cache.get(key);
+      if(k===undefined){ const L=_lithoLab(q.rgb[o],q.rgb[o+1],q.rgb[o+2]); let bd=1e18; k=0;
+        for(let j=0;j<palLab.length;j++){ const dd=(palLab[j][0]-L[0])**2+(palLab[j][1]-L[1])**2+(palLab[j][2]-L[2])**2; if(dd<bd){ bd=dd; k=j; } }
+        cache.set(key,k); }
+      return k;
+    }
+    return 0;
+  };
+}
+// Fertige Kugel (nach dem Vereinen mit Öse/Hals) bemalen: Dreiecke der Außenhaut
+// nach Lage (θ,φ) einfärben, alles andere (Innenseite, Öse, Hals) bleibt Grundfarbe.
+function _lithoKugelBemalen(mesh){
+  const P=_litho.p, R=Math.max(20,P.kD)/20, tMax=Math.max(0.2,P.maxT)/10, tMin=Math.max(0.1,Math.min(P.minT,P.maxT-0.1))/10;
+  let g=mesh.geometry; if(g.index){ const ng=g.toNonIndexed(); g.dispose(); g=ng; mesh.geometry=ng; }
+  const pos=g.attributes.position.array, n=pos.length/9, cy=_litho._kugelMitteY||0;
+  const schwelle=P.kInnen? R-tMin*0.5 : R-tMax+tMin*0.5;
+  const fi=_lithoKugelFarbIdx(false), pal=_lithoPaletteRGB(), base=_lithoHexRGB(mesh.userData.color||'#ffffff');
+  const col=new Float32Array(pos.length); let bemalt=0;
+  for(let t=0;t<n;t++){
+    const o=t*9;
+    const cx=(pos[o]+pos[o+3]+pos[o+6])/3, cyy=(pos[o+1]+pos[o+4]+pos[o+7])/3-cy, cz=(pos[o+2]+pos[o+5]+pos[o+8])/3;
+    const ux=pos[o+3]-pos[o], uy=pos[o+4]-pos[o+1], uz=pos[o+5]-pos[o+2], vx=pos[o+6]-pos[o], vy=pos[o+7]-pos[o+1], vz=pos[o+8]-pos[o+2];
+    const nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx, nl=Math.hypot(nx,ny,nz), r=Math.hypot(cx,cyy,cz);
+    let k=0;
+    if(nl>0 && r>schwelle && r<R+0.02 && (nx*cx+ny*cyy+nz*cz)/(nl*r)>0.3) k=fi(Math.atan2(cx,cz), Math.asin(Math.max(-1,Math.min(1,cyy/r))));
+    const c=k>0?pal[k]:base; if(k>0) bemalt++;
+    for(let v=0;v<3;v++){ col[o+v*3]=c[0]; col[o+v*3+1]=c[1]; col[o+v*3+2]=c[2]; }
+  }
+  g.setAttribute('color',new THREE.BufferAttribute(col,3));
+  mesh.material.vertexColors=true; mesh.material.color.set('#ffffff'); mesh.material.needsUpdate=true;
+  mesh.userData._mmuPaint=1; mesh.userData._mmuBase=mesh.userData.color||'#ffffff'; mesh.userData._mmuSlots=_litho.p.kPalette.slice();
+  mesh.userData._lithoFarbTiefe=P.kFarbTiefe;
+  return bemalt;
+}
+function _lithoPalSet(i,v){ _litho.p.kPalette[i]=v; if(_gpv['litho']) _gpvUpdate('litho'); }
+function _lithoFarbUI(){
+  const P=_litho.p, box=document.getElementById('litho-farb-box'); if(!box) return;
+  box.style.display=P.kFarbe?'':'none';
+  const pl=document.getElementById('litho-palette'); if(!pl) return;
+  const sw=(inner,tip)=>`<label title="${tip}" style="display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10px;color:#9fb0c4">${inner}</label>`;
+  pl.innerHTML=sw(`<span style="width:30px;height:24px;border-radius:5px;background:#fff;border:1px solid #4a5266;display:block"></span>F1`,'Filament 1: Weiß – das Lithophane selbst')
+    + P.kPalette.map((h,i)=>sw(`<input type="color" value="${h}" oninput="_lithoPalSet(${i},this.value)" style="width:30px;height:24px;padding:0;border:1px solid #4a5266;border-radius:5px;background:none;cursor:pointer">F${i+2}`,'Filament '+(i+2)+' – auf die echte Filamentfarbe stellen')).join('');
+}
 function _lithoDeckelAn(){ const P=_litho.p; return P.form==='kugel' && !!P.kDeckel; }
 function _lithoDeckelMasse(){
   const P=_litho.p, sp=Math.max(0.02,P.tlSpiel/10), tl=Math.max(1,P.tlD/20);
@@ -64211,6 +64332,9 @@ function _lithoSyncUI(){
   for(const k of ['kD','kUnten','kOben','kVon','kBis','kWinkel','kWdh','kRand']) set('lp-'+k,'lv-'+k,P[k]);
   { const c=document.getElementById('lp-kOese'); if(c) c.checked=!!P.kOese; }
   { const c=document.getElementById('lp-kDeckel'); if(c) c.checked=!!P.kDeckel; }
+  { const c=document.getElementById('lp-kFarbe'); if(c) c.checked=!!P.kFarbe; }
+  set('lp-kFarbN','lv-kFarbN',P.kFarbN); set('lp-kFarbTiefe','lv-kFarbTiefe',P.kFarbTiefe);
+  _lithoFarbUI();
   set('lp-tlD','lv-tlD',P.tlD); set('lp-tlSpiel','lv-tlSpiel',P.tlSpiel);
   { const e=document.getElementById('litho-deckel-box'); if(e) e.style.display=P.kDeckel?'':'none'; }
   { const u=document.getElementById('lp-kUnten'), uv=document.getElementById('lv-kUnten');
@@ -64225,7 +64349,9 @@ function _lithoSyncUI(){
 }
 let _lithoRT=null;
 function _lithoSet(k,v){
-  _litho.p[k]=(k==='invert'||k==='kInnen'||k==='kOese'||k==='kDeckel')?!!v:parseFloat(v);
+  _litho.p[k]=(k==='invert'||k==='kInnen'||k==='kOese'||k==='kDeckel'||k==='kFarbe')?!!v:parseFloat(v);
+  if((k==='kFarbe'&&v&&!_litho.p.kPalette.length)||k==='kFarbN') _lithoPaletteAusBild(true);
+  if(k==='kFarbe'||k==='kFarbN') _lithoFarbUI();
   if(k==='res' && _litho.img) _lithoSample();
   if(k==='kOben'||k==='kUnten'||k==='kOese'||k==='kInnen'||k==='kDeckel'||k==='tlD'||k==='tlSpiel'){ _lithoSyncUI(); }
   _lithoInfo();
@@ -64249,7 +64375,8 @@ function _lithoFile(ev){
 function _lithoBildWeg(i){ const b=_litho.bilder.splice(i,1)[0]; if(b&&b.url) setTimeout(()=>URL.revokeObjectURL(b.url),1000); _lithoBilderNeu(); }
 function _lithoBildVor(i){ if(i<1) return; const B=_litho.bilder; [B[i-1],B[i]]=[B[i],B[i-1]]; _lithoBilderNeu(); }
 function _lithoBilderNeu(){
-  if(!_litho.bilder.length) Object.assign(_litho,{img:null, lum:null, prev:null, cols:0, rows:0, aspect:1});
+  if(!_litho.bilder.length) Object.assign(_litho,{img:null, lum:null, rgb:null, prev:null, cols:0, rows:0, aspect:1});
+  if(_litho.p.kFarbe) _lithoPaletteAusBild(true);
   _lithoSample();
   const btn=document.getElementById('litho-create-btn'); if(btn) btn.disabled=!_litho.lum;
   _lithoBilderUI(); _lithoInfo();
@@ -64300,7 +64427,8 @@ async function _createLitho(){
     if(btn) btn.disabled=false;
   }
   saveUndo();
-  const color=currentColor;
+  // farbige Kugel: Körper = Filament 1 = Weiß (das Lithophane), Farben = Filament 2 …
+  const color=(kugel && _litho.p.kFarbe && _litho.p.kPalette.length) ? '#ffffff' : currentColor;
   const mat=new THREE.MeshStandardMaterial({color:new THREE.Color(color),roughness:0.6,metalness:0.0,side:THREE.DoubleSide});
   const mesh=new THREE.Mesh(geo,mat); mesh.castShadow=true; mesh.receiveShadow=true;
   mesh.quaternion.copy(_wpMakeQuat(workplaneNormal)); mesh.position.copy(workplanePoint);
@@ -64308,6 +64436,11 @@ async function _createLitho(){
   const lbl=kugel? 'Lithophane-Kugel Ø'+_litho.p.kD+'mm' : 'Lithophane '+_litho.p.width+'mm';
   mesh.userData={id:idCtr++,type:'litho',shapeType:'custom',name:lbl+' #'+typeCounts['litho'],
     color,isHole:false,fillet:0,chamfer:0};
+  let farbHinweis='';
+  if(kugel && _litho.p.kFarbe && _litho.p.kPalette.length){
+    try{ const nb=_lithoKugelBemalen(mesh); farbHinweis=` · 🎨 ${nb.toLocaleString('de-DE')} Dreiecke in ${_litho.p.kPalette.length} Farben bemalt (Filament 1 = Weiß)`; }
+    catch(e){ console.error('Lithophane-Farbe:',e); notify('Bemalen fehlgeschlagen – Kugel ist weiß','w'); }
+  }
   scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
   const neu=[mesh];
   if(deckelGeo){                                   // Deckel neben der Kugel, Platte unten
@@ -64322,7 +64455,8 @@ async function _createLitho(){
     scene.add(dm); objects.push(dm); _updateObjEdgeLines(dm); neu.push(dm);
   }
   selectObjs(neu); updateTree(); fitToObjects(neu);
-  if(deckelGeo) notify('Kugel + Teelicht-Deckel erstellt — Deckel mit der Platte nach unten drucken. Einsetzen: Nasen in die Kerben, 60° drehen, einrasten lassen.','ok');
+  if(deckelGeo) notify('Kugel + Teelicht-Deckel erstellt — Deckel mit der Platte nach unten drucken. Einsetzen: Nasen in die Kerben, 60° drehen, einrasten lassen.'+farbHinweis,'ok');
+  else if(farbHinweis) notify('Lithophane-Kugel erstellt'+farbHinweis,'ok');
   else notify(kugel? 'Lithophane-Kugel erstellt — auf der unteren Öffnung stehend drucken, Baum-Stützen, weißes Filament, 100 % Füllung'
               : 'Lithophane erstellt — Tipp: für Hintergrundlicht am besten stehend drucken','ok');
   _closeLithoModal();
@@ -71752,8 +71886,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.261';
+const VOLME3D_VERSION = '1.18.262';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.262', date:'2026-10-25', changes:[
+    ['🎨','<b>Lithophane-Kugel in Farbe.</b> Neuer Haken <b>🎨 Farbig (Mehrfarbdruck / AMS)</b> im Kugel-Dialog. Die Außenhaut der Kugel bekommt die Farben des Bildes, das Relief innen bleibt das weiße Lithophane: Ausgeschaltet sieht man das farbige Bild, mit LED leuchtet es farbig. Die Farben (1–8 neben Weiß) werden automatisch aus dem Bild bestimmt, jedes Farbfeld lässt sich auf das echte Filament umstellen. <b>Farbschicht</b> legt fest, wie tief die Farbe in die Wand geht (Standard 0,8 mm), das wird als Slicer-Einstellung mitgegeben. Beim <b>⬇ 3MF</b> kommt die Bemalung direkt mit: Filament 1 = Weiß, Filament 2 … = Farben. Mit Bambu Studio getestet. Die Druckzeit steigt deutlich, weil viele Farbwechsel nötig sind.'],
+  ]},
   { version:'1.18.261', date:'2026-10-24', changes:[
     ['🖼️','<b>Lithophane-Kugel mit bis zu 5 Bildern.</b> Statt „Bild ersetzen“ gibt es jetzt <b>＋ Bild hinzufügen</b>. Du kannst auch mehrere Bilder auf einmal auswählen. Die Bilder erscheinen als kleine Vorschau: ✕ entfernt ein Bild, ◀ rückt es eins nach vorn. Auf der Kugel liegen sie nebeneinander rundum, Bild 1 vorne, jedes mit seinem eigenen Seitenverhältnis. <b>Wiederholen</b> legt die ganze Reihe mehrmals herum, und der Hinweis sagt, wie oft sie hinpasst. Die flache Platte nutzt das erste Bild.'],
   ]},

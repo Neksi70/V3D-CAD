@@ -68,6 +68,28 @@ const mb = await pg.evaluate(async () => {
   _litho.bilder.length = 0; _lithoBilderNeu(); r.leer = !_litho.lum; return r;
 });
 ok('3 Bilder × 2: Felder 012012, Bild 1 vorn, Netz dicht; alle entfernt = kein Bild', mb.felder === '012012' && mb.vorn === 0 && mb.teile === 1 && mb.erste && mb.leer, mb);
+// 🎨 Farbig: Palette aus dem Bild, Außenhaut bemalt, Grundfarbe Weiß, 3MF mit paint_color + Farbschicht-Tiefe
+const fb = await pg.evaluate(async () => {
+  objects.slice().forEach(o => scene.remove(o)); objects.length = 0;
+  const c = document.createElement('canvas'); c.width = 300; c.height = 300; const x = c.getContext('2d');
+  x.fillStyle = '#fff'; x.fillRect(0, 0, 300, 300); x.fillStyle = '#1050c0'; x.fillRect(0, 0, 150, 300); x.fillStyle = '#d01020'; x.fillRect(150, 100, 150, 100);
+  const img = new Image(); await new Promise(r => { img.onload = r; img.src = c.toDataURL(); });
+  _litho.bilder.length = 0; _litho.bilder.push({ img, url: img.src, aspect: 1, name: 'f' });
+  Object.assign(_litho.p, { form: 'kugel', kWinkel: 360, kWdh: 1, kFit: 'einpassen', kDeckel: false, kOese: true, kFarbe: true, kFarbN: 2, kFarbTiefe: 0.8 });
+  _lithoBilderNeu(); _lithoPaletteAusBild(true);
+  const pal = _litho.p.kPalette.slice();
+  await _createLitho();
+  const k = objects.find(o => /Kugel/.test(o.userData.name));
+  const r3 = _build3mfBlob(objects), f = fflate.unzipSync(new Uint8Array(await r3.blob.arrayBuffer()));
+  const model = fflate.strFromU8(f['3D/3dmodel.model']), cfg = fflate.strFromU8(f['Metadata/model_settings.config']);
+  const codes = {}; for (const m of model.matchAll(/paint_color="([0-9A-F]+)"/g)) codes[m[1]] = (codes[m[1]] || 0) + 1;
+  const res = { pal, legend: r3.legend, codes, tiefe: /mmu_segmented_region_max_width" value="0.8"/.test(cfg), mmu: k.userData._mmuPaint };
+  _litho.p.kFarbe = false; objects.slice().forEach(o => scene.remove(o)); objects.length = 0; return res;
+});
+const nahe = (h, z) => { const a = parseInt(h.slice(1), 16), b = parseInt(z.slice(1), 16); return Math.abs((a >> 16) - (b >> 16)) + Math.abs((a >> 8 & 255) - (b >> 8 & 255)) + Math.abs((a & 255) - (b & 255)) < 60; };
+ok('🎨 Palette = Blau + Rot aus dem Bild, Filament 1 Weiß, Bemalung F2+F3 im 3MF, Farbschicht 0,8 mm',
+  fb.pal.length === 2 && fb.pal.some(h => nahe(h, '#1050c0')) && fb.pal.some(h => nahe(h, '#d01020')) && fb.legend[0] === '1=#FFFFFF'
+  && fb.codes['8'] > 100 && fb.codes['0C'] > 100 && fb.tiefe && fb.mmu === 1, fb);
 // Teelicht-Deckel (Bajonett): zwei Teile, Passung per Schnittvolumen
 await pg.reload(); await pg.waitForFunction(() => typeof _lithoDeckelGeo === 'function', null, { timeout: 30000 });
 await pg.evaluate(async () => {
@@ -108,7 +130,7 @@ const s3 = await pg.evaluate(() => {
 ok('3MF: Schichtprofil (Erste Schicht 0,2) + 12 Wände/100 % bei Lithophane, Profil weg wenn abgeschaltet', s3.erste === 0.2 && s3.n > 100 && s3.ohne && s3.waende && /Schichthöhe eingetragen/.test(s3.hinweis || ''), s3);
 // Vorschau-Bild
 await pg.evaluate(async () => { Object.assign(_litho.p, { kWdh: 1 }); _openLithoModal(); _lithoSyncUI(); _gpvUpdate('litho'); await new Promise(r => setTimeout(r, 600)); });
-await pg.locator('#litho-modal .g3box').screenshot({ path: '/tmp/litho_kugel_dialog.png' });
+await pg.screenshot({ path: '/tmp/litho_kugel_dialog.png' });   // Element-Screenshot wartet auf „stabil“ – nach den schweren Kugeln zu lange
 ok('keine Seitenfehler', errs.length === 0, errs);
 await b.close();
 console.log(fehler ? `\n${fehler} FEHLER` : '\nalles grün'); process.exit(fehler ? 1 : 0);
