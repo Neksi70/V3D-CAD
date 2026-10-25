@@ -4,7 +4,8 @@
 //   3. Flamme (eingesteckt) berührt den Sockel nicht: Schnittvolumen ≈ 0
 //   4. Kragen der Flamme: innen Platz fürs Teelicht
 //   5. Überhang der Flamme außen höchstens ~55° (Druck ohne Stützen)
-//   6. Erstellen legt zwei Teile an, Bild für die Sichtkontrolle
+//   6. Erstellen legt Feuer + Geist-Teile an, Bild für die Sichtkontrolle
+//   7. Geist, Mütze, Sitzstamm, Stock: je ein dichtes Stück, unten eben; zusammengesteckt keine Überschneidung
 // Start: python3 volme3d_server.py 8766 --dev   →   node tests/lagerfeuer_test.mjs
 import { chromium } from 'playwright';
 
@@ -98,6 +99,39 @@ for (const v of varianten) {
   ok(v.name + ': Überhang ≤ 57° (Fläche < 0,5 %)', r.ueberhangAnteil < 0.5, [r.ueberhangAnteil, r.worst]);
 }
 
+// 7. Geist: Teile einzeln dicht, unten eben; zusammengesteckt nichts überschneidet sich
+for (const gv of [{ name: 'Geist Standard', p: {} }, { name: 'Geist groß, ohne Mütze', p: { geistH: 110, muetze: 0 } },
+                  { name: 'Geist klein, Maxi-Feuer', p: { geistH: 40, licht: 58, breite: 100 } }]) {
+  const r = await pg.evaluate(p => {
+    Object.assign(_lgfP, _LGF_DEF, p);
+    const w = _mfWasm, d = _lgfDims(_lgfP), t0 = performance.now();
+    const R = _lgfGeistBuild(w, _lgfP, d, 'fein'), ms = performance.now() - t0;
+    const teile = {};
+    for (const k in R.out) {
+      const m = R.out[k], bb = m.boundingBox();
+      teile[k] = { parts: m.decompose().length, vol: Math.round(m.volume()), yMin: +bb.min[1].toFixed(3), tris: m.numTri(), genus: m.genus() };
+    }
+    const fl = _lgfFlameBuild(w, _lgfP, d, 'vorschau'), ba = _lgfBaseBuild(w, _lgfP, d, 'vorschau', fl.F);
+    const flm = _mfFromSoup(w, fl.geo.toNonIndexed().attributes.position.array).translate([0, d.boden, 0]);
+    const bam = _mfFromSoup(w, ba.geo.toNonIndexed().attributes.position.array);
+    const pl = Object.fromEntries(_lgfGeistPlace(R)); pl.flamme = flm; pl.sockel = bam;
+    const keys = Object.keys(pl), ueber = {};
+    for (let i = 0; i < keys.length; i++) for (let j = i + 1; j < keys.length; j++) {
+      const c = pl[keys[i]].intersect(pl[keys[j]]), v = c.volume(); c.delete();
+      if (v > 0.01) ueber[keys[i] + '∩' + keys[j]] = +v.toFixed(2);
+    }
+    for (const k in pl) pl[k].delete(); for (const k in R.out) R.out[k].delete();
+    return { ms: Math.round(ms), teile, ueber, Lst: +R.g.Lst.toFixed(1) };
+  }, gv.p);
+  console.log('— ' + gv.name, JSON.stringify(r));
+  for (const [k, t] of Object.entries(r.teile)) {
+    ok(gv.name + ': ' + k + ' ein Stück, dicht', t.parts === 1 && t.vol > 0, t);
+    ok(gv.name + ': ' + k + ' unten auf y=0', Math.abs(t.yMin) < 0.02, t.yMin);
+  }
+  ok(gv.name + ': Mütze nur wenn gewählt', !!r.teile.muetze === (gv.p.muetze !== 0), Object.keys(r.teile));
+  ok(gv.name + ': zusammengesteckt keine Überschneidung', Object.keys(r.ueber).length === 0, r.ueber);
+}
+
 // 6. Klickweg: Generator-Liste → Dialog → Erstellen
 await pg.evaluate(() => Object.assign(_lgfP, _LGF_DEF));
 const n0 = await pg.evaluate(() => objects.length);
@@ -106,9 +140,9 @@ await pg.waitForFunction(() => document.getElementById('lgf-modal').classList.co
 await pg.waitForTimeout(800);
 await pg.locator('#lgf-modal .g3box').screenshot({ path: '/tmp/lgf/dialog.png' });
 await pg.evaluate(() => _lgfCreate());
-await pg.waitForFunction(n => objects.length >= n + 2, n0, { timeout: 60000 });
+await pg.waitForFunction(n => objects.length >= n + 6, n0, { timeout: 60000 });
 const names = await pg.evaluate(n => objects.slice(n).map(o => o.userData.name), n0);
-ok('Erstellen: zwei Teile', names.length === 2 && names.some(x => /Sockel/.test(x)) && names.some(x => /Flamme/.test(x)), names);
+ok('Erstellen: Feuer + Geist-Teile', names.length === 6 && ['Sockel','Flamme','Geist #','Mütze','Sitzstamm','Marshmallow'].every(t => names.some(x => x.includes(t))), names);
 await pg.waitForTimeout(800);
 await pg.screenshot({ path: '/tmp/lgf/szene.png' });
 
