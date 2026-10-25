@@ -64234,6 +64234,15 @@ function _lithoHalsTeile(){
   }
   return teile;
 }
+// Kerben auch durch den Standring der Kugelwand schneiden: der reicht unten innen
+// bis an den Lochrand und machte die Kerben auf den ersten 1–2 mm dicht — die
+// Nasen kamen von unten nicht hinein (Ralf, Druck 25.10.26). Von unter dem Boden
+// bis zur Halsoberkante.
+function _lithoKerbenTeile(){
+  const M=_lithoDeckelMasse(), T=2*Math.PI/3, kb=_LITHO_KERBE/2, t=[];
+  for(let k=0;k<3;k++) t.push(_lithoExtr(_lithoSektorShape(M.Rh-0.05, M.rKerb, k*T-kb, k*T+kb), -0.1, M.hHals+0.1-0.01));
+  return t;
+}
 function _lithoDeckelTeile(){
   const M=_lithoDeckelMasse(), T=2*Math.PI/3, nb=_LITHO_NASE/2;
   const platte=_lithoExtr(_lithoRingShape(M.rPlatte, [[0,2*Math.PI,0.8]]), 0, M.platte);   // Ø16-Loch zum Herausdrücken
@@ -64402,12 +64411,13 @@ async function _createLitho(){
     // Öse/Hals fest anfügen: Kugel ∪ Anbauteile als EIN Körper (überlappende
     // Hüllen in einem Netz machen beim späteren Abziehen schwarze Taschen)
     const btn=document.getElementById('litho-create-btn'); if(btn) btn.disabled=true;
-    const vereinen=async(teile)=>{
+    const vereinen=async(teile, weg=[])=>{
       // Zwischenstände freigeben – Manifold-Objekte liegen im WASM-Speicher, den
       // der Garbage Collector nicht sieht (bei 1 Mio. Dreiecken sonst schnell voll)
       const mf=await _mfRetry(async()=>{ const w=await _mfInit(); let acc=null;
         for(const t of teile){ const m=_mfFromSoup(w,_lithoTris(t));
           if(!acc){ acc=m; continue; } const u=w.Manifold.union(acc,m); acc.delete(); m.delete(); acc=u; }
+        for(const t of weg){ const m=_mfFromSoup(w,_lithoTris(t)); const d=w.Manifold.difference(acc,m); acc.delete(); m.delete(); acc=d; }
         return acc; });
       const g2=_mfToGeo(mf); try{ mf.delete(); }catch(_){}
       g2.computeVertexNormals(); g2.computeBoundingBox(); return g2;
@@ -64417,7 +64427,8 @@ async function _createLitho(){
       const anbau=[];
       if(_lithoOeseAn()) anbau.push(_lithoOeseGeo(geo.boundingBox.max.y, Math.max(0.2,_litho.p.maxT)/10));
       if(_lithoDeckelAn()) anbau.push(..._lithoHalsTeile());
-      const g2=await vereinen([geo, ...anbau]); anbau.forEach(a=>a.dispose());
+      const kerben=_lithoDeckelAn()? _lithoKerbenTeile() : [];
+      const g2=await vereinen([geo, ...anbau], kerben); anbau.forEach(a=>a.dispose()); kerben.forEach(a=>a.dispose());
       geo.dispose(); geo=g2;
     }catch(e){ console.error('Lithophane-Anbau:',e); notify('Öse/Bajonett-Hals konnten nicht angefügt werden – Kugel ohne erstellt','w'); }
     if(_lithoDeckelAn()){
@@ -71886,8 +71897,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.262';
+const VOLME3D_VERSION = '1.18.263';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.263', date:'2026-10-25', changes:[
+    ['🕯️','<b>Teelicht-Deckel: Bajonett lässt sich jetzt einstecken.</b> Die Kerben für die Nasen waren unten am Standring der Kugel zu: Der Ring reichte bis an den Lochrand, und die Nasen kamen von unten nicht hinein (Danke Ralf für den Testdruck!). Die Kerben gehen jetzt durch die ganze Kugelwand bis unten. Ein Raft ist nicht nötig, die Kugel steht flach auf ihrem Ring.'],
+  ]},
   { version:'1.18.262', date:'2026-10-25', changes:[
     ['🎨','<b>Lithophane-Kugel in Farbe.</b> Neuer Haken <b>🎨 Farbig (Mehrfarbdruck / AMS)</b> im Kugel-Dialog. Die Außenhaut der Kugel bekommt die Farben des Bildes, das Relief innen bleibt das weiße Lithophane: Ausgeschaltet sieht man das farbige Bild, mit LED leuchtet es farbig. Die Farben (1–8 neben Weiß) werden automatisch aus dem Bild bestimmt, jedes Farbfeld lässt sich auf das echte Filament umstellen. <b>Farbschicht</b> legt fest, wie tief die Farbe in die Wand geht (Standard 0,8 mm), das wird als Slicer-Einstellung mitgegeben. Beim <b>⬇ 3MF</b> kommt die Bemalung direkt mit: Filament 1 = Weiß, Filament 2 … = Farben. Mit Bambu Studio getestet. Die Druckzeit steigt deutlich, weil viele Farbwechsel nötig sind.'],
   ]},

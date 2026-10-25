@@ -111,10 +111,13 @@ const d = await pg.evaluate(async () => {
     einsetzen: x(dk.translate([0, -M.platte, 0])),
     halbGedreht: x(dk.rotate([0, 30, 0]).translate([0, -M.platte - M.luft + 0.005, 0])),
     eingerastet: x(dk.rotate([0, 60, 0]).translate([0, -M.platte - M.luft - M.rast + 0.005, 0])),
-    traegt: x(dk.rotate([0, 60, 0]).translate([0, -M.platte - M.luft - M.rast - 0.04, 0])) };
+    traegt: x(dk.rotate([0, 60, 0]).translate([0, -M.platte - M.luft - M.rast - 0.04, 0])),
+    // Einschieben von unten: Deckel Schritt für Schritt hoch, Nasen in den Kerben — der Weg muss frei sein
+    // (die Endstellungen allein prüften nicht, dass der Standring der Kugel die Kerben unten zumachte)
+    weg: (() => { let m = 0; for (let y = -M.hoch - 0.3; y <= -M.platte + 1e-9; y += 0.05) m = Math.max(m, x(dk.translate([0, y, 0]))); return +m.toFixed(5); })() };
 });
 ok('Deckel: Kugel und Deckel je ein Teil, Mulde = Teelicht + 2× Spiel', d.kTeile === 1 && d.dTeile === 1 && Math.abs(d.muldeDm - 38.8) < 0.01, d);
-ok('Bajonett: einsetzen, drehen, einrasten ohne Kollision; Nasen tragen', d.einsetzen === 0 && d.halbGedreht === 0 && d.eingerastet === 0 && d.traegt > 0, d);
+ok('Bajonett: von unten einschieben, drehen, einrasten ohne Kollision; Nasen tragen', d.weg === 0 && d.einsetzen === 0 && d.halbGedreht === 0 && d.eingerastet === 0 && d.traegt > 0, d);
 // 3MF mit variabler Schichthöhe (automatisch bei Lithophanes)
 const s3 = await pg.evaluate(() => {
   localStorage.removeItem('v3d_3mf_schicht');
