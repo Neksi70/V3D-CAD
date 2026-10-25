@@ -45552,6 +45552,7 @@ function _gpvInit(id, buildFn, edgesFn){
 }
 function _gpvUpdate(id){
   const s=_gpv[id]; if(!s) return;
+  const drehY=s.group? s.group.rotation.y : 0;   // Drehung behalten — sonst springt die Vorschau bei jedem Neuaufbau nach vorn
   if(s.group){ s.sc.remove(s.group); s.group.traverse(o=>{if(o.geometry)o.geometry.dispose();}); s.group=null; }
   let geo; try{ geo=s.buildFn(); }catch(e){ console.warn(id+' Vorschau:',e); return; }
   const mat=new THREE.MeshStandardMaterial({color:0xc2c8d2,roughness:0.42,metalness:0.55,side:THREE.DoubleSide});
@@ -45563,7 +45564,7 @@ function _gpvUpdate(id){
   geo.computeBoundingBox(); const bb=geo.boundingBox, ctr=new THREE.Vector3(); bb.getCenter(ctr);
   const size=new THREE.Vector3(); bb.getSize(size);
   mesh.position.sub(ctr);
-  const grp=new THREE.Group(); grp.add(mesh); s.sc.add(grp); s.group=grp;
+  const grp=new THREE.Group(); grp.add(mesh); grp.rotation.y=drehY; s.sc.add(grp); s.group=grp;
   // optionale Naht-/Kantenlinien (z.B. Laser-Box: macht die Fingerzinken sichtbar)
   if(s.edgesFn){ try{ const eg=s.edgesFn(); if(eg){ const ls=new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:0x141a24})); ls.position.sub(ctr); grp.add(ls); } }catch(e){ console.warn(id+' Kanten:',e); } }
   let d=Math.max(3, Math.max(size.x,size.y,size.z)*1.7+1.5);
@@ -45574,7 +45575,7 @@ function _gpvUpdate(id){
   if(hT>1e-4) d=Math.max(d, Math.max(size.x,size.z)/2/hT*1.12+1.5);
   s.cam.position.set(0, d*0.34, d*0.94); s.cam.lookAt(0,0,0);
 }
-function _gpvLoop(id){ const s=_gpv[id]; if(!s) return; s.anim=requestAnimationFrame(()=>_gpvLoop(id)); if(s.group) s.group.rotation.y+=0.012; s.r.render(s.sc,s.cam); }
+function _gpvLoop(id){ const s=_gpv[id]; if(!s) return; s.anim=requestAnimationFrame(()=>_gpvLoop(id)); if(s.group && !s.halt) s.group.rotation.y+=0.012; s.r.render(s.sc,s.cam); }
 function _gpvStop(id){ const s=_gpv[id]; if(s&&s.anim){ cancelAnimationFrame(s.anim); s.anim=null; } }
 
 // ExtrudeGeometry in eine schlichte BufferGeometry umwandeln (ihr toJSON speichert
@@ -64332,7 +64333,7 @@ function _lithoKugelHinweis(){
   }
   if(P.kFit==='zuschneiden'){
     const weg=Math.round(Math.max(...as.map(a=>1-Math.min(A/a,a/A)))*100);
-    return {t:`✂️ Jedes Bild füllt sein Feld (<b>${deg(W)}°</b> breit) – ${weg>10?`gezeigt wird ein Ausschnitt (bis ${weg} % fallen weg)`:'es fällt kaum etwas weg'}. <b>Vorschaubild oben anklicken</b>, um den Ausschnitt zu verschieben und zu zoomen.`};
+    return {t:`✂️ Jedes Bild füllt sein Feld (<b>${deg(W)}°</b> breit) – ${weg>10?`gezeigt wird ein Ausschnitt (bis ${weg} % fallen weg)`:'es fällt kaum etwas weg'}. <b>Bild direkt auf der Kugel ziehen</b> (Mausrad = zoomen) oder Vorschaubild oben anklicken, um den Ausschnitt zu verschieben.`};
   }
   let t=n>1 ? `${n} Bilder nebeneinander brauchen <b>${deg(Math.min(reihe,H/k))}°</b> von ${deg(H)}° rundum.` : `Ein Bild deckt <b>${deg(Math.min(reihe,H/k))}°</b> von ${deg(H)}° rundum.`;
   if(passt>k) t+=n>1 ? ` Platz für die Reihe <b>${passt}×</b> – der Rest bleibt sonst dunkel.` : ` Platz für <b>${passt} Bilder</b> nebeneinander – der Rest bleibt sonst dunkel.`;
@@ -64364,8 +64365,65 @@ function _lithoInfo(){
 }
 function _openLithoModal(){
   document.getElementById('litho-modal').classList.add('show');
-  _lithoSyncUI(); _lithoBilderUI(); _lithoInfo();
+  _lithoSyncUI(); _lithoBilderUI(); _lithoInfo(); _lithoVorschauZiehenEinrichten();
   requestAnimationFrame(()=>{ if(!_gpv['litho']) _gpvInit('litho',()=>_buildLithoGeo(true)); else { _gpvUpdate('litho'); if(!_gpv['litho'].anim) _gpvLoop('litho'); } });
+}
+// ── Bild direkt auf der Kugel-Vorschau verschieben ─────────────────────────────
+// Ziehen auf einem Bildfeld schiebt dessen Ausschnitt (Kopf abgeschnitten → Bild
+// nach unten ziehen), Ziehen daneben dreht die Kugel, Mausrad über dem Bild zoomt.
+// Solange die Maus über der Vorschau ist, steht die Kugel still.
+function _lithoVorschauOrt(e){
+  const s=_gpv['litho']; if(!s||!s.group||_litho.p.form!=='kugel') return null;
+  const cv=s.r.domElement, rc=cv.getBoundingClientRect();
+  const ndc=new THREE.Vector2((e.clientX-rc.left)/rc.width*2-1, -((e.clientY-rc.top)/rc.height)*2+1);
+  const ray=new THREE.Raycaster(); ray.setFromCamera(ndc,s.cam);
+  const mesh=s.group.children[0], hit=mesh && ray.intersectObject(mesh)[0]; if(!hit) return null;
+  const p=mesh.worldToLocal(hit.point.clone()), cy=_litho._kugelMitteY||0, y=p.y-cy, r=Math.hypot(p.x,y,p.z);
+  const th=Math.atan2(p.x,p.z), ph=Math.asin(Math.max(-1,Math.min(1,y/r)));
+  const M=_lithoKugelMap(), wrap=a=>{ while(a>Math.PI)a-=2*Math.PI; while(a<-Math.PI)a+=2*Math.PI; return a; };
+  const f=M.felder.find(f=>ph>=f.vA-0.02 && ph<=f.vB+0.02 && Math.abs(wrap(th-f.m))<=f.Hc/2);
+  // Bildschirm-Pixel je Bogenmaß auf der Kugel (für die Zugumrechnung)
+  const R=Math.max(20,_litho.p.kD)/20, dist=s.cam.position.length(), pxProRad=R*rc.height/(2*Math.tan(s.cam.fov*Math.PI/360)*dist);
+  return {f, ph, pxProRad};
+}
+function _lithoVorschauZiehenEinrichten(){
+  const cv=document.getElementById('litho-canvas'); if(!cv || cv._lithoZiehen) return; cv._lithoZiehen=true;
+  cv.style.touchAction='none'; cv.title='Bild auf der Kugel ziehen = Ausschnitt verschieben · daneben ziehen = drehen · Mausrad = zoomen';
+  let zug=null, rt=null;
+  const neu=()=>{ if(rt) return; rt=setTimeout(()=>{ rt=null; _gpvUpdate('litho'); },90); };
+  const halt=v=>{ const s=_gpv['litho']; if(s) s.halt=v; };
+  cv.addEventListener('pointerenter',()=>halt(true));
+  cv.addEventListener('pointerleave',()=>{ if(!zug) halt(false); });
+  cv.addEventListener('pointerdown',e=>{
+    const o=_lithoVorschauOrt(e), B=_litho.bilder;
+    if(o && o.f && B[o.f.bi]){
+      if(_litho.p.kFit!=='zuschneiden'){ _litho.p.kFit='zuschneiden'; _lithoSyncUI(); _lithoInfo(); }
+      const b=B[o.f.bi]; b.crop=b.crop||{x:0.5,y:0.5,z:1};
+      zug={art:'bild', b, f:o.f, x:e.clientX, y:e.clientY, cx:b.crop.x, cy:b.crop.y, px:o.pxProRad, cos:Math.max(0.3,Math.cos(o.ph))};
+    } else zug={art:'drehen', x:e.clientX, rot:_gpv['litho']&&_gpv['litho'].group?_gpv['litho'].group.rotation.y:0};
+    cv.setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  cv.addEventListener('pointermove',e=>{
+    if(!zug) return;
+    if(zug.art==='drehen'){ const s=_gpv['litho']; if(s&&s.group) s.group.rotation.y=zug.rot+(e.clientX-zug.x)*0.012; return; }
+    // Inhalt folgt der Maus: Fenster in die Gegenrichtung (Anteil am Bild = Winkel/Feld × Fensteranteil)
+    const f=_lithoKugelMap().felder.find(g=>g.bi===zug.f.bi) || zug.f;
+    const dTh=(e.clientX-zug.x)/(zug.px*zug.cos), dPh=-(e.clientY-zug.y)/zug.px;
+    zug.b.crop.x=zug.cx-dTh/f.Hc*(f.u1-f.u0);
+    zug.b.crop.y=zug.cy+dPh/(f.vB-f.vA)*(f.v1-f.v0);
+    const w=f.u1-f.u0, h=f.v1-f.v0;   // im Bild bleiben
+    zug.b.crop.x=Math.max(w/2,Math.min(1-w/2,zug.b.crop.x)); zug.b.crop.y=Math.max(h/2,Math.min(1-h/2,zug.b.crop.y));
+    neu();
+  });
+  const los=()=>{ zug=null; };
+  cv.addEventListener('pointerup',los); cv.addEventListener('pointercancel',los);
+  cv.addEventListener('wheel',e=>{
+    const o=_lithoVorschauOrt(e); if(!o||!o.f||!_litho.bilder[o.f.bi]) return;
+    e.preventDefault(); e.stopPropagation();
+    if(_litho.p.kFit!=='zuschneiden'){ _litho.p.kFit='zuschneiden'; _lithoSyncUI(); _lithoInfo(); }
+    const b=_litho.bilder[o.f.bi]; b.crop=b.crop||{x:0.5,y:0.5,z:1};
+    b.crop.z=Math.max(1,Math.min(4,b.crop.z*(e.deltaY<0?1.08:1/1.08))); neu();
+  },{passive:false});
 }
 function _closeLithoModal(){ document.getElementById('litho-modal').classList.remove('show'); _gpvStop('litho'); }
 function _lithoSyncUI(){
@@ -71981,8 +72039,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.264';
+const VOLME3D_VERSION = '1.18.265';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.265', date:'2026-10-25', changes:[
+    ['🖐️','<b>Lithophane-Kugel: Bilder direkt auf der Kugel verschieben.</b> Ist ein Kopf abgeschnitten, ziehst du das Bild in der Vorschau einfach nach unten, bis alles drauf ist. Mit dem Mausrad über dem Bild zoomst du. Ziehen neben den Bildern dreht die Kugel von Hand, und solange die Maus über der Vorschau ist, bleibt die Kugel stehen.'],
+  ]},
   { version:'1.18.264', date:'2026-10-25', changes:[
     ['✂️','<b>Lithophane-Kugel: Bildausschnitt selbst wählen.</b> Mit mehreren Bildern füllt jetzt jedes Bild sein ganzes Feld rundum (z. B. 3 Bilder je 120°), statt kleiner zu werden. Ein <b>Klick auf ein Vorschaubild</b> öffnet den Ausschnitt: Der Rahmen hat genau das Format des Feldes auf der Kugel, du verschiebst ihn mit der Maus und zoomst mit Regler oder Mausrad. Die Kugel-Vorschau läuft live mit. Der Knopf heißt jetzt <b>Ausschnitt (füllt alles)</b>.'],
     ['🔢','<b>Zahlen eintippen statt nur schieben.</b> In den Generator-Dialogen kannst du auf den Wert neben einem Schieberegler klicken und die Zahl direkt eingeben (Enter übernimmt, Esc bricht ab, Komma geht auch). Über das Reglerende hinaus ist erlaubt.'],

@@ -82,6 +82,15 @@ const au = await pg.evaluate(async () => {
     v0nachher: +f1.v0.toFixed(3), hNachher: +(f1.v1 - f1.v0).toFixed(3), kD: _litho.p.kD, dmin: _lithoKugelDmin() };
 });
 ok('Ausschnitt: 3 × 120°, Zoom 2 halbiert das Fenster, nach oben geschoben; Kugel-Ø mit Teelicht ≥ Minimum', au.breiten.join() === '120,120,120' && Math.abs(au.hNachher - au.hVorher / 2) < 1e-3 && au.v0nachher < au.v0vorher && au.kD === au.dmin && au.dmin >= 60, au);
+// Bild direkt auf der Kugel-Vorschau nach unten ziehen → Ausschnitt wandert nach oben (Kopf kommt ins Bild)
+await pg.evaluate(async () => { _litho.bilder.forEach(b => b.crop = { x: 0.5, y: 0.5, z: 1 }); _openLithoModal(); _gpvUpdate('litho'); await new Promise(r => setTimeout(r, 400)); });
+const cvb = await pg.locator('#litho-canvas').boundingBox();
+await pg.mouse.move(cvb.x + cvb.width / 2, cvb.y + cvb.height * 0.45); await pg.waitForTimeout(200);
+await pg.evaluate(() => { _gpv['litho'].group.rotation.y = 0; });
+await pg.mouse.down(); await pg.mouse.move(cvb.x + cvb.width / 2, cvb.y + cvb.height * 0.45 + 40, { steps: 6 }); await pg.mouse.up();
+const zv = await pg.evaluate(() => ({ y: _litho.bilder[0].crop.y, halt: _gpv['litho'].halt }));
+ok('Bild auf der Kugel nach unten ziehen schiebt den Ausschnitt nach oben, Kugel steht still', zv.y < 0.45 && zv.halt === true, zv);
+await pg.mouse.move(5, 5); await pg.evaluate(() => _closeLithoModal());
 // 🎨 Farbig: Palette aus dem Bild, Außenhaut bemalt, Grundfarbe Weiß, 3MF mit paint_color + Farbschicht-Tiefe
 const fb = await pg.evaluate(async () => {
   objects.slice().forEach(o => scene.remove(o)); objects.length = 0;
