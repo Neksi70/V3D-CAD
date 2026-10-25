@@ -22,13 +22,13 @@ const faelle = [
   { name: 'Standard (unten 30, oben zu)', p: {} },
   { name: 'oben + unten offen', p: { kUnten: 40, kOben: 20 } },
   { name: 'ganz zu', p: { kUnten: 0, kOben: 0 } },
-  { name: 'Relief außen, 3× auf 360°', p: { kInnen: false, kWdh: 3 } },
+  { name: '3× auf 360°', p: { kWdh: 3 } },
   { name: 'Zuschneiden 180°', p: { kFit: 'zuschneiden', kWinkel: 180 } },
   { name: 'Strecken, D 120, Rand 0', p: { kFit: 'strecken', kD: 120, kRand: 0 } },
 ];
 for (const f of faelle) {
   const r = await pg.evaluate(async (fp) => {
-    Object.assign(_litho.p, { form: 'kugel', kD: 80, kUnten: 30, kOben: 0, kVon: -45, kBis: 60, kWinkel: 360, kWdh: 1, kRand: 3, kFit: 'einpassen', kInnen: true, kOese: true, minT: 0.8, maxT: 3.2 }, fp);
+    Object.assign(_litho.p, { form: 'kugel', kD: 80, kUnten: 30, kOben: 0, kVon: -45, kBis: 60, kWinkel: 360, kWdh: 1, kRand: 3, kFit: 'einpassen', kOese: true, minT: 0.8, maxT: 3.2 }, fp);
     const g = _buildLithoKugelGeo(false), w = await _mfInit();
     const mf = _mfFromSoup(w, _lithoTris(g));
     g.computeBoundingBox(); const bb = g.boundingBox, P = g.attributes.position;
@@ -40,12 +40,12 @@ for (const f of faelle) {
   }, f.p);
   ok(f.name + ': Manifold dicht, Volumen zwischen dünnster und dickster Wand', r.vol > 0 && r.vol < r.vMax && r.vol > r.vMin * 0.5, r);
   const D = f.p.kD || 80;
-  ok(f.name + ': Breite = Durchmesser (Relief außen: höchstens)', f.p.kInnen === false ? (r.breite <= D + 0.01 && r.breite > D - 6.4) : Math.abs(r.breite - D) < 0.3, r.breite);
+  ok(f.name + ': Breite ≤ Durchmesser (Relief außen)', r.breite <= D + 0.01 && r.breite > D - 6.4, r.breite);
   if ((f.p.kUnten ?? 30) > 0) ok(f.name + ': flacher Standring auf y = 0', r.yMin === 0 && r.amBoden >= 128, r.amBoden);
 }
 // Ganz durch den Dialog: Kugel mit Öse → EIN Teil, Öse oben drauf
 const c = await pg.evaluate(async () => {
-  Object.assign(_litho.p, { form: 'kugel', kD: 80, kUnten: 30, kOben: 0, kVon: -45, kBis: 60, kWinkel: 360, kWdh: 1, kRand: 3, kFit: 'einpassen', kInnen: true, kOese: true, minT: 0.8, maxT: 3.2 });
+  Object.assign(_litho.p, { form: 'kugel', kD: 80, kUnten: 30, kOben: 0, kVon: -45, kBis: 60, kWinkel: 360, kWdh: 1, kRand: 3, kFit: 'einpassen', kOese: true, minT: 0.8, maxT: 3.2 });
   _openLithoModal(); await new Promise(r => setTimeout(r, 400));
   await _createLitho();
   const o = objects.find(x => /Lithophane-Kugel/.test(x.userData.name || ''));
