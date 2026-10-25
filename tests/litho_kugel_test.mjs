@@ -140,6 +140,19 @@ const d = await pg.evaluate(async () => {
     weg: (() => { let m = 0; for (let y = -M.hoch - 0.3; y <= -M.platte + 1e-9; y += 0.05) m = Math.max(m, x(dk.translate([0, y, 0]))); return +m.toFixed(5); })() };
 });
 ok('Deckel: Kugel und Deckel je ein Teil, Mulde = Teelicht + 2× Spiel', d.kTeile === 1 && d.dTeile === 1 && Math.abs(d.muldeDm - 38.8) < 0.01, d);
+// Kugelrunder Deckel: Kappe schließt bündig an (Abstand R zum Kugelmittelpunkt), schneidet die Kugel nicht, Bajonett wie flach
+const dr = await pg.evaluate(async () => {
+  const ku = objects.find(o => /Lithophane-Kugel/.test(o.userData.name)); if (!ku) return { fehlt: true };
+  const w = await _mfInit(), M = _lithoDeckelMasse(), R = _litho.p.kD / 20, cy = _litho._kugelMitteY;
+  const t = _lithoDeckelTeile('rund'); let acc = null;
+  for (const g of t) { const m = _mfFromSoup(w, _lithoTris(g)); acc = acc ? w.Manifold.union(acc, m) : m; }
+  const mk = _mfFromSoup(w, _lithoTris(ku.geometry)), d = acc.translate([0, -M.platte, 0]);
+  const mesh = d.getMesh(), vp = mesh.vertProperties, np = mesh.numProp; let maxAbw = 0, unter = 0;
+  for (let i = 0; i < vp.length; i += np) { const x = vp[i], y = vp[i + 1], z = vp[i + 2]; if (y < -0.05) { unter++; const r = Math.hypot(x, y - cy, z); if (Math.hypot(x, z) > 1.0) maxAbw = Math.max(maxAbw, Math.abs(r - R)); } }
+  return { teile: acc.decompose().length, schnitt: +w.Manifold.intersection(mk, d).volume().toFixed(5), maxAbw_mm: +(maxAbw * 10).toFixed(2), unter,
+    kappeTief_mm: +((R - cy) * 10).toFixed(1), vol: +acc.volume().toFixed(2) };
+});
+ok('Kugelrunder Deckel: ein Teil, Kappe auf der Kugelfläche (±0,3 mm), schneidet die Kugel nicht', dr.teile === 1 && dr.schnitt === 0 && dr.maxAbw_mm < 0.3 && dr.unter > 50, dr);
 ok('Bajonett: von unten einschieben, drehen, einrasten ohne Kollision; Nasen tragen', d.weg === 0 && d.einsetzen === 0 && d.halbGedreht === 0 && d.eingerastet === 0 && d.traegt > 0, d);
 // 3MF mit variabler Schichthöhe (automatisch bei Lithophanes)
 const s3 = await pg.evaluate(() => {
