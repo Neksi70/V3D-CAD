@@ -783,6 +783,8 @@ body.devmode .dev-only{display:flex!important}
 .vrow label{font-size:11px;font-weight:600;color:#555;min-width:56px;flex-shrink:0}
 .vrow input[type=range]{flex:1;height:4px;accent-color:var(--acc);cursor:pointer}
 .vrow .vv{min-width:26px;text-align:right;font-size:11px;font-weight:700;color:#222}
+.vrow input[type=range]:not(:disabled)~.vv{cursor:text;border-bottom:1px dotted #bbb}
+.vrow .vv-ein{width:56px;font-size:11px;font-weight:700;text-align:right;padding:1px 3px;border:1px solid var(--acc);border-radius:4px}
 .vrow .vu{font-size:10px;color:#aaa;min-width:14px}
 .vbg{display:flex;gap:3px;margin-bottom:7px}
 .vtb{flex:1;padding:4px 2px;font-size:10px;font-weight:700;border:1.5px solid #dde2f0;border-radius:5px;background:#f5f7fc;color:#666;cursor:pointer;font-family:var(--font);text-align:center}
@@ -6050,6 +6052,7 @@ Patrick</textarea>
         </div>
         <div id="litho-kugel-box" style="display:none">
         <div class="vrow"><label>Durchmesser</label> <input type="range" id="lp-kD" min="40" max="150" value="80" step="1" oninput="document.getElementById('lv-kD').textContent=this.value;_lithoSet('kD',this.value)"><span class="vv" id="lv-kD">80</span><span class="vu">mm</span></div>
+        <div id="litho-dmin" style="display:none;font-size:11px;color:#b45309;margin:-3px 0 6px 62px"></div>
         <div class="vrow"><label title="Loch für die LED / das Teelicht. Die Kugel steht beim Druck auf diesem Rand. 0 = unten zu">Öffnung unten</label> <input type="range" id="lp-kUnten" min="0" max="80" value="30" step="1" oninput="document.getElementById('lv-kUnten').textContent=this.value;_lithoSet('kUnten',this.value)"><span class="vv" id="lv-kUnten">30</span><span class="vu">mm</span></div>
         <div class="vrow"><label title="0 = oben zu (dann mit Aufhänge-Öse)">Öffnung oben</label> <input type="range" id="lp-kOben" min="0" max="60" value="0" step="1" oninput="document.getElementById('lv-kOben').textContent=this.value;_lithoSet('kOben',this.value)"><span class="vv" id="lv-kOben">0</span><span class="vu">mm</span></div>
         <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin:2px 0 4px" title="Zweites Teil: Deckel mit Mulde für ein LED-Teelicht, wird unten per Bajonett eingedreht. Die Öffnung unten passt sich automatisch an."><input type="checkbox" id="lp-kDeckel" checked onchange="_lithoSet('kDeckel',this.checked)"> ＋ Teelicht-Deckel (Bajonett)</label>
@@ -6064,7 +6067,7 @@ Patrick</textarea>
         <div class="vrow"><label title="Massiver Ring an den Öffnungen – trägt die Kugel beim Druck und hält die LED">Rand</label> <input type="range" id="lp-kRand" min="0" max="8" value="3" step="0.5" oninput="document.getElementById('lv-kRand').textContent=this.value;_lithoSet('kRand',this.value)"><span class="vv" id="lv-kRand">3</span><span class="vu">mm</span></div>
         <div class="vtbrow" id="litho-fit-bg" style="display:flex;gap:4px;margin:4px 0 7px">
           <button class="vtb on" data-v="einpassen" title="Ganzes Foto ohne Verzerrung; der Bereich wird passend verkleinert" onclick="_lithoStr('kFit','einpassen')">Einpassen</button>
-          <button class="vtb" data-v="zuschneiden" title="Bereich ganz füllen; überstehende Ränder des Fotos fallen weg" onclick="_lithoStr('kFit','zuschneiden')">Zuschneiden</button>
+          <button class="vtb" data-v="zuschneiden" title="Jedes Bild füllt sein ganzes Feld auf der Kugel. Den Ausschnitt legst du selbst fest: Vorschaubild oben anklicken, Rahmen verschieben, zoomen." onclick="_lithoStr('kFit','zuschneiden')">Ausschnitt (füllt alles)</button>
           <button class="vtb" data-v="strecken" title="Foto auf den ganzen Bereich ziehen (verzerrt)" onclick="_lithoStr('kFit','strecken')">Strecken</button>
         </div>
         <div id="litho-kugel-hint" style="display:none;font-size:12px;line-height:1.4;padding:7px 9px;border-radius:7px;margin:0 0 7px;background:#fff6e8;border:1px solid #f3c58a;color:#7a4a10"></div>
@@ -63949,8 +63952,11 @@ function _lithoKugelMap(){
       if(a<A) Hc=a*(VB-VA);
       else { const h=W/a, m=(VA+VB)/2; vA=m-h/2; vB=m+h/2; }
     } else if(P.kFit==='zuschneiden'){
-      if(a>A){ const w=A/a; u0=0.5-w/2; u1=0.5+w/2; }
-      else { const h=a/A; v0=0.5-h/2; v1=0.5+h/2; }
+      // Ausschnitt im Feldformat; Lage + Zoom je Bild (b.crop, im Ausschnitt-Editor verschiebbar)
+      const cr=(B[bi]&&B[bi].crop)||{x:0.5,y:0.5,z:1}, z=Math.max(1,cr.z||1);
+      const w=(a>A?A/a:1)/z, h=(a>A?1:a/A)/z;
+      u0=Math.max(0,Math.min(1-w,cr.x-w/2)); u1=u0+w;
+      v0=Math.max(0,Math.min(1-h,cr.y-h/2)); v1=v0+h;
     }
     // rundum: Bild 1 vorn (θ = 0), sonst Reihe mittig vorn
     felder.push({m: H>=2*Math.PI-1e-6 ? j*W : -H/2+(j+0.5)*W, Hc, vA, vB, u0,u1,v0,v1, bi});
@@ -64197,6 +64203,36 @@ function _lithoFarbUI(){
   pl.innerHTML=sw(`<span style="width:30px;height:24px;border-radius:5px;background:#fff;border:1px solid #4a5266;display:block"></span>F1`,'Filament 1: Weiß – das Lithophane selbst')
     + P.kPalette.map((h,i)=>sw(`<input type="color" value="${h}" oninput="_lithoPalSet(${i},this.value)" style="width:30px;height:24px;padding:0;border:1px solid #4a5266;border-radius:5px;background:none;cursor:pointer">F${i+2}`,'Filament '+(i+2)+' – auf die echte Filamentfarbe stellen')).join('');
 }
+// Zahl neben einem Schieberegler (.vrow .vv) anklicken → Eingabefeld. Gilt für
+// alle Generator-Dialoge: schreibt in den Regler und löst dessen oninput aus.
+// Über dem Reglerende darf man hinaus (max wird angehoben), unter min nicht —
+// min trägt oft eine echte Grenze (z. B. Kugel-Ø mit Teelicht).
+document.addEventListener('click', e => {
+  const vv = e.target.closest && e.target.closest('.vrow .vv'); if (!vv || vv.querySelector('input')) return;
+  const row = vv.closest('.vrow'), rg = row && row.querySelector('input[type=range]');
+  if (!rg || rg.disabled) return;
+  const ein = document.createElement('input');
+  ein.type = 'text'; ein.inputMode = 'decimal'; ein.className = 'vv-ein'; ein.value = rg.value;
+  const alt = vv.textContent; vv.textContent = ''; vv.appendChild(ein); ein.focus(); ein.select();
+  let fertig = false;
+  const ende = (ok) => {
+    if (fertig) return; fertig = true;
+    const v = parseFloat(String(ein.value).replace(',', '.'));
+    vv.textContent = alt;
+    if (!ok || !isFinite(v)) return;
+    const mn = parseFloat(rg.min), mx = parseFloat(rg.max);
+    if (isFinite(mx) && v > mx) rg.max = String(v);
+    rg.value = String(isFinite(mn) ? Math.max(mn, v) : v);
+    vv.textContent = rg.value;
+    rg.dispatchEvent(new Event('input', { bubbles: true })); rg.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  ein.addEventListener('keydown', k => { if (k.key === 'Enter') { k.preventDefault(); ende(true); } else if (k.key === 'Escape') { k.preventDefault(); ende(false); } k.stopPropagation(); });
+  ein.addEventListener('blur', () => ende(true));
+});
+function _lithoKugelDmin(){
+  if(!_lithoDeckelAn()) return 0;
+  return Math.ceil(2*_lithoDeckelMasse().rHals/0.72*10);   // gleiche Grenze wie die Warnung (Hals ≤ 72 % des Radius)
+}
 function _lithoDeckelAn(){ const P=_litho.p; return P.form==='kugel' && !!P.kDeckel; }
 function _lithoDeckelMasse(){
   const P=_litho.p, sp=Math.max(0.02,P.tlSpiel/10), tl=Math.max(1,P.tlD/20);
@@ -64296,7 +64332,7 @@ function _lithoKugelHinweis(){
   }
   if(P.kFit==='zuschneiden'){
     const weg=Math.round(Math.max(...as.map(a=>1-Math.min(A/a,a/A)))*100);
-    return weg>10 ? {t:`✂️ Beim Zuschneiden fallen bis zu <b>${weg} %</b> eines Bildes weg.`+(passt>k?' Mit <b>Einpassen</b> + Verteilen bleibt alles drauf.':''), n:passt} : {t:'✓ Es fällt kaum etwas weg.'};
+    return {t:`✂️ Jedes Bild füllt sein Feld (<b>${deg(W)}°</b> breit) – ${weg>10?`gezeigt wird ein Ausschnitt (bis ${weg} % fallen weg)`:'es fällt kaum etwas weg'}. <b>Vorschaubild oben anklicken</b>, um den Ausschnitt zu verschieben und zu zoomen.`};
   }
   let t=n>1 ? `${n} Bilder nebeneinander brauchen <b>${deg(Math.min(reihe,H/k))}°</b> von ${deg(H)}° rundum.` : `Ein Bild deckt <b>${deg(Math.min(reihe,H/k))}°</b> von ${deg(H)}° rundum.`;
   if(passt>k) t+=n>1 ? ` Platz für die Reihe <b>${passt}×</b> – der Rest bleibt sonst dunkel.` : ` Platz für <b>${passt} Bilder</b> nebeneinander – der Rest bleibt sonst dunkel.`;
@@ -64346,6 +64382,11 @@ function _lithoSyncUI(){
   _lithoFarbUI();
   set('lp-tlD','lv-tlD',P.tlD); set('lp-tlSpiel','lv-tlSpiel',P.tlSpiel);
   { const e=document.getElementById('litho-deckel-box'); if(e) e.style.display=P.kDeckel?'':'none'; }
+  // Mit Teelicht-Deckel bestimmt das Teelicht Loch + Hals — darunter bleibt von
+  // der Kugel nur eine Kuppel auf einem zu großen Deckel (Volker 25.10., 52 mm)
+  { const sl=document.getElementById('lp-kD'), h=document.getElementById('litho-dmin'), dmin=_lithoKugelDmin();
+    if(sl){ sl.min=String(dmin||40); if(dmin && P.kD<dmin){ P.kD=dmin; set('lp-kD','lv-kD',P.kD); } }
+    if(h){ h.style.display=dmin?'':'none'; if(dmin) h.textContent=`mind. ${dmin} mm wegen Teelicht Ø ${String(P.tlD).replace('.',',')} mm – kleiner: Teelicht-Ø verringern oder Deckel aus`; } }
   { const u=document.getElementById('lp-kUnten'), uv=document.getElementById('lv-kUnten');
     if(u){ u.disabled=!!P.kDeckel; }
     if(P.kDeckel && uv) uv.textContent=(Math.round(_lithoDeckelMasse().Rh*200)/10).toString(); }
@@ -64377,9 +64418,52 @@ function _lithoFile(ev){
     img.onerror=()=>{ notify('Bild konnte nicht geladen werden: '+f.name,'e'); ok(null); };
     img.src=url;
   }))).then(neu=>{
+    const vorher=_litho.bilder.length;
     neu.filter(Boolean).forEach(b=>_litho.bilder.push(b));
+    // ab dem 2. Bild: jedes Bild füllt sein Feld (Ausschnitt), Reihe einmal rundum
+    if(vorher<2 && _litho.bilder.length>=2 && _litho.p.form==='kugel'){ _litho.p.kFit='zuschneiden'; _litho.p.kWdh=1; _lithoSyncUI(); }
     _lithoBilderNeu();
   });
+}
+// ── Ausschnitt-Editor: Rahmen im Format des Kugelfelds über dem Bild ─────────
+function _lithoFeldAspekt(){
+  const P=_litho.p, n=Math.max(1,_lithoBilder().length), k=Math.max(1,Math.round(P.kWdh));
+  const H=Math.max(5,Math.min(360,P.kWinkel))*Math.PI/180, vH=Math.max(1,Math.abs(P.kBis-P.kVon))*Math.PI/180;
+  return (H/(n*k))/vH;
+}
+function _lithoAusschnitt(i){
+  const b=_litho.bilder[i]; if(!b) return;
+  if(_litho.p.kFit!=='zuschneiden'){ _litho.p.kFit='zuschneiden'; _lithoSyncUI(); _lithoInfo(); }
+  b.crop=b.crop||{x:0.5,y:0.5,z:1};
+  let ov=document.getElementById('litho-crop');
+  if(!ov){ ov=document.createElement('div'); ov.id='litho-crop'; document.body.appendChild(ov); }
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100000;display:flex;align-items:center;justify-content:center';
+  ov.innerHTML=`<div style="background:#fff;border-radius:12px;padding:14px;width:min(560px,94vw);box-shadow:0 10px 40px rgba(0,0,0,.4);font-size:13px">
+    <div style="font-weight:700;margin-bottom:6px">✂️ Ausschnitt für Bild ${i+1} – Rahmen verschieben, zoomen</div>
+    <div id="lcr-wrap" style="position:relative;user-select:none;touch-action:none;background:#10141c;display:flex;justify-content:center">
+      <img id="lcr-img" src="${b.url}" style="max-width:100%;max-height:52vh;display:block" draggable="false">
+      <div id="lcr-box" style="position:absolute;border:2px solid #f97316;box-shadow:0 0 0 9999px rgba(0,0,0,.55);cursor:move"></div>
+    </div>
+    <div class="vrow" style="margin-top:8px"><label>Zoom</label> <input type="range" id="lcr-z" min="1" max="4" step="0.05" value="${b.crop.z}"><span class="vv" id="lcr-zv">${b.crop.z}</span><span class="vu">×</span></div>
+    <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px">
+      <button class="btn" id="lcr-mitte">Mitte</button><button class="btn pri" id="lcr-ok">✓ Fertig</button></div></div>`;
+  const img=ov.querySelector('#lcr-img'), box=ov.querySelector('#lcr-box'), zr=ov.querySelector('#lcr-z');
+  const fenster=()=>{ const A=_lithoFeldAspekt(), a=b.aspect||1, z=Math.max(1,b.crop.z);
+    return { w:(a>A?A/a:1)/z, h:(a>A?1:a/A)/z }; };
+  let rt=null; const neu=()=>{ if(rt) clearTimeout(rt); rt=setTimeout(()=>{ rt=null; if(_gpv['litho']) _gpvUpdate('litho'); },120); };
+  const zeichne=()=>{ const f=fenster(), W=img.clientWidth, Hh=img.clientHeight, ox=img.offsetLeft, oy=img.offsetTop;
+    b.crop.x=Math.max(f.w/2,Math.min(1-f.w/2,b.crop.x)); b.crop.y=Math.max(f.h/2,Math.min(1-f.h/2,b.crop.y));
+    Object.assign(box.style,{left:(ox+(b.crop.x-f.w/2)*W)+'px', top:(oy+(b.crop.y-f.h/2)*Hh)+'px', width:(f.w*W)+'px', height:(f.h*Hh)+'px'}); };
+  img.onload=zeichne; if(img.complete) setTimeout(zeichne,0);
+  let zug=null;
+  box.onpointerdown=e=>{ zug={x:e.clientX,y:e.clientY,cx:b.crop.x,cy:b.crop.y}; box.setPointerCapture(e.pointerId); e.preventDefault(); };
+  box.onpointermove=e=>{ if(!zug) return; b.crop.x=zug.cx+(e.clientX-zug.x)/img.clientWidth; b.crop.y=zug.cy+(e.clientY-zug.y)/img.clientHeight; zeichne(); neu(); };
+  box.onpointerup=()=>{ zug=null; };
+  zr.oninput=()=>{ b.crop.z=parseFloat(zr.value); ov.querySelector('#lcr-zv').textContent=zr.value; zeichne(); neu(); };
+  ov.querySelector('#lcr-wrap').onwheel=e=>{ e.preventDefault(); b.crop.z=Math.max(1,Math.min(4,b.crop.z*(e.deltaY<0?1.08:1/1.08))); zr.value=b.crop.z; ov.querySelector('#lcr-zv').textContent=b.crop.z.toFixed(2); zeichne(); neu(); };
+  ov.querySelector('#lcr-mitte').onclick=()=>{ b.crop={x:0.5,y:0.5,z:1}; zr.value=1; ov.querySelector('#lcr-zv').textContent='1'; zeichne(); neu(); };
+  const zu=()=>{ ov.remove(); if(_gpv['litho']) _gpvUpdate('litho'); _lithoInfo(); };
+  ov.querySelector('#lcr-ok').onclick=zu; ov.onclick=e=>{ if(e.target===ov) zu(); };
 }
 function _lithoBildWeg(i){ const b=_litho.bilder.splice(i,1)[0]; if(b&&b.url) setTimeout(()=>URL.revokeObjectURL(b.url),1000); _lithoBilderNeu(); }
 function _lithoBildVor(i){ if(i<1) return; const B=_litho.bilder; [B[i-1],B[i]]=[B[i],B[i-1]]; _lithoBilderNeu(); }
@@ -64394,7 +64478,7 @@ function _lithoBilderNeu(){
 function _lithoBilderUI(){
   const n=_litho.bilder.length, box=document.getElementById('litho-bilder'), drop=document.getElementById('litho-drop');
   if(box) box.innerHTML=_litho.bilder.map((b,i)=>`<div style="position:relative;width:52px;height:52px;border-radius:6px;overflow:hidden;border:1px solid #4a5266;background:#10141c" title="${(b.name||'').replace(/"/g,'')}">
-      <img src="${b.url}" style="width:100%;height:100%;object-fit:cover">
+      <img src="${b.url}" onclick="_lithoAusschnitt(${i})" title="Ausschnitt wählen" style="width:100%;height:100%;object-fit:cover;cursor:pointer">
       <span style="position:absolute;left:3px;top:2px;font-size:10px;color:#fff;text-shadow:0 0 3px #000">${i+1}</span>
       <span onclick="_lithoBildWeg(${i})" title="Bild entfernen" style="position:absolute;right:2px;top:1px;cursor:pointer;color:#fff;font-size:12px;text-shadow:0 0 3px #000">✕</span>
       ${i>0?`<span onclick="_lithoBildVor(${i})" title="Eins nach vorn" style="position:absolute;left:2px;bottom:1px;cursor:pointer;color:#fff;font-size:11px;text-shadow:0 0 3px #000">◀</span>`:''}
@@ -71897,8 +71981,13 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.263';
+const VOLME3D_VERSION = '1.18.264';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.264', date:'2026-10-25', changes:[
+    ['✂️','<b>Lithophane-Kugel: Bildausschnitt selbst wählen.</b> Mit mehreren Bildern füllt jetzt jedes Bild sein ganzes Feld rundum (z. B. 3 Bilder je 120°), statt kleiner zu werden. Ein <b>Klick auf ein Vorschaubild</b> öffnet den Ausschnitt: Der Rahmen hat genau das Format des Feldes auf der Kugel, du verschiebst ihn mit der Maus und zoomst mit Regler oder Mausrad. Die Kugel-Vorschau läuft live mit. Der Knopf heißt jetzt <b>Ausschnitt (füllt alles)</b>.'],
+    ['🔢','<b>Zahlen eintippen statt nur schieben.</b> In den Generator-Dialogen kannst du auf den Wert neben einem Schieberegler klicken und die Zahl direkt eingeben (Enter übernimmt, Esc bricht ab, Komma geht auch). Über das Reglerende hinaus ist erlaubt.'],
+    ['🕯️','<b>Kugel mit Teelicht-Deckel nicht mehr zu klein.</b> Der Durchmesser geht nicht unter das, was das Teelicht braucht (bei Ø 38 mm sind es 68 mm), sonst blieb nur eine Kuppel auf einem zu großen Deckel. Der Hinweis steht direkt am Regler. Für kleinere Kugeln Teelicht-Ø verringern oder den Deckel abschalten.'],
+  ]},
   { version:'1.18.263', date:'2026-10-25', changes:[
     ['🕯️','<b>Teelicht-Deckel: Bajonett lässt sich jetzt einstecken.</b> Die Kerben für die Nasen waren unten am Standring der Kugel zu: Der Ring reichte bis an den Lochrand, und die Nasen kamen von unten nicht hinein (Danke Ralf für den Testdruck!). Die Kerben gehen jetzt durch die ganze Kugelwand bis unten. Ein Raft ist nicht nötig, die Kugel steht flach auf ihrem Ring.'],
   ]},

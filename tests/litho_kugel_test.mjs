@@ -68,6 +68,20 @@ const mb = await pg.evaluate(async () => {
   _litho.bilder.length = 0; _lithoBilderNeu(); r.leer = !_litho.lum; return r;
 });
 ok('3 Bilder × 2: Felder 012012, Bild 1 vorn, Netz dicht; alle entfernt = kein Bild', mb.felder === '012012' && mb.vorn === 0 && mb.teile === 1 && mb.erste && mb.leer, mb);
+// Ausschnitt: 3 Bilder füllen je 120°, Lage/Zoom je Bild verschiebt das Bildfenster; Mindest-Ø mit Teelicht
+const au = await pg.evaluate(async () => {
+  const mk = async () => { const c = document.createElement('canvas'); c.width = 400; c.height = 600; const x = c.getContext('2d'); x.fillStyle = '#999'; x.fillRect(0, 0, 400, 600);
+    const img = new Image(); await new Promise(r => { img.onload = r; img.src = c.toDataURL(); }); return { img, url: img.src, aspect: 400 / 600, name: 'x' }; };
+  _litho.bilder.length = 0; for (let i = 0; i < 3; i++) _litho.bilder.push(await mk());
+  Object.assign(_litho.p, { form: 'kugel', kWinkel: 360, kWdh: 1, kFit: 'zuschneiden', kVon: -45, kBis: 60, kDeckel: true, tlD: 38, kD: 50, kFarbe: false });
+  _lithoBilderNeu(); _lithoSyncUI();
+  const f0 = _lithoKugelMap().felder[1];
+  _litho.bilder[1].crop = { x: 0.5, y: 0.2, z: 2 };
+  const f1 = _lithoKugelMap().felder[1];
+  return { breiten: _lithoKugelMap().felder.map(f => Math.round(f.Hc * 180 / Math.PI)), v0vorher: +f0.v0.toFixed(3), hVorher: +(f0.v1 - f0.v0).toFixed(3),
+    v0nachher: +f1.v0.toFixed(3), hNachher: +(f1.v1 - f1.v0).toFixed(3), kD: _litho.p.kD, dmin: _lithoKugelDmin() };
+});
+ok('Ausschnitt: 3 × 120°, Zoom 2 halbiert das Fenster, nach oben geschoben; Kugel-Ø mit Teelicht ≥ Minimum', au.breiten.join() === '120,120,120' && Math.abs(au.hNachher - au.hVorher / 2) < 1e-3 && au.v0nachher < au.v0vorher && au.kD === au.dmin && au.dmin >= 60, au);
 // 🎨 Farbig: Palette aus dem Bild, Außenhaut bemalt, Grundfarbe Weiß, 3MF mit paint_color + Farbschicht-Tiefe
 const fb = await pg.evaluate(async () => {
   objects.slice().forEach(o => scene.remove(o)); objects.length = 0;
