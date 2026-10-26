@@ -99,6 +99,19 @@ for (const v of varianten) {
   ok(v.name + ': Überhang ≤ 57° (Fläche < 0,5 %)', r.ueberhangAnteil < 0.5, [r.ueberhangAnteil, r.worst]);
 }
 
+// 8. Standard-Flamme ist hohl: in der Mitte vom Boden bis 30 mm kein Material, Hohlraum ≥ Teelicht-Ø
+{
+  const r = await pg.evaluate(() => {
+    Object.assign(_lgfP, _LGF_DEF);
+    const w = _mfWasm, d = _lgfDims(_lgfP), fl = _lgfFlameBuild(w, _lgfP, d, 'fein');
+    const mf = _mfFromSoup(w, fl.geo.toNonIndexed().attributes.position.array);
+    const D = _lgfP.licht, probe = w.Manifold.cylinder(30, D / 2, D / 2, 64, false).rotate([-90, 0, 0]);
+    const hit = mf.intersect(probe), v = hit.volume(); hit.delete(); probe.delete(); mf.delete();
+    return { druck: _LGF_DEF.druck, materialImTeelichtRaum: +v.toFixed(3) };
+  });
+  ok('Standard-Flamme hohl, Teelicht passt hinein', r.druck === 'wand' && r.materialImTeelichtRaum < 0.01, r);
+}
+
 // 7. Geist: Teile einzeln dicht, unten eben; zusammengesteckt nichts überschneidet sich
 for (const gv of [{ name: 'Geist Standard', p: {} }, { name: 'Geist groß, ohne Mütze', p: { geistH: 110, muetze: 0 } },
                   { name: 'Geist klein, Maxi-Feuer', p: { geistH: 40, licht: 58, breite: 100 } }]) {
