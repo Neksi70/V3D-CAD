@@ -534,6 +534,7 @@ def beleg_pdf(db, bid, pdfa=False):
     haupt = HexColor(e.get("farbe_haupt") or "#004aad")
     logo = Bericht({"projektnr": "", "titel": ""}, e).logo
     eur = lambda v: f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    preis4 = lambda v: eur(v) if round(v, 2) == round(v, 4) else f"{v:,.4f}".rstrip("0").replace(",", "X").replace(".", ",").replace("X", ".")
     menge = lambda v: f"{v:,.3f}".rstrip("0").rstrip(".").replace(",", "X").replace(".", ",").replace("X", ".") if v % 1 else f"{int(v):,}".replace(",", ".")
     seite = [0]
 
@@ -645,7 +646,16 @@ def beleg_pdf(db, bid, pdfa=False):
     if b.get("kopftext"):
         y = absatz(b["kopftext"], y) - 6
     y = tabellenkopf(y)
+    lfd = 0
     for p in b["positionen"]:
+        if erp.ist_textzeile(p):
+            if y - 20 < 110:
+                y = neue_seite()
+            c.setFont(F, 9)
+            c.setFillColor(TEXT)
+            c.drawString(r + 30, y, _kuerzen(c, p["text"], bw - 2 * r - 40, F, 9))
+            y -= 18
+            continue
         text = p["text"] + (f"  (Rabatt {p['rabatt_pct']:g} %)" if p.get("rabatt_pct") else "")
         zeilen_ = []
         z = ""
@@ -663,14 +673,15 @@ def beleg_pdf(db, bid, pdfa=False):
             y = neue_seite()
         c.setFont(N, 9)
         c.setFillColor(TEXT)
-        c.drawString(r + 4, y, str(p["pos"]))
+        lfd += 1
+        c.drawString(r + 4, y, str(lfd))
         for i, t in enumerate(zeilen_):
             c.setFillColor(MUTE if t.startswith("Charge:") else TEXT)
             c.drawString(r + 30, y - i * 12, t)
         c.setFillColor(TEXT)
         c.drawRightString(r + 330, y, menge(p["menge"]))
         c.drawString(r + 336, y, p["me"] or "")
-        c.drawRightString(r + 420, y, eur(p["einzelpreis"]))
+        c.drawRightString(r + 420, y, preis4(p["einzelpreis"]))
         c.drawRightString(bw - r - 4, y, eur(p["gesamt"]))
         y -= hoehe
         c.setStrokeColor(LINIE)

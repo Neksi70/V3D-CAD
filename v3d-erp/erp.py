@@ -387,6 +387,11 @@ def _belegart(db, code):
     return r
 
 
+def ist_textzeile(p):
+    """Positionen ohne Artikel, Menge und Preis sind reine Textzeilen (Überschrift im Beleg)."""
+    return not p.get("artikel_id") and not float(p.get("menge") or 0) and not float(p.get("einzelpreis") or 0)
+
+
 def _summen(positionen):
     """Netto je Position gerundet; Steuer je Steuersatz auf die Summe gerechnet und gerundet (EN 16931 / E-Rechnung)."""
     netto, je_satz = 0.0, {}
@@ -583,7 +588,10 @@ def beleg_verarbeiten(db, bid, benutzer=None):
                 db.execute("INSERT INTO projekt_verlauf(projekt_id,zeit,benutzer,text) VALUES(?,?,?,?)", (b["projekt_id"], jetzt(), benutzer, txt))
                 meldungen.append(f"Meilenstein „{m['titel']}“ erledigt")
         protokoll(db, benutzer, "beleg", bid, "verarbeitet", {"nummer": nummer})
-    return {"beleg": beleg_lesen(db, bid), "meldungen": meldungen}
+    erg = {"beleg": beleg_lesen(db, bid), "meldungen": meldungen}
+    if b["belegart"] == "WK":
+        erg["abweichungen"] = mengen_abweichung(db, bid)
+    return erg
 
 
 def offene_menge(db, pos_id, zielart):
@@ -628,6 +636,138 @@ def beleg_weiterverarbeiten(db, bid, zielart, benutzer=None):
                                    kopftext=b["kopftext"], fusstext=b["fusstext"], positionen=pos), benutzer)
     with transaktion(db):
         db.execute("INSERT INTO beleg_verknuepfung(vorgaenger_id,nachfolger_id) VALUES(?,?)", (bid, neu["id"]))
+    return beleg_lesen(db, neu["id"])
+
+
+
+# ---------------------------------------------------------------- Mengenabgleich Wareneingang → Auftrag
+def mengen_abweichung(db, wk_id):
+    """Auftragspositionen, deren eingegangene Kundenmaterial-Menge (alle verarbeiteten WK) von der AB-Menge abweicht."""
+    out = []
+    for r in db.execute("""SELECT DISTINCT p.vorgaenger_pos_id ab_pos FROM beleg_position p WHERE p.beleg_id=? AND p.vorgaenger_pos_id IS NOT NULL""", (wk_id,)):
+        ab = zeile(db.execute("""SELECT p.*, b.nummer, b.id ab_id, b.belegart FROM beleg_position p JOIN beleg b ON b.id=p.beleg_id WHERE p.id=?""", (r["ab_pos"],)))
+        if not ab or ab["belegart"] != "AB":
+            continue
+        eingang = db.execute("""SELECT COALESCE(SUM(p.menge),0) m FROM beleg_position p JOIN beleg b ON b.id=p.beleg_id
+                                WHERE p.vorgaenger_pos_id=? AND b.belegart='WK' AND b.status='verarbeitet'""", (ab["id"],)).fetchone()["m"]
+        geliefert = ab["menge"] - offene_menge(db, ab["id"], "LS")
+        if abs(eingang - ab["menge"]) > 1e-9:
+            out.append(dict(ab_id=ab["ab_id"], ab_nummer=ab["nummer"], pos_id=ab["id"], pos=ab["pos"], text=ab["text"], me=ab["me"],
+                            ab_menge=ab["menge"], eingang=eingang, geliefert=geliefert, moeglich=eingang >= geliefert - 1e-9))
+    return out
+
+
+def ab_angleichen(db, wk_id, benutzer=None):
+    """AB-Mengen auf die tatsächlich eingegangene Menge setzen – die einzige erlaubte Änderung an einer verarbeiteten AB
+    (sie bucht weder Lager noch OP). Wird protokolliert und im Projektverlauf vermerkt."""
+    abw = [a for a in mengen_abweichung(db, wk_id) if a["moeglich"]]
+    if not abw:
+        raise Fehler("Keine Abweichung zum Angleichen.")
+    with transaktion(db):
+        for a in abw:
+            db.execute("UPDATE beleg_position SET menge=? WHERE id=?", (a["eingang"], a["pos_id"]))
+        for ab_id in {a["ab_id"] for a in abw}:
+            pos = zeilen(db.execute("SELECT * FROM beleg_position WHERE beleg_id=? ORDER BY pos", (ab_id,)))
+            netto, steuer, brutto = _summen(pos)
+            for p in pos:
+                db.execute("UPDATE beleg_position SET gesamt=? WHERE id=?", (p["gesamt"], p["id"]))
+            db.execute("UPDATE beleg SET netto=?, steuer=?, brutto=? WHERE id=?", (netto, steuer, brutto, ab_id))
+            text = "; ".join(f"Pos. {a['pos']} {a['ab_menge']:g} → {a['eingang']:g} {a['me']}" for a in abw if a["ab_id"] == ab_id)
+            wk = db.execute("SELECT nummer FROM beleg WHERE id=?", (wk_id,)).fetchone()["nummer"]
+            protokoll(db, benutzer, "beleg", ab_id, "Menge an Wareneingang angeglichen", {"wk": wk, "text": text})
+            prj = db.execute("SELECT projekt_id, nummer FROM beleg WHERE id=?", (ab_id,)).fetchone()
+            if prj["projekt_id"]:
+                db.execute("INSERT INTO projekt_verlauf(projekt_id,zeit,benutzer,text) VALUES(?,?,?,?)",
+                           (prj["projekt_id"], jetzt(), benutzer, f"{prj['nummer']}: Menge an Wareneingang {wk} angeglichen ({text})"))
+    return {"angeglichen": abw}
+
+
+# ---------------------------------------------------------------- Sammel-Lieferschein aus offenen Auftragspositionen
+def _im_haus(db, ab_pos_id):
+    """Kundenmaterial dieser Auftragsposition, das noch im Haus und nicht in einem LS-Entwurf verplant ist."""
+    summe, nrn, hat_wk = 0.0, [], False
+    for c in db.execute("""SELECT c.id, c.chargennr FROM charge c JOIN beleg_position wp ON wp.id=c.eingang_pos_id
+                           WHERE wp.vorgaenger_pos_id=? ORDER BY c.datum, c.id""", (ab_pos_id,)):
+        hat_wk = True
+        rest = charge_rest(db, c["id"]) - db.execute("""SELECT COALESCE(SUM(p.menge),0) m FROM beleg_position p JOIN beleg b ON b.id=p.beleg_id
+                                                         WHERE p.charge_id=? AND b.status='entwurf' AND b.belegart='LS'""", (c["id"],)).fetchone()["m"]
+        if rest > 1e-9:
+            summe += rest
+            nrn.append(c["chargennr"])
+    return summe, nrn, hat_wk
+
+
+def offene_auftragspositionen(db, adresse_id=None):
+    """Ohne Kunde: Kunden mit offenen AB-Positionen (Anzahl). Mit Kunde: die Positionen, gruppierbar nach AB."""
+    if not adresse_id:
+        l = {}
+        for r in db.execute("""SELECT p.id, b.adresse_id, a.kurz, k.kundennr FROM beleg_position p JOIN beleg b ON b.id=p.beleg_id
+                               JOIN adresse a ON a.id=b.adresse_id LEFT JOIN kunde k ON k.adresse_id=a.id
+                               WHERE b.belegart='AB' AND b.status='verarbeitet' AND p.menge>0"""):
+            if offene_menge(db, r["id"], "LS") > 1e-9:
+                x = l.setdefault(r["adresse_id"], dict(adresse_id=r["adresse_id"], kurz=r["kurz"], kundennr=r["kundennr"], anzahl=0))
+                x["anzahl"] += 1
+        return sorted(l.values(), key=lambda x: x["kurz"])
+    out = []
+    for p in zeilen(db.execute("""SELECT p.*, b.nummer ab_nummer, b.datum ab_datum, b.id ab_id, b.projekt_id, ar.artikelnr
+                                  FROM beleg_position p JOIN beleg b ON b.id=p.beleg_id LEFT JOIN artikel ar ON ar.id=p.artikel_id
+                                  WHERE b.belegart='AB' AND b.status='verarbeitet' AND b.adresse_id=? AND p.menge>0
+                                  ORDER BY b.datum, b.id, p.pos""", (adresse_id,))):
+        offen = offene_menge(db, p["id"], "LS")
+        if offen <= 1e-9:
+            continue
+        im_haus, chargen, hat_wk = _im_haus(db, p["id"])
+        out.append(dict(pos_id=p["id"], ab_id=p["ab_id"], ab_nummer=p["ab_nummer"], ab_datum=p["ab_datum"], pos=p["pos"],
+                        artikelnr=p["artikelnr"], text=p["text"], me=p["me"], menge=p["menge"], offen=offen,
+                        im_haus=im_haus, chargen=chargen, kundenmaterial=hat_wk,
+                        vorschlag=min(offen, im_haus) if hat_wk else offen))
+    return out
+
+
+def sammel_lieferschein(db, adresse_id, auswahl, benutzer=None):
+    """Ein Lieferschein aus Positionen mehrerer Aufträge eines Kunden; Chargen werden wie beim normalen LS verteilt."""
+    if not auswahl:
+        raise Fehler("Bitte mindestens eine Position auswählen.")
+    offen = {p["pos_id"]: p for p in offene_auftragspositionen(db, adresse_id)}
+    gruppen = {}
+    for a in auswahl:
+        pid, menge = int(a.get("pos_id") or 0), float(a.get("menge") or 0)
+        p = offen.get(pid)
+        if not p:
+            raise Fehler("Eine gewählte Position ist nicht mehr offen – bitte Liste neu laden.")
+        if menge <= 0:
+            continue
+        if menge > p["offen"] + 1e-9:
+            raise Fehler(f"{p['ab_nummer']} Pos. {p['pos']}: höchstens {p['offen']:g} offen.")
+        if p["kundenmaterial"] and menge > p["im_haus"] + 1e-9:
+            raise Fehler(f"{p['ab_nummer']} Pos. {p['pos']}: nur {p['im_haus']:g} Kundenmaterial im Haus.")
+        gruppen.setdefault(p["ab_id"], []).append((p, menge))
+    if not gruppen:
+        raise Fehler("Bitte Mengen größer 0 angeben.")
+    pos, projekte, refs = [], set(), set()
+    for ab_id, liste in gruppen.items():
+        ab = zeile(db.execute("SELECT * FROM beleg WHERE id=?", (ab_id,)))
+        projekte.add(ab["projekt_id"])
+        refs.add(ab["ihre_referenz"])
+        if len(gruppen) > 1:
+            pos.append(dict(text=f"aus Auftragsbestätigung {ab['nummer']} vom {_dt.date.fromisoformat(ab['datum']).strftime('%d.%m.%Y')}"
+                                 + (f" (Ihre Bestellung {ab['ihre_referenz']})" if ab["ihre_referenz"] else "") + ":",
+                            menge=0, einzelpreis=0))
+        for p, menge in liste:
+            bp = zeile(db.execute("SELECT * FROM beleg_position WHERE id=?", (p["pos_id"],)))
+            np = dict(artikel_id=bp["artikel_id"], text=bp["text"], menge=menge, me=bp["me"], einzelpreis=bp["einzelpreis"],
+                      rabatt_pct=bp["rabatt_pct"], steuer_pct=bp["steuer_pct"], vorgaenger_pos_id=bp["id"],
+                      charge_nr=bp["charge_nr"], charge_id=bp["charge_id"])
+            pos.extend(_chargen_zuordnen(db, np, bp["id"]) if not bp["charge_id"] else [np])
+    erste = zeile(db.execute("SELECT * FROM beleg WHERE id=?", (next(iter(gruppen)),)))
+    neu = beleg_speichern(db, dict(belegart="LS", adresse_id=adresse_id,
+                                   projekt_id=projekte.pop() if len(projekte) == 1 else None,
+                                   ihre_referenz=refs.pop() if len(refs) == 1 else None,
+                                   betreff=erste["betreff"] if len(gruppen) == 1 else f"Lieferung zu {len(gruppen)} Aufträgen",
+                                   zahlungsbed_id=erste["zahlungsbed_id"], lager_id=erste["lager_id"], positionen=pos), benutzer)
+    with transaktion(db):
+        for ab_id in gruppen:
+            db.execute("INSERT OR IGNORE INTO beleg_verknuepfung(vorgaenger_id,nachfolger_id) VALUES(?,?)", (ab_id, neu["id"]))
     return beleg_lesen(db, neu["id"])
 
 

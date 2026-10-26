@@ -233,6 +233,7 @@ main{padding:0!important;min-width:0;display:flex;flex-direction:column}
 .pd-balken{display:flex;gap:4px;min-width:220px}.pd-balken>div{flex:1;background:#e7ebf1;border-radius:4px;height:22px;position:relative;overflow:hidden;font-size:11px}
 .pd-balken>div>i{position:absolute;inset:0 auto 0 0;background:color-mix(in srgb,var(--green) 70%,#fff)}.pd-balken>div.laeuft>i{background:color-mix(in srgb,var(--blue) 55%,#fff)}
 .pd-balken>div>span{position:relative;padding:0 4px;line-height:22px;white-space:nowrap}
+.sl-ab td{background:#eef1f6}.sl-leer{opacity:.5}
 .ws-gruende{display:flex;flex-wrap:wrap;gap:6px}.ws-gruende .btn{font-size:15px;padding:8px 12px}
 .charge-alle{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fff8e6;border:1px solid #f3d38a;border-radius:6px;padding:8px 10px;margin:6px 0 10px}
 .charge-alle input{max-width:220px}
@@ -269,6 +270,7 @@ const $$ = s => (AKT ? AKT.el : document).querySelectorAll(s);
 const ak = (txt, b) => { const i = txt.toLowerCase().indexOf(b.toLowerCase()); return i < 0 ? esc(txt) : esc(txt.slice(0,i)) + '<u>' + esc(txt[i]) + '</u>' + esc(txt.slice(i+1)); };
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const eur = n => (Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+const preis = n => (Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:4});   // Stückpreise: bis 4 Nachkommastellen (Lohnbearbeitung)
 const zahl = n => (Number(n)||0).toLocaleString('de-DE',{maximumFractionDigits:3});
 const dt = s => s ? new Date(s.slice(0,10)+'T00:00:00') : null;
 const fmt = s => s ? dt(s).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'}) : '–';
@@ -677,12 +679,14 @@ async function seiteBank(){
 async function seiteBelege(bereich, sel){
   const arten = G.belegarten.filter(x=>x.bereich===bereich);
   M().innerHTML = `<div class="kopfzeile"><h1>${bereich==='VK'?'Verkaufsbelege':'Einkaufsbelege'}</h1><span class="sp"></span>
+    ${bereich==='VK'?'<button class="btn" id="slNeu" title="Ein Lieferschein aus offenen Positionen mehrerer Aufträge eines Kunden">Lieferschein aus offenen Aufträgen</button>':''}
     ${bereich==='EK'?'<button class="btn" id="erEin" title="XRechnung (XML) oder ZUGFeRD-PDF eines Lieferanten als Rechnungseingang übernehmen">E-Rechnung einlesen</button><input type="file" id="erDatei" accept=".xml,.pdf,application/xml,text/xml,application/pdf" hidden>':''}
     <div class="menue" id="neuM"><button class="btn pri">Neu ▾</button><div class="ddl">${arten.map(a=>`<button data-a="${a.code}">${esc(a.name)}</button>`).join('')}</div></div></div>
     <div class="card"><div class="filter"><input id="fs" placeholder="Suchen: Nummer, Name, Betreff, Projekt"><select id="fa"><option value="">Alle Belegarten</option>${arten.map(a=>`<option value="${a.code}">${esc(a.name)}</option>`).join('')}</select>
     <select id="fst"><option value="">Alle Status</option><option value="entwurf">Entwurf</option><option value="verarbeitet">Verarbeitet</option></select></div>
     <div class="liste"><table><thead><tr><th>Belegart</th><th>Nummer</th><th>Datum</th><th>${bereich==='VK'?'Kunde':'Lieferant'}</th><th>Betreff</th><th>Projekt</th><th class="r">Netto</th><th>Status</th></tr></thead><tbody id="bl"></tbody></table></div></div>`;
   menueAuf('#neuM', code => location.hash = '#/neu/'+code);
+  if ($('#slNeu')) $('#slNeu').onclick = sammelLieferschein;
   if ($('#erEin')){ $('#erEin').onclick = () => $('#erDatei').click();
     $('#erDatei').onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return;
       if (f.size > 25e6) return toast('Datei zu groß (max. 25 MB).', true);
@@ -793,7 +797,7 @@ async function belegMaske(b){
       ${mitCharge ? `<td>${chargeZelle(p)}</td>` : ''}
       <td><input class="pM zahl" value="${zahl(p.menge??1)}" ${dis}></td>
       <td><input class="pE" value="${esc(p.me||'Stk')}" ${dis}></td>
-      <td><input class="pP zahl" value="${eur(p.einzelpreis??0)}" ${dis}></td>
+      <td><input class="pP zahl" value="${preis(p.einzelpreis??0)}" ${dis}></td>
       <td><input class="pR zahl" value="${zahl(p.rabatt_pct||0)}" ${dis}></td>
       <td class="r pG"></td><td class="noprint" style="white-space:nowrap"><button class="btn posknopf pD" title="Details">…</button>${!gesperrt?`<button class="btn rot posknopf pX" title="Position löschen">×</button>`:''}</td></tr>`; }).join('');
     rechne();
@@ -831,7 +835,7 @@ async function belegMaske(b){
     if (c.contains('pT')) p.text=e.target.value; if (c.contains('pM')) p.menge=num(e.target.value); if (c.contains('pE')) p.me=e.target.value;
     if (c.contains('pP')){ p.einzelpreis=num(e.target.value); p._manuell = true; } if (c.contains('pR')){ p.rabatt_pct=num(e.target.value); p._manuell = true; }
     if (c.contains('pM') && vk && p.artikel_id && !p._manuell){ clearTimeout(p._t); p._t = setTimeout(async () => { const alt = p.einzelpreis; await preisHolen(p);
-      if (p.einzelpreis !== alt){ const z = $(`#pt tr[data-i="${tr.dataset.i}"]`); z.querySelector('.pP').value = eur(p.einzelpreis); z.querySelector('.pR').value = zahl(p.rabatt_pct); rechne(); toast(`Preis angepasst: ${p._quelle} → ${eur(p.einzelpreis)} €`); } }, 450); }
+      if (p.einzelpreis !== alt){ const z = $(`#pt tr[data-i="${tr.dataset.i}"]`); z.querySelector('.pP').value = preis(p.einzelpreis); z.querySelector('.pR').value = zahl(p.rabatt_pct); rechne(); toast(`Preis angepasst: ${p._quelle} → ${preis(p.einzelpreis)} €`); } }, 450); }
     if (c.contains('pC')) p.charge_nr=e.target.value; rechne(); });
   const preisHolen = async (p) => { if (!vk || !adresseId || !p.artikel_id || p._manuell) return;
     const r = await api(`preis?adresse=${adresseId}&artikel=${p.artikel_id}&menge=${num(p.menge ?? 1)}&datum=${$('#kDat').value}`);
@@ -879,7 +883,8 @@ async function belegMaske(b){
     if (!confirm('Beleg verarbeiten? Danach ist er gesperrt und bekommt seine endgültige Nummer.')) return;
     const n = await speichern(); const r = await api(`belege/${n.id}/verarbeiten`,{body:{}});
     toast(`${r.beleg.nummer} verarbeitet${r.meldungen.length?' · '+r.meldungen.join(' · '):''}`);
-    if (location.hash==='#/beleg/'+n.id) seiteBeleg(n.id); else location.hash='#/beleg/'+n.id; };
+    if (location.hash==='#/beleg/'+n.id) seiteBeleg(n.id); else location.hash='#/beleg/'+n.id;
+    if (r.abweichungen?.length) mengenAbgleich(r.beleg, r.abweichungen); };
   if ($('#wM')) menueAuf('#wM', async ziel => { const n = await api(`belege/${b.id}/weiter`,{body:{ziel}}); toast(`${n.belegart_name} als Entwurf angelegt.`); location.hash='#/beleg/'+n.id; });
   const listeDialog = (titel, l) => dialog(titel, '', `<div class="liste" style="max-height:360px"><table><tbody>${l.map(x=>`<tr class="klick" onclick="document.getElementById('dlg').close();location.hash='#/beleg/${x.id}'"><td>${esc(x.belegart_name||ba(x.belegart).name)}</td><td>${esc(x.nummer||'Entwurf')}</td><td>${fmt(x.datum)}</td><td>${x.status==='entwurf'?'<span class="pill st-entwurf">Entwurf</span>':''}</td><td class="r">${eur(x.brutto)} €</td></tr>`).join('')||'<tr><td class="hinweis">Keine Belege.</td></tr>'}</tbody></table></div>`, [['Schließen','']]);
   menueAuf('#suM', async r => { if (r==='liste') location.hash='#/belege/'+b.bereich;
@@ -917,7 +922,7 @@ function belegDruckHTML(b){
     <div class="bk"><b style="font-size:15px">${esc(b.belegart_name)}</b><br>Nummer: ${esc(b.nummer||'ENTWURF')}<br>Datum: ${fmt(b.datum)}<br>${b.kundennr?'Kundennr.: '+esc(b.kundennr)+'<br>':''}${b.projektnr?'Projekt: '+esc(b.projektnr)+'<br>':''}${b.ihre_referenz?(b.belegart==='WK'?'Ihr Lieferschein: ':'Ihre Ref.: ')+esc(b.ihre_referenz):''}</div></div>
     ${b.betreff?`<b>${esc(b.betreff)}</b><br><br>`:''}${b.kopftext?esc(b.kopftext)+'<br><br>':''}
     <table><thead><tr><th>Pos</th><th>Bezeichnung</th><th class="r">Menge</th><th>ME</th><th class="r">Einzelpreis</th><th class="r">Gesamt</th></tr></thead>
-    <tbody>${b.positionen.map(p=>`<tr><td>${p.pos}</td><td>${esc(p.text)}${p.rabatt_pct?` <small>(−${zahl(p.rabatt_pct)} %)</small>`:''}${p.charge_nr?`<br><small>Charge: ${esc(p.charge_nr)}</small>`:''}</td><td class="r">${zahl(p.menge)}</td><td>${esc(p.me)}</td><td class="r">${eur(p.einzelpreis)}</td><td class="r">${eur(p.gesamt)}</td></tr>`).join('')}</tbody></table>
+    <tbody>${(n => b.positionen.map(p=> !p.artikel_id && !p.menge && !p.einzelpreis ? `<tr><td></td><td colspan="5"><b>${esc(p.text)}</b></td></tr>` : `<tr><td>${++n}</td><td>${esc(p.text)}${p.rabatt_pct?` <small>(−${zahl(p.rabatt_pct)} %)</small>`:''}${p.charge_nr?`<br><small>Charge: ${esc(p.charge_nr)}</small>`:''}</td><td class="r">${zahl(p.menge)}</td><td>${esc(p.me)}</td><td class="r">${preis(p.einzelpreis)}</td><td class="r">${eur(p.gesamt)}</td></tr>`).join(''))(0)}</tbody></table>
     <div class="summe"><span>Netto</span><span class="r">${eur(b.netto)} €</span><span>MwSt.</span><span class="r">${eur(b.steuer)} €</span><b>Gesamt</b><b class="r">${eur(b.brutto)} €</b></div>
     ${b.zahlungsbed?`<p>Zahlungsbedingung: ${esc(b.zahlungsbed)}</p>`:''}${b.fusstext?`<p>${esc(b.fusstext)}</p>`:''}${fussHTML(E)}</div>`;
 }
@@ -1493,6 +1498,53 @@ async function werkstattZeichnen(box){
       <textarea id="wsText" rows="3" placeholder="Was ist los? (geht an das Büro)"></textarea>`,
       [['Abbrechen',''], ['Melden','pri', async () => { await api(`meilensteine/${m.id}/hinweis`, {body:{text: document.getElementById('wsText').value}}); toast('Meldung an das Büro geschickt.'); }]]);
     document.querySelectorAll('.ws-gruende button').forEach(g => g.onclick = () => { const t = document.getElementById('wsText'); t.value = (t.value ? t.value + ' – ' : '') + g.dataset.g; t.focus(); }); });
+}
+
+// ================================================================ Mengenabgleich Wareneingang → Auftrag
+function mengenAbgleich(wk, abw){
+  const ok = abw.filter(a => a.moeglich);
+  dialog('Eingegangene Menge weicht vom Auftrag ab', esc(`Wareneingang ${wk.nummer}`),
+    `<table><thead><tr><th>Auftrag</th><th>Position</th><th class="r">laut Auftrag</th><th class="r">eingegangen</th></tr></thead><tbody>
+     ${abw.map(a => `<tr><td>${esc(a.ab_nummer)}</td><td>${a.pos}. ${esc(a.text)}</td><td class="r">${zahl(a.ab_menge)} ${esc(a.me)}</td><td class="r"><b>${zahl(a.eingang)}</b> ${esc(a.me)}</td></tr>`).join('')}</tbody></table>
+     <p>Soll die Auftragsbestätigung auf die <b>tatsächlich eingegangene Menge</b> angepasst werden? Dann stimmen offene Menge, Auftragsbestand und Lieferschein automatisch – nichts mehr von Hand nachtragen.</p>
+     <p class="hinweis">Kommt noch eine Teillieferung vom Kunden, „Nein, Rest kommt noch“ wählen. Die Anpassung wird im Protokoll und im Projektverlauf vermerkt.${ok.length < abw.length ? ' Positionen, von denen schon mehr geliefert wurde, bleiben unverändert.' : ''}</p>`,
+    [['Nein, Rest kommt noch',''], ...(ok.length ? [['Auftrag anpassen','pri', async () => { await api(`belege/${wk.id}/ab_angleichen`, {body:{}}); toast('Auftragsbestätigung an den Wareneingang angepasst.'); }]] : [])]);
+}
+
+// ================================================================ Sammel-Lieferschein aus offenen Auftragspositionen
+async function sammelLieferschein(){
+  const kunden = await api('offene_positionen');
+  if (!kunden.length) return toast('Keine offenen Auftragspositionen.', true);
+  dialog('Lieferschein aus offenen Aufträgen', 'Schritt 1: Kunde wählen',
+    `<div class="pd-liste">${kunden.map(k => `<button class="btn" data-k="${k.adresse_id}"><b>${esc(k.kurz)}</b> <span class="hinweis">${esc(k.kundennr||'')} · ${k.anzahl} offene Position${k.anzahl==1?'':'en'}</span></button>`).join('')}</div>`, [['Abbrechen','']]);
+  document.querySelectorAll('#dBody [data-k]').forEach(b => b.onclick = () => sammelPositionen(+b.dataset.k, kunden.find(k => k.adresse_id === +b.dataset.k)));
+}
+async function sammelPositionen(aid, kunde){
+  const l = await api('offene_positionen?adresse=' + aid);
+  let ab = null;
+  const zeilen = l.map((p, i) => {
+    const kopf = p.ab_id !== ab ? `<tr class="sl-ab"><td colspan="7"><b>${esc(p.ab_nummer)}</b> vom ${fmt(p.ab_datum)}</td></tr>` : ''; ab = p.ab_id;
+    const fehlt = p.kundenmaterial && p.im_haus <= 0;
+    return kopf + `<tr class="${fehlt ? 'sl-leer' : ''}"><td><input type="checkbox" class="slH" data-i="${i}" ${fehlt ? 'disabled' : ''} style="width:auto"></td>
+      <td>${esc(p.artikelnr||'')}</td><td>${esc(p.text)}</td><td>${p.chargen.length ? esc(p.chargen.join(', ')) : (p.kundenmaterial ? '<span class="hinweis">kein Material im Haus</span>' : '<span class="hinweis">ohne Kundenmaterial</span>')}</td>
+      <td class="r">${zahl(p.offen)} ${esc(p.me)}</td><td class="r">${p.kundenmaterial ? zahl(p.im_haus) : '–'}</td>
+      <td><input class="slM zahl" data-i="${i}" value="${p.vorschlag > 0 ? zahl(p.vorschlag) : ''}" style="width:90px" ${fehlt ? 'disabled' : ''}></td></tr>`; }).join('');
+  dialog('Lieferschein aus offenen Aufträgen', esc(`${kunde.kurz} · Positionen anhaken, Menge prüfen`),
+    `<div class="liste" style="max-height:56vh"><table><thead><tr><th></th><th>Artikel</th><th>Bezeichnung</th><th>Charge</th><th class="r">offen</th><th class="r">im Haus</th><th>liefern</th></tr></thead><tbody>${zeilen}</tbody></table></div>
+     <div style="display:flex;gap:8px;margin-top:8px"><button class="btn" id="slAlle">Alle</button><button class="btn" id="slKeine">Keine</button><span class="sp"></span><span class="hinweis" id="slInfo"></span></div>`,
+    [['‹ Anderer Kunde','', () => { setTimeout(sammelLieferschein); return false; }], ['Abbrechen',''],
+     ['Lieferschein erstellen','pri', async () => {
+       const auswahl = [...document.querySelectorAll('.slH:checked')].map(c => ({pos_id: l[+c.dataset.i].pos_id, menge: num(document.querySelector(`.slM[data-i="${c.dataset.i}"]`).value)}));
+       if (!auswahl.length){ toast('Bitte Positionen anhaken.', true); return false; }
+       const ls = await api('lieferschein/sammel', {body:{adresse_id: aid, auswahl}});
+       toast(`Lieferschein-Entwurf mit ${auswahl.length} Position${auswahl.length==1?'':'en'} angelegt.`); location.hash = '#/beleg/' + ls.id; }]]);
+  document.getElementById('dlg').style.width = 'min(1100px, 96vw)';
+  const info = () => { document.getElementById('slInfo').textContent = `${document.querySelectorAll('.slH:checked').length} ausgewählt`; };
+  document.querySelectorAll('.slH').forEach(c => c.onchange = info);
+  document.querySelectorAll('.slM').forEach(m => m.oninput = () => { const c = document.querySelector(`.slH[data-i="${m.dataset.i}"]`); if (m.value.trim()) c.checked = true; info(); });
+  document.getElementById('slAlle').onclick = () => { document.querySelectorAll('.slH:not(:disabled)').forEach(c => c.checked = true); info(); };
+  document.getElementById('slKeine').onclick = () => { document.querySelectorAll('.slH').forEach(c => c.checked = false); info(); };
+  info();
 }
 
 // ================================================================ Produktion (Rückmeldung je Palette/Charge)

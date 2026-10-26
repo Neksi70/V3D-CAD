@@ -489,6 +489,27 @@ def r_beleg_loeschen(bid, benutzer, **_):
     erp.beleg_loeschen(DB, bid, benutzer)
     return {"ok": True}
 
+# ---------------------------------------------------------------- Mengenabgleich / Sammel-Lieferschein
+@route("GET", "/api/belege/(?P<bid>\\d+)/abweichungen")
+def r_abweichungen(bid, **_):
+    return erp.mengen_abweichung(DB, bid)
+
+
+@route("POST", "/api/belege/(?P<bid>\\d+)/ab_angleichen")
+def r_ab_angleichen(bid, benutzer, **_):
+    return erp.ab_angleichen(DB, bid, benutzer)
+
+
+@route("GET", "/api/offene_positionen")
+def r_offene_positionen(q, **_):
+    return erp.offene_auftragspositionen(DB, int(q["adresse"]) if q.get("adresse") else None)
+
+
+@route("POST", "/api/lieferschein/sammel")
+def r_sammel_ls(body, benutzer, **_):
+    return erp.sammel_lieferschein(DB, int(body.get("adresse_id") or 0), body.get("auswahl") or [], benutzer)
+
+
 # ---------------------------------------------------------------- Produktion (Rückmeldung je Palette/Charge)
 @route("GET", "/api/produktion")
 def r_produktion(q, **_):

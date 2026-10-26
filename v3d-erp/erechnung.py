@@ -100,6 +100,8 @@ def cii_xml(db, bid, profil="xrechnung"):
 
     zeilen_ = []
     for p in b["positionen"]:
+        if erp.ist_textzeile(p):          # reine Textzeile (z. B. „aus Auftragsbestätigung …“) gehört nicht in die E-Rechnung
+            continue
         netto_preis = round(p["einzelpreis"] * (1 - (p["rabatt_pct"] or 0) / 100), 4)
         name = p["text"] + (f" – Charge {p['charge_nr']}" if p.get("charge_nr") else "")
         zeilen_.append(f"""<ram:IncludedSupplyChainTradeLineItem>
