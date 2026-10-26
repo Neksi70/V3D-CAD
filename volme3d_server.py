@@ -265,6 +265,7 @@ ALLOW = {
     '/lib/vereinfachen-worker.js':        ('lib/vereinfachen-worker.js', 'text/javascript; charset=utf-8'),
     # Stützfinnen-Rechenkern (Support Fins, MIT) als Worker, gebaut von tools/bau_stuetzfinnen.mjs
     '/lib/stuetzfinnen-worker.js':        ('lib/stuetzfinnen-worker.js', 'text/javascript; charset=utf-8'),
+    '/lib/truenest-worker.js':            ('lib/truenest-worker.js', 'text/javascript; charset=utf-8'),
     '/lib/three-mesh-bvh.min.js':         ('lib/three-mesh-bvh.min.js', 'text/javascript; charset=utf-8'),
     '/lib/SimplifyModifier.js':           ('lib/SimplifyModifier.js', 'text/javascript; charset=utf-8'),
     '/lib/qrcode.min.js':                 ('lib/qrcode.min.js', 'text/javascript; charset=utf-8'),

@@ -228,6 +228,9 @@ window.V3D_HILFE = [
   { b: 'Anordnen', i: '▦', t: 'Platte füllen & mehrere Platten', k: 'füllen platte druckplatte kopien mehrere platten',
     was: 'So viele Kopien wie möglich auf die Druckplatte verteilen — oder weitere Druckplatten anlegen.',
     wo: 'Anordnen → ▦ Füllen / ▭ + Platte; unten in der Mitte die Platten-Leiste.', s: ['Teil auswählen, <b>Füllen</b>.', 'Anzahl oder „so viele wie passen“ wählen.'], run: 'fillPlateTool()' },
+  { b: 'Anordnen', i: '🧩', t: 'True Nest (verschiedene Teile verschachteln)', k: 'true nest verschachteln nesting laser zuschnitt material sparen anordnen platte viele teile kontur',
+    was: 'Viele verschiedene Teile nach ihrem echten Umriss dicht auf die Druckplatte oder das Laser-Material legen, gedreht und ineinander geschoben. Was nicht passt, kommt auf weitere Platten.',
+    wo: 'Anordnen → 🧩 True Nest.', s: ['Teile auswählen. Ist nichts gewählt, nimmt True Nest alle Teile der aktiven Platte.', '<b>True Nest</b> klicken, Abstand, Drehung und Suchzeit wählen.', '<b>▶ Verschachteln</b>. <b>■ Stopp</b> behält die beste Lage, <b>Abbrechen</b> legt alles zurück.'], run: 'trueNestTool()' },
 
   // ── Form ändern ────────────────────────────────────────────────────────
   { b: 'Form ändern', i: '⬡', t: 'Kanten runden & abschrägen', k: 'kanten runden fase abschrägen fillet chamfer alles abrunden',

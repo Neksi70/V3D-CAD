@@ -1242,6 +1242,14 @@ body.devmode .dev-only{display:flex!important}
 .pat-row{margin-bottom:13px}
 .pat-grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 .pat-foot{padding:0 18px 16px;display:flex;gap:8px;justify-content:flex-end}
+#tn-modal{position:fixed;top:72px;left:50%;transform:translateX(-50%);z-index:3000;display:none}
+#tn-modal.show{display:block}
+#tn-box{background:#fff;border-radius:14px;width:380px;max-width:95vw;box-shadow:0 24px 80px rgba(0,0,0,.32);overflow:hidden}
+.tn-hdr{padding:14px 18px;border-bottom:1px solid var(--border);font-size:15px;font-weight:800;display:flex;align-items:center;justify-content:space-between;background:#fafbfd}
+.tn-body{padding:18px}
+#tn-bar-wrap{height:16px;border:1.5px solid var(--border);border-radius:5px;overflow:hidden;background:#f3f5f9;margin-bottom:10px}
+#tn-bar{height:100%;width:0;background:#2b7de9;transition:width .2s linear}
+.tn-line{font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px}
 /* ── Lock / Hidden tree indicators ──────────────────────────────────── */
 .ti-lock{font-size:9px;margin-left:3px;opacity:.7}
 .ti-hidden{opacity:.4;font-style:italic}
@@ -1538,6 +1546,7 @@ const firebaseConfig = {
       <button class="btn" onclick="enterKugelmuster()" title="Kugelmuster — gewählten Körper gleichmäßig über eine Kugel verteilen (ganze Kugel oder Kappe), z. B. Noppen oder Golfball-Dellen">◍ Kugelmuster</button>
       <button class="btn" onclick="hexPatternTool()" title="Wabenmuster — Sechskant-Löcher in den Boden des gewählten Körpers stanzen">⬡ Waben</button>
       <button class="btn" onclick="fillPlateTool()" title="Platte füllen — nur das Teil wählen = Druckplatte füllen, oder eigene Grundplatte + Teil wählen: so viele Kopien des Teils wie möglich — oder eine feste Anzahl, z. B. 4 — auf die Platte verteilen (gleiche Höhe) — wahlweise dicht verschachtelt oder sauber in Reihen untereinander">▦ Füllen</button>
+      <button class="btn" onclick="trueNestTool()" title="True Nest — viele verschiedene Teile nach ihrer echten Kontur dicht auf die Druckplatte verschachteln (Laser-Zuschnitt oder Druckplatte), gedreht und ineinander geschoben. Sucht einstellbar lange nach der besten Lage und zeigt live, wie viel Material gespart wird. Was nicht passt, kommt auf weitere Platten. Nichts gewählt = alle Teile der aktiven Platte">🧩 True Nest</button>
       <button class="btn" onclick="plateAdd()" title="Weitere Druckplatte daneben anlegen — umschalten, entfernen und je Platte exportieren über die Platten-Leiste unten in der Mitte">▭ ＋ Platte</button>
     </div></div>
     <div class="tbg"><span class="tbg-l">Form ändern</span><div class="tbg-row">
@@ -3031,6 +3040,51 @@ const firebaseConfig = {
     <div class="pat-foot">
       <button class="btn" onclick="_closePat()">Abbrechen</button>
       <button class="btn pri" onclick="_applyPat()">✓ Anwenden</button>
+    </div>
+  </div>
+</div>
+
+<!-- True Nest -->
+<div id="tn-modal">
+  <div id="tn-box">
+    <div class="tn-hdr"><span>🧩 True Nest</span>
+      <span onclick="_tn ? _tnCancel() : _tnClose()" style="cursor:pointer;font-size:18px;color:#bbb;line-height:1">×</span></div>
+    <div id="tn-set">
+      <div class="tn-body">
+        <div id="tn-info" style="font-size:12px;color:var(--dim);margin-bottom:12px"></div>
+        <div class="pat-row"><label class="pat-lbl">Abstand zwischen den Teilen (mm)</label>
+          <input id="tn-gap" class="pat-inp" type="number" min="0" max="100" value="2" step="0.5"></div>
+        <div class="pat-row"><label class="pat-lbl">Randabstand zur Plattenkante (mm)</label>
+          <input id="tn-margin" class="pat-inp" type="number" min="0" max="100" value="5" step="0.5"></div>
+        <div class="pat-row"><label class="pat-lbl" title="Feinere Schritte finden dichtere Lagen, rechnen aber länger">Drehen</label>
+          <select id="tn-rot" class="pat-sel">
+            <option value="0">Nicht drehen</option>
+            <option value="90" selected>In 90°-Schritten</option>
+            <option value="45">In 45°-Schritten</option>
+            <option value="15">Fein, 15°-Schritte (dichter, langsamer)</option>
+          </select></div>
+        <div class="pat-row"><label class="pat-lbl">Suchzeit (Sekunden)</label>
+          <input id="tn-time" class="pat-inp" type="number" min="1" max="300" value="15" step="1"></div>
+        <div class="pat-row"><label class="pat-lbl" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input id="tn-more" type="checkbox" checked> Was nicht passt, auf weitere Platten</label></div>
+        <div style="font-size:11px;color:var(--dim)">Verschachtelt nach dem echten Umriss von oben. Die Teile rücken an die linke Plattenkante, der Rest des Materials bleibt am Stück. Teile, die sich überschneiden (z. B. Körper mit Schrift darauf), bleiben zusammen. Gesperrte und andere Teile auf der Platte bleiben liegen, um sie wird herum verschachtelt. Feine Drehschritte rechnen deutlich länger, dafür lohnt eine längere Suchzeit.</div>
+      </div>
+      <div class="pat-foot">
+        <button class="btn" onclick="_tnClose()">Abbrechen</button>
+        <button class="btn pri" onclick="_tnStart()">▶ Verschachteln</button>
+      </div>
+    </div>
+    <div id="tn-run" style="display:none">
+      <div class="tn-body">
+        <div id="tn-bar-wrap"><div id="tn-bar"></div></div>
+        <div class="tn-line" id="tn-state"></div>
+        <div class="tn-line" id="tn-placed"></div>
+        <div class="tn-line" id="tn-saved"></div>
+      </div>
+      <div class="pat-foot">
+        <button class="btn" onclick="_tnStop()" title="Suche beenden und die beste Lage bis jetzt behalten">■ Stopp</button>
+        <button class="btn" onclick="_tnCancel()" title="Alles zurück, wie es vorher lag">Abbrechen</button>
+      </div>
     </div>
   </div>
 </div>
@@ -14133,6 +14187,7 @@ const _SYM_ICONS = {
   'circularPatternTool()': '<circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="12" cy="4.6" r="2"/><circle cx="18.4" cy="8.3" r="2"/><circle cx="18.4" cy="15.7" r="2"/><circle cx="12" cy="19.4" r="2"/><circle cx="5.6" cy="15.7" r="2"/><circle cx="5.6" cy="8.3" r="2"/>',
   'hexPatternTool()': '<path d="M7 3l4 2.3v4.6L7 12.2 3 9.9V5.3zM17 3l4 2.3v4.6l-4 2.3-4-2.3V5.3zM12 11.8l4 2.3v4.6L12 21l-4-2.3v-4.6z"/>',
   'fillPlateTool()': '<rect x="2.5" y="2.5" width="19" height="19" rx="2"/><path d="M6 6h3v3H6zM10.5 6h3v3h-3zM15 6h3v3h-3zM6 10.5h3v3H6zM10.5 10.5h3v3h-3zM15 10.5h3v3h-3zM6 15h3v3H6zM10.5 15h3v3h-3z"/>',
+  'trueNestTool()': '<rect x="2.5" y="2.5" width="19" height="19" rx="2"/><circle cx="8" cy="8.5" r="3.3"/><path d="M13 5h6v6h-3l-3 3z"/><path d="M5 15l4 0 2 4H5zM14 14.5l5 1v4h-6z"/>',
   'plateAdd()': '<path d="M2 16l5-5h15l-5 5z"/><path d="M18 2.5v6M15 5.5h6"/>',
   '_bndOpen()': '<path d="M3 17a9 9 0 0 1 18 0"/><path d="M7 17a5 5 0 0 1 10 0"/><path d="M3 17h4M17 17h4"/>',
   'openCutTool()': '<circle cx="6" cy="6.5" r="2.8"/><circle cx="6" cy="17.5" r="2.8"/><path d="M8.3 8.2L20 18M8.3 15.8L20 6"/>',
@@ -33873,6 +33928,258 @@ function _applyFillPlate(gapMm, marginMm, allowRot, count, even, depthMm, rows) 
   else notify(`▦ ${places.length} × ${part.userData.name || 'Teil'} auf der Platte` +
          (grid ? ` — ${grid.rows} ${grid.rows === 1 ? 'Reihe' : 'Reihen'} × ${grid.cols}, Teilung ${r2(grid.px)} × ${r2(grid.pz)} mm` : '') +
          (part.userData.isHole ? ' — jetzt ⊖ Abziehen' : ''), 'ok');
+}
+
+// ═══ TRUE NEST ══════════════════════════════════════════════════════════
+// Viele verschiedene Teile nach echter Kontur auf die Druckplatte(n)
+// verschachteln (Vorbild: LightBurn „True Nest“). Teile, die sich
+// überschneiden (Körper + aufgesetzter Text, Bohrung im Körper), bleiben als
+// Einheit beisammen. Raster und Umrisse wie bei ▦ Füllen (_fillRaster /
+// _fillDilate); die Suche läuft im Worker lib/truenest-worker.js, jede
+// Verbesserung wird sofort als Vorschau gezeigt. Stopp = beste Lösung behalten,
+// Abbrechen = alles zurück. Was nicht passt, geht auf weitere Platten.
+let _tn = null;   // laufender Lauf
+
+function trueNestTool() {
+  if (_tn) return;
+  const sel = selectedObjs.filter(o => !o.userData.locked);
+  const src = sel.length ? sel : _plateObjs(_activePlate).filter(o => o.visible !== false && !o.userData.locked);
+  if (!src.length) { notify('Teile auswählen, die verschachtelt werden sollen (nichts gewählt = alle Teile der aktiven Platte)', 'w'); return; }
+  document.getElementById('tn-info').textContent =
+    `${src.length} Teil${src.length > 1 ? 'e' : ''}${sel.length ? '' : ' der Platte ' + (_activePlate + 1)} → ${plateCount > 1 ? 'Platte ' + (_plateOf(src[0]) + 1) : 'Druckplatte'} (${r2(buildplateW)} × ${r2(buildplateH)} mm)`;
+  document.getElementById('tn-set').style.display = '';
+  document.getElementById('tn-run').style.display = 'none';
+  document.getElementById('tn-modal').classList.add('show');
+}
+
+function _tnClose() { if (!_tn) document.getElementById('tn-modal').classList.remove('show'); }
+
+// Einheiten bilden: was aneinander hängt, bleibt beisammen — eine Bohrung mit
+// ihrem Körper, Schrift/Relief auf einem Teil (kleines Teil liegt zu ≥ 80 % über
+// einem deutlich größeren). Gleich große Teile auf einem Haufen (z. B. frisch
+// importiert) werden dagegen einzeln verschachtelt.
+function _tnUnits(objs) {
+  const box = objs.map(o => getMeshBox(o)), par = objs.map((_, i) => i);
+  const find = i => { while (par[i] !== i) i = par[i] = par[par[i]]; return i; };
+  const e = 0.001, ar = B => (B.max.x - B.min.x) * (B.max.z - B.min.z);
+  for (let a = 0; a < objs.length; a++) for (let b = a + 1; b < objs.length; b++) {
+    const A = box[a], B = box[b];
+    const ix = Math.min(A.max.x, B.max.x) - Math.max(A.min.x, B.min.x);
+    const iz = Math.min(A.max.z, B.max.z) - Math.max(A.min.z, B.min.z);
+    const iy = Math.min(A.max.y, B.max.y) - Math.max(A.min.y, B.min.y);
+    if (ix <= e || iz <= e || iy < -e) continue;          // berühren von oben auch (Schrift aufgesetzt)
+    const sa = Math.min(ar(A), ar(B)), la = Math.max(ar(A), ar(B));
+    const hole = objs[a].userData.isHole || objs[b].userData.isHole;
+    if (hole || (ix * iz >= 0.8 * sa && sa <= 0.7 * la)) par[find(a)] = find(b);
+  }
+  const m = new Map();
+  objs.forEach((o, i) => { const r = find(i); if (!m.has(r)) m.set(r, []); m.get(r).push(o); });
+  return [...m.values()];
+}
+
+// Umriss von oben, nur die nach oben (bzw. die größere Seite) zeigenden Dreiecke
+// — bei geschlossenen Netzen decken die schon den ganzen Umriss, halb so viel Arbeit.
+function _tnFootTris(o) {
+  const all = _fillFootTris(o);
+  let pos = 0, neg = 0;
+  const sg = new Int8Array(all.length / 6);
+  for (let t = 0, k = 0; t < all.length; t += 6, k++) {
+    const d = (all[t+2] - all[t]) * (all[t+5] - all[t+1]) - (all[t+3] - all[t+1]) * (all[t+4] - all[t]);
+    if (d > 0) { pos += d; sg[k] = 1; } else if (d < 0) { neg -= d; sg[k] = -1; }
+  }
+  if (Math.abs(pos - neg) > 0.02 * Math.max(pos, neg)) return all;   // offenes Netz: alles nehmen
+  const want = pos >= neg ? 1 : -1, out = [];
+  for (let t = 0, k = 0; t < all.length; t += 6, k++) if (sg[k] === want) for (let q = 0; q < 6; q++) out.push(all[t + q]);
+  return out;
+}
+
+function _tnPrepare(units, gapMm, marginMm, rotStepDeg, k0, others) {
+  const W = buildplateW / 10, D = buildplateH / 10, pitch = _platePitchU();
+  let hC = 0.05;
+  while ((W / hC) * (D / hC) > 2.5e5) hC *= 1.25;
+  const gw = Math.ceil(W / hC), gh = Math.ceil(D / hC);
+  const gapC = gapMm / 10 / hC + 0.5;                     // halbe Zelle Sicherheit gegen Rasterfehler
+  const x0 = k => _plateCenterX(k) - W / 2, z0 = -D / 2;
+  // Platte: Randabstand ringsum belegt
+  const marC = marginMm / 10 / hC;
+  const blank = new Uint8Array(gw * gh);
+  for (let j = 0; j < gh; j++) for (let i = 0; i < gw; i++)
+    if (i + 0.5 < marC || j + 0.5 < marC || gw - i - 0.5 < marC || gh - j - 0.5 < marC) blank[j * gw + i] = 1;
+  // Vorhandene Platten ab k0: fremde Teile darauf sind Hindernisse (samt Abstand)
+  const sheets = [];
+  for (let k = k0; k < plateCount; k++) {
+    const occ = blank.slice();
+    const tris = [];
+    for (const o of others) if (_plateOf(o) === k) tris.push(..._tnFootTris(o));
+    if (tris.length) {
+      const ob = _fillDilate(_fillRaster(tris, x0(k), z0, hC, gw, gh), gw, gh, gapC);
+      for (let q = 0; q < occ.length; q++) if (ob[q]) occ[q] = 1;
+    }
+    sheets.push({ occ });
+  }
+  const steps = rotStepDeg > 0 ? Math.round(360 / rotStepDeg) : 1;
+  const shapes = [], U = [];
+  const sameMask = (a, b) => a.w === b.w && a.h === b.h && a.m.every((v, q) => v === b.m[q]);
+  const seen = [];   // gleiche Umrisse (Kopien) teilen sich die Masken
+  for (const grp of units) {
+    const bb = new THREE.Box3(); grp.forEach(o => bb.union(getMeshBox(o)));
+    const c0 = new THREE.Vector3((bb.min.x + bb.max.x) / 2, 0, (bb.min.z + bb.max.z) / 2);
+    const tris0 = []; for (const o of grp) { const t = _tnFootTris(o); for (let q = 0; q < t.length; q++) tris0.push(t[q]); }
+    const vars = [];
+    let first = null, dup = null;
+    for (let r = 0; r < steps; r++) {
+      const th = r * 2 * Math.PI / steps, co = Math.cos(th), si = Math.sin(th);
+      const t = new Float64Array(tris0.length);
+      let mnx = Infinity, mnz = Infinity, mxx = -Infinity, mxz = -Infinity;
+      for (let k = 0; k < tris0.length; k += 2) {
+        const x = tris0[k] - c0.x, z = tris0[k+1] - c0.z;
+        const X = x * co + z * si, Z = -x * si + z * co;   // = applyAxisAngle(Y, th)
+        t[k] = X; t[k+1] = Z;
+        if (X < mnx) mnx = X; if (X > mxx) mxx = X; if (Z < mnz) mnz = Z; if (Z > mxz) mxz = Z;
+      }
+      const e = Math.ceil(gapC) + 1;
+      const w = Math.ceil((mxx - mnx) / hC) + 1 + 2 * e, h = Math.ceil((mxz - mnz) / hC) + 1 + 2 * e;
+      const ox = mnx - e * hC, oz = mnz - e * hC;
+      const m = _fillRaster(t, ox, oz, hC, w, h);
+      if (r === 0) {
+        first = { w, h, m };
+        dup = seen.find(s => sameMask(s.first, first));
+        if (dup) break;
+      }
+      // Drehungen mit gleichem Umriss wie eine schon vorhandene sparen (Kreis, Quadrat)
+      if (r && vars.some(vi => sameMask(shapes[vi]._mm, { w, h, m }))) continue;
+      const halo = _fillDilate(m, w, h, gapC);
+      const cells = []; let anc = null, maxI = 0, maxJ = 0;
+      for (let i = 0; i < w; i++) for (let j = 0; j < h; j++) if (m[j * w + i]) {
+        cells.push(i, j); if (!anc) anc = [i, j];
+        if (i > maxI) maxI = i; if (j > maxJ) maxJ = j;
+      }
+      if (!anc) continue;
+      const n = cells.length / 2, cs = new Int32Array(n * 2);
+      for (let k = 0, s = 0, st = 7919 % n || 1; k < n; k++) { cs[k*2] = cells[s*2]; cs[k*2+1] = cells[s*2+1]; s = (s + st) % n; }
+      shapes.push({ w, h, cells: cs, halo, anc, maxI, maxJ, th, ox, oz, _mm: { w, h, m } });
+      vars.push(shapes.length - 1);
+    }
+    const area = first ? first.m.reduce((a, v) => a + v, 0) : 0;
+    const vv = dup ? dup.vars : vars;
+    if (!dup) seen.push({ first, vars });
+    U.push({ grp, c0, vars: vv, area, wid: (bb.max.x - bb.min.x), dep: (bb.max.z - bb.min.z),
+             q0: grp.map(o => o.quaternion.clone()), p0: grp.map(o => o.position.clone()) });
+  }
+  return { hC, gw, gh, x0, z0, pitch, blank, sheets, shapes, units: U };
+}
+
+function _tnStart() {
+  const gap = Math.max(0, parseFloat(String(document.getElementById('tn-gap').value).replace(',', '.')) || 0);
+  const margin = Math.max(0, parseFloat(String(document.getElementById('tn-margin').value).replace(',', '.')) || 0);
+  const rot = parseFloat(document.getElementById('tn-rot').value) || 0;
+  const secs = Math.max(1, Math.min(300, parseFloat(document.getElementById('tn-time').value) || 15));
+  const more = document.getElementById('tn-more').checked;
+  const sel = selectedObjs.filter(o => !o.userData.locked);
+  const objs = sel.length ? sel : _plateObjs(_activePlate).filter(o => o.visible !== false && !o.userData.locked);
+  if (!objs.length) return;
+  const k0 = _plateOf(objs[0]);
+  const others = objects.filter(o => !objs.includes(o) && o.visible !== false);
+  document.getElementById('tn-set').style.display = 'none';
+  document.getElementById('tn-run').style.display = '';
+  document.getElementById('tn-state').textContent = 'Bereite vor …';
+  document.getElementById('tn-bar').style.width = '0%';
+  ['tn-placed', 'tn-saved'].forEach(id => document.getElementById(id).textContent = '');
+  setTimeout(() => {   // erst den Dialog zeichnen lassen, dann rechnen
+    const t0 = performance.now();
+    const P = _tnPrepare(_tnUnits(objs), gap, margin, rot, k0, others);
+    console.log(`[truenest] ${P.units.length} Einheiten, ${P.shapes.length} Masken, Raster ${P.gw}×${P.gh} à ${r2(P.hC * 10)} mm, ${Math.round(performance.now() - t0)} ms`);
+    saveUndo();
+    const v = typeof VOLME3D_VERSION !== 'undefined' ? VOLME3D_VERSION : '1';
+    const w = new Worker('lib/truenest-worker.js?v=' + v);
+    _tn = { P, w, k0, plates0: plateCount, best: null, secs, t0: performance.now(), stopped: false };
+    w.onmessage = e => _tnMsg(e.data);
+    w.onerror = e => { console.error('[truenest]', e.message || 'Worker nicht geladen'); _tnFinish(false, 'True Nest: Rechenkern ließ sich nicht starten' + (e.message ? ' — ' + e.message : '')); };
+    w.postMessage({
+      cmd: 'run', gw: P.gw, gh: P.gh, timeMs: secs * 1000, seed: 12345,
+      maxSheets: more ? Math.max(1, 50 - k0) : 1,
+      blank: P.blank, sheets: P.sheets.map(s => ({ occ: s.occ })),
+      shapes: P.shapes.map(s => ({ w: s.w, h: s.h, cells: s.cells, halo: s.halo, anc: s.anc, maxI: s.maxI, maxJ: s.maxJ })),
+      units: P.units.map(u => ({ vars: u.vars, area: u.area, wid: u.wid, dep: u.dep })),
+    });
+    _tn.tick = setInterval(_tnUi, 200);
+  }, 30);
+}
+
+function _tnMsg(d) {
+  if (!_tn) return;
+  if (d.type === 'best' || d.type === 'done') { _tn.best = d; _tnShow(d); }
+  _tnUi();
+  if (d.type === 'done') _tnFinish(true);
+}
+
+// Beste Lösung an die Teile legen (Vorschau und Ergebnis)
+function _tnShow(d) {
+  const P = _tn.P, Y = new THREE.Vector3(0, 1, 0);
+  const need = _tn.k0 + d.sheets;
+  if (need > plateCount) { plateCount = need; _plateRebuild(); }
+  d.res.forEach((r, u) => {
+    const U = P.units[u];
+    U.grp.forEach((o, i) => {
+      if (!r) { o.quaternion.copy(U.q0[i]); o.position.copy(U.p0[i]); o.updateMatrixWorld(true); return; }
+      const S = P.shapes[r.shape];
+      const tx = P.x0(_tn.k0 + r.sheet) + r.gi * P.hC - S.ox, tz = P.z0 + r.gj * P.hC - S.oz;
+      const rel = new THREE.Vector3(U.p0[i].x - U.c0.x, 0, U.p0[i].z - U.c0.z).applyAxisAngle(Y, S.th);
+      o.quaternion.copy(new THREE.Quaternion().setFromAxisAngle(Y, S.th).multiply(U.q0[i]));
+      o.position.set(rel.x + tx, U.p0[i].y, rel.z + tz);
+      o.updateMatrixWorld(true);
+    });
+  });
+  _svgDirty = true;
+}
+
+function _tnUi() {
+  if (!_tn) return;
+  const el = (performance.now() - _tn.t0) / 1000, tot = _tn.secs;
+  const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  document.getElementById('tn-bar').style.width = Math.min(100, el / tot * 100) + '%';
+  document.getElementById('tn-state').textContent = `Suche … ${mmss(Math.min(el, tot))} / ${mmss(tot)}`;
+  const b = _tn.best; if (!b) return;
+  const n = _tn.P.units.length, placed = n - b.unplaced;
+  document.getElementById('tn-placed').textContent = `Platziert: ${placed} / ${n}` + (b.sheets > 1 ? ` auf ${b.sheets} Platten` : '');
+  const saved = b.len0 > 0 ? Math.max(0, (b.len0 - b.len) / b.len0 * 100) : 0;
+  const lastMm = (b.len - (b.sheets - 1) * _tn.P.gw) * _tn.P.hC * 10;
+  document.getElementById('tn-saved').textContent =
+    `Material gespart: ${saved.toFixed(1).replace('.', ',')} % · belegt bis ${Math.round(lastMm)} von ${Math.round(buildplateW)} mm`;
+}
+
+function _tnStop() { if (_tn) _tnFinish(true); }
+
+function _tnCancel() {
+  if (!_tn) return;
+  _tnFinish(false);
+}
+
+function _tnFinish(keep, errMsg) {
+  const T = _tn; if (!T) return;
+  _tn = null;
+  T.w.terminate(); clearInterval(T.tick);
+  document.getElementById('tn-modal').classList.remove('show');
+  const all = T.P.units.flatMap(U => U.grp);
+  if (!keep || !T.best) {
+    T.P.units.forEach(U => U.grp.forEach((o, i) => { o.quaternion.copy(U.q0[i]); o.position.copy(U.p0[i]); o.updateMatrixWorld(true); }));
+    if (plateCount !== T.plates0) { plateCount = T.plates0; _plateRebuild(); }
+    undoStack.pop(); updateUndoRedoButtons();
+    _svgDirty = true;
+    notify(errMsg || 'True Nest abgebrochen — alles liegt wieder wie vorher', errMsg ? 'w' : 'ok');
+    return;
+  }
+  const b = T.best, n = T.P.units.length;
+  // Leere Zusatzplatten wieder weg (Vorschau hatte evtl. mehr gebraucht)
+  const need = Math.max(T.plates0, T.k0 + b.sheets);
+  if (plateCount > need && _plateObjs(plateCount - 1).length === 0) { plateCount = need; _plateRebuild(); }
+  selectObjs(all); updateTree(); updateTFInputs();
+  const saved = b.len0 > 0 ? Math.max(0, (b.len0 - b.len) / b.len0 * 100) : 0;
+  console.log(`[truenest] ${b.it} Durchläufe in ${b.ms} ms, Länge ${b.len0} → ${b.len} Zellen`);
+  notify(`🧩 True Nest: ${n - b.unplaced} / ${n} platziert` + (b.sheets > 1 ? ` auf ${b.sheets} Platten` : '') +
+         (saved >= 0.1 ? ` — ${saved.toFixed(1).replace('.', ',')} % Material gespart` : '') +
+         (b.unplaced ? ` — ${b.unplaced} passen nicht (zu groß oder „weitere Platten“ aus), liegen wie vorher` : ''), b.unplaced ? 'w' : 'ok');
+  if (typeof _doAutoSave === 'function') _doAutoSave();
 }
 
 function _closePat() {
@@ -72673,8 +72980,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.276';
+const VOLME3D_VERSION = '1.18.277';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.277', date:'2026-10-26', spots:[{id:'truenest',sel:'[onclick="trueNestTool()"]'}], changes:[
+    ['🧩','<b>Neu: True Nest – viele verschiedene Teile nach echter Kontur verschachteln.</b> Unter <i>Anordnen</i> neben <b>▦ Füllen</b>. Wähle beliebig viele Teile aus, gleiche oder verschiedene. Ist nichts gewählt, nimmt True Nest alle Teile der aktiven Platte. Klick dann auf <b>🧩 True Nest</b>. Die Teile werden nach ihrem echten Umriss dicht auf die Platte gelegt, gedreht und ineinander geschoben. Sie rücken an die linke Kante, damit der Rest vom Material oder der Laser-Platte am Stück bleibt. Einstellbar sind Abstand, Randabstand, Drehung (aus, 90°, 45° oder fein in 15°-Schritten) und die Suchzeit (Standard 15 s). Während der Suche siehst du live, wie die Teile liegen, wie viele platziert sind und wie viel Material gegenüber dem ersten Versuch gespart ist. <b>■ Stopp</b> behält die beste Lage bis dahin, <b>Abbrechen</b> legt alles zurück. Was nicht mehr passt, kommt auf weitere Platten. Teile, die zusammengehören (eine Bohrung im Körper oder Schrift auf einem Teil), bleiben beisammen. Andere und gesperrte Teile auf der Platte bleiben liegen, um sie wird herum verschachtelt. Rückgängig geht in einem Schritt.'],
+  ]},
   { version:'1.18.276', date:'2026-10-26', changes:[
     ['🪵','<b>Lagerfeuer-Teelicht: Der Geist sitzt jetzt auf dem Stamm.</b> Der Stamm geht nicht mehr durch das Gewand. Das lange Gewand fällt vorn bis auf den Boden, seitlich und hinten liegt der Stamm frei darunter. Ein Zapfen hält den Geist auf dem Stamm. Die flache Unterseite der Sitzfläche braucht beim Druck Stützen.'],
   ]},
