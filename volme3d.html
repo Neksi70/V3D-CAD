@@ -57160,8 +57160,8 @@ const _lgfP = { licht: 37, hoehe: 95, breite: 68, zungen: 5, zTief: 20, drall: 3
 const _LGF_DEF = { ..._lgfP };
 const _LGF_LICHT = [31, 37], _LGF_LINIE = 0.45, _LGF_BODEN = 2, _LGF_RAND = 2.4, _LGF_UEBERHANG = Math.tan(52 * Math.PI / 180);
 const _LGF_COL_HOLZ = '#6b4a32', _LGF_COL_FLAMME = '#f1dfae', _LGF_COL_GEIST = '#f6f5f1', _LGF_COL_MUETZE = '#4e3426', _LGF_COL_STOCK = '#8a6142';
-const _LGF_GEIST_COL = { geist: _LGF_COL_GEIST, muetze: _LGF_COL_MUETZE, stamm: _LGF_COL_HOLZ, stab: _LGF_COL_STOCK, marsh: _LGF_COL_GEIST };
-const _LGF_GEIST_NAME = { geist: 'Geist', muetze: 'Geist-Mütze', stamm: 'Sitzstamm', stab: 'Stock', marsh: 'Marshmallow' };
+const _LGF_GEIST_COL = { augeL: '#151515', augeR: '#151515', geist: _LGF_COL_GEIST, muetze: _LGF_COL_MUETZE, stamm: _LGF_COL_HOLZ, stab: _LGF_COL_STOCK, marsh: _LGF_COL_GEIST };
+const _LGF_GEIST_NAME = { augeL: 'Geist-Auge links', augeR: 'Geist-Auge rechts', geist: 'Geist', muetze: 'Geist-Mütze', stamm: 'Sitzstamm', stab: 'Stock', marsh: 'Marshmallow' };
 let _lgfRT = null;
 
 function _lgfRng(seed){                                                   // mulberry32
@@ -57365,8 +57365,8 @@ function _lgfBaseBuild(w, p, d, q, F){
 // Sitzender Geist im Laken als Distanzfeld → Manifold.levelSet. Eigene Teile:
 // Geist (weiß), Strickmütze mit Bommel (steckt mit Zapfen auf dem flach gekappten
 // Kopf), Sitzstamm mit Zapfen für den Geist, Stock + Marshmallow (zwei Teile, der
-// Stock wird durch die Hände gesteckt, der Marshmallow auf seine Spitze). Augen sind Mulden
-// zum Ausmalen. Lage im Bild: Geist hinter dem Feuer (−Z), schaut zur Flamme (+Z).
+// Stock wird durch die Hände gesteckt, der Marshmallow auf seine Spitze). Augen: zwei
+// schwarze Steck-Augen in ovalen Löchern. Lage im Bild: Geist hinter dem Feuer (−Z), schaut zur Flamme (+Z).
 const _LGF_STOCK_W = 15 * Math.PI / 180, _LGF_ZAPFEN = 2.4;
 
 function _lgfGeistDims(p, d){
@@ -57377,7 +57377,8 @@ function _lgfGeistDims(p, d){
   const D = d.rBase + 0.45 * H + 3;
   const reach = Math.max(0.15 * H, Math.min(3 * H, (D - zH - d.Rm * (1 + p.zTief / 200) - hm - 3) / Math.cos(_LGF_STOCK_W)));
   return { H, Rh, Cy, Rb, rb, hcB, yTop, Ls: Math.max(2.1 * Rb, 0.8 * H), yCut: Cy + 0.3 * Rh, th: Math.max(1.4, 0.025 * H),
-    rs, hm, rm, zH, yH, back, D, reach, Lst: hm + reach + back, sIn: 0.4 * hm };
+    rs, hm, rm, zH, yH, back, D, reach, Lst: hm + reach + back, sIn: 0.4 * hm,
+    augeA: 0.052 * H, augeB: 0.075 * H, augeT: Math.max(2.5, Math.min(5, 0.05 * H)) };
 }
 
 const _lgfSmin = (a, b, k) => { const h = Math.max(0, Math.min(1, 0.5 + 0.5 * (b - a) / k)); return b + (a - b) * h - k * h * (1 - h); };
@@ -57407,20 +57408,20 @@ function _lgfGeistSdf(p, g){
     gl = Math.min(gl, Math.hypot(x - hand[0], y - hand[1], z - hand[2]) - 0.075 * H);                                        // Hände
     return _lgfSmin(dd, gl, 0.03 * H);
   };
-  // Augen: Mulden auf der Kopf-Vorderseite (Oberfläche per Bisektion gesucht)
-  const augen = [];
+  // Augen: ovale Sacklöcher nach vorn (+Z) für schwarze Steck-Augen. Tiefe ab der
+  // Kopfoberfläche in der Augenmitte (per Bisektion gesucht)
+  const augen = [], ax = g.augeA, ay = g.augeB;
   for (const s of [-1, 1]) {
     const ex = s * 0.09 * H, ey = Cy - 0.04 * H;
     let lo = 0, hi = 2 * H;
     for (let it = 0; it < 40; it++) { const m = (lo + hi) / 2; if (roh(ex, ey, m) < 0) lo = m; else hi = m; }
-    augen.push([ex, ey, lo + 0.3]);
+    augen.push([ex, ey, lo]);
   }
-  const ax = 0.052 * H, ay = 0.075 * H, az = 1.9;
-  return (x, y, z) => {
+  const f = (x, y, z) => {
     let dd = roh(x, y, z);
     for (const e of augen) {
-      const u = (x - e[0]) / ax, v = (y - e[1]) / ay, w = (z - e[2]) / az;
-      dd = Math.max(dd, -(Math.sqrt(u * u + v * v + w * w) - 1) * Math.min(ax, ay, az));
+      const u = (x - e[0]) / ax, v = (y - e[1]) / ay;
+      dd = Math.max(dd, -Math.max((Math.sqrt(u * u + v * v) - 1) * Math.min(ax, ay), e[2] - g.augeT - z));
     }
     dd = Math.max(dd, -_lgfCaps(x, y, z, loch0, loch1, g.rs + p.spiel));          // Loch für den Stock
     dd = Math.max(dd, -_lgfZyl(x, y, z, _LGF_ZAPFEN + p.spiel, -1, 5));            // Loch für den Sitz-Zapfen
@@ -57430,6 +57431,8 @@ function _lgfGeistSdf(p, g){
     }
     return Math.max(dd, -y);
   };
+  f.augen = augen;
+  return f;
 }
 
 // Strickmütze: Kuppel mit Rippen, Umschlag, Bommel; unten flach auf yCut (Geist-Koordinaten)
@@ -57469,9 +57472,20 @@ function _lgfGeistBuild(w, p, d, q){
   const keep = x => { tmp.push(x); return x; };
   const edge = fein ? Math.max(0.4, g.H / 140) : Math.max(1, g.H / 40);
   const out = {};
+  let r_augen = [];
   try {
     const H = g.H;
-    out.geist = _lgfLevel(w, _lgfGeistSdf(p, g), [-0.6 * H, 0, -0.5 * H, 0.6 * H, H + 6, 0.6 * H], edge);
+    const gf = _lgfGeistSdf(p, g);
+    out.geist = _lgfLevel(w, gf, [-0.6 * H, 0, -0.5 * H, 0.6 * H, H + 6, 0.6 * H], edge);
+    // Steck-Auge (schwarz): ovaler Zapfen mit gewölbter Vorderseite, steht beim Druck auf
+    // der Rückseite. Steckt bis 0,2 mm vor dem Lochgrund, schaut 0,6 mm + Wölbung heraus.
+    const ea = g.augeA - p.spiel, eb = g.augeB - p.spiel, Le = g.augeT - 0.2 + 0.6, dome = Math.min(1.2, 0.25 * ea), Me = fein ? 56 : 20;
+    const ring = (y, q) => { const P = new Array(Me); for (let k = 0; k < Me; k++) { const t = 2 * Math.PI * k / Me; P[k] = [ea * q * Math.cos(t), y, eb * q * Math.sin(t)]; } return P; };
+    const R = [ring(0, 1), ring(Le, 1)];
+    for (let j = 1; j < 6; j++) { const a = j / 6 * Math.PI / 2; R.push(ring(Le + dome * Math.sin(a), Math.cos(a))); }
+    const auge = keep(_mfFromSoup(w, _lgfTube(R, [0, 0, 0], [0, Le + dome, 0])));
+    out.augeL = auge.translate([0, 0, 0]); out.augeR = auge.translate([0, 0, 0]);
+    r_augen = gf.augen;
     if (p.muetze) {
       const m = keep(_lgfLevel(w, _lgfMuetzeSdf(p, g), [-0.4 * H, g.yCut, -0.4 * H, 0.4 * H, H + 0.35 * H, 0.4 * H], edge * 0.9));
       out.muetze = m.translate([0, -g.yCut, 0]);
@@ -57491,7 +57505,7 @@ function _lgfGeistBuild(w, p, d, q){
       const mm = keep(_mfFromSoup(w, _lgfLathe([[0, 0], [rm - 0.8, 0], [rm, 0.8], [rm, hm - 1], [rm - 1, hm], [0, hm]], fein ? 48 : 18)));
       out.marsh = mm.subtract(keep(_mfFromSoup(w, _lgfLathe([[0, g.sIn - 0.5], [rl, g.sIn - 0.5], [rl, hm + 1], [0, hm + 1]], fein ? 40 : 14))));
     }
-    return { g, out };
+    return { g, out, augen: r_augen };
   } catch (e) {
     for (const k in out) { try { out[k].delete(); } catch (_) {} }
     throw e;
@@ -57504,6 +57518,10 @@ function _lgfGeistPlace(r){
   res.push(['stamm', o.stamm.translate([0, 0, z0])]);
   res.push(['geist', o.geist.translate([0, g.yTop, z0])]);
   if (o.muetze) res.push(['muetze', o.muetze.translate([0, g.yTop + g.yCut, z0])]);
+  r.augen.forEach((e, i) => {                                               // lokal +Y → Welt +Z
+    const m = i ? o.augeR : o.augeL;
+    if (m) res.push([i ? 'augeR' : 'augeL', m.rotate([90, 0, 0]).translate([e[0], g.yTop + e[1], z0 + e[2] - g.augeT + 0.2])]);
+  });
   if (o.stab) {
     // lokal +Y (Marshmallow → Hand) zeigt in Welt auf −Stockrichtung
     const c = Math.cos(_LGF_STOCK_W), s = Math.sin(_LGF_STOCK_W), L = g.hm + g.reach, rx = -90 - _LGF_STOCK_W * 180 / Math.PI;
@@ -57592,7 +57610,7 @@ function _lgfSync(){
   if (_lgfP.geist) {
     const g = _lgfGeistDims(_lgfP, d);
     s += '<br>👻 Geist ' + g.H + ' mm hoch (ohne Mütze), weiß, aufrecht — unter den Händen <b>Stützen nur dort</b> (Baumstützen). ' +
-         'Augen schwarz ausmalen. ' + (_lgfP.muetze ? 'Mütze aufrecht, steckt auf dem Zapfen am Kopf. ' : '') +
+         'Augen schwarz drucken und vorn in den Kopf stecken (bei Bedarf ein Tropfen Kleber). ' + (_lgfP.muetze ? 'Mütze aufrecht, steckt auf dem Zapfen am Kopf. ' : '') +
          (_lgfP.stock ? 'Stock (' + (g.Lst - g.sIn).toFixed(0) + ' mm, braun) und Marshmallow (weiß) einzeln drucken: Stock von vorn durch die Hände schieben, Marshmallow auf die Spitze stecken.' : '');
   }
   if (!d.okB) s += '<br><b style="color:#ffb455">⚠ Die Flamme ist schmaler als ihr Kragen — Breite vergrößern oder kleineres Teelicht.</b>';
@@ -57612,7 +57630,7 @@ async function _lgfCreate(){
     if (p.geist) {
       _progressSet(55); await new Promise(res => setTimeout(res, 30));
       const r = _lgfGeistBuild(w, p, d, 'fein');
-      for (const k of ['stamm', 'geist', 'muetze', 'stab', 'marsh']) if (r.out[k]) { extra.push([k, _mfToGeo(r.out[k])]); r.out[k].delete(); }
+      for (const k of ['stamm', 'geist', 'augeL', 'augeR', 'muetze', 'stab', 'marsh']) if (r.out[k]) { extra.push([k, _mfToGeo(r.out[k])]); r.out[k].delete(); }
     }
     saveUndo();
     typeCounts['lagerfeuer'] = (typeCounts['lagerfeuer'] || 0) + 1;
@@ -72639,8 +72657,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.273';
+const VOLME3D_VERSION = '1.18.274';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.274', date:'2026-10-26', changes:[
+    ['👀','<b>Lagerfeuer-Teelicht: Geist mit schwarzen Steck-Augen.</b> Die Augen sind jetzt zwei eigene Teile zum Drucken in Schwarz. Sie werden vorn in ovale Löcher im Kopf gesteckt und stehen leicht gewölbt heraus. Ausmalen ist nicht mehr nötig.'],
+  ]},
   { version:'1.18.273', date:'2026-10-26', changes:[
     ['🕯️','<b>Lagerfeuer-Teelicht: Teelicht-Ø von 31 bis 37 mm.</b> Der Regler deckt jetzt genau die gängigen LED-Teelichter ab. Dazu gibt es die Knöpfe Ø 31, Ø 34 und Ø 37, Standard ist 37 mm.'],
   ]},

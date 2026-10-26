@@ -154,11 +154,11 @@ await pg.waitForFunction(() => document.getElementById('lgf-modal').classList.co
 await pg.waitForTimeout(800);
 await pg.locator('#lgf-modal .g3box').screenshot({ path: '/tmp/lgf/dialog.png' });
 await pg.evaluate(() => _lgfCreate());
-await pg.waitForFunction(n => objects.length >= n + 7, n0, { timeout: 60000 });
+await pg.waitForFunction(n => objects.length >= n + 9, n0, { timeout: 60000 });
 const names = await pg.evaluate(n => objects.slice(n).map(o => o.userData.name), n0);
 const farbe = await pg.evaluate(n => Object.fromEntries(objects.slice(n).map(o => [o.userData.name.replace(/ #.*/, ''), o.userData.color])), n0);
-ok('Marshmallow weiß, Stock braun', farbe['Marshmallow'] === _LGF_WEISS && farbe['Stock'] !== _LGF_WEISS, farbe);
-ok('Erstellen: Feuer + Geist-Teile', names.length === 7 && ['Sockel','Flamme','Geist #','Mütze','Sitzstamm','Stock #','Marshmallow #'].every(t => names.some(x => x.includes(t))), names);
+ok('Marshmallow weiß, Stock braun, Augen schwarz', farbe['Marshmallow'] === _LGF_WEISS && farbe['Stock'] !== _LGF_WEISS && farbe['Geist-Auge links'] === '#151515' && farbe['Geist-Auge rechts'] === '#151515', farbe);
+ok('Erstellen: Feuer + Geist-Teile', names.length === 9 && ['Sockel','Flamme','Geist #','Auge links','Auge rechts','Mütze','Sitzstamm','Stock #','Marshmallow #'].every(t => names.some(x => x.includes(t))), names);
 await pg.waitForTimeout(800);
 await pg.screenshot({ path: '/tmp/lgf/szene.png' });
 
