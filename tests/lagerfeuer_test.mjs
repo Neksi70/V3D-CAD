@@ -32,7 +32,7 @@ await pg.evaluate(async () => { await _mfInit(); });
 const varianten = [
   { name: 'Standard (Vasenmodus)', p: {} },
   { name: 'Fertige Wand',          p: { druck: 'wand' } },
-  { name: 'Maxi, groß, 7 Zungen',  p: { licht: 58, hoehe: 150, breite: 100, zungen: 7, scheite: 10, dicke: 20 } },
+  { name: 'Ø 31, groß, 7 Zungen',  p: { licht: 31, hoehe: 150, breite: 100, zungen: 7, scheite: 10, dicke: 20 } },
   { name: 'Schmal, viel Drall',    p: { breite: 48, drall: -80, zTief: 40, neig: 40, druck: 'wand', wand: 2 } },
   { name: 'Glatt, kurze Scheite',  p: { zTief: 0, rinde: 0, laenge: 10, scheite: 4, seed: 99 } },
 ];
@@ -115,7 +115,7 @@ for (const v of varianten) {
 
 // 7. Geist: Teile einzeln dicht, unten eben; zusammengesteckt nichts überschneidet sich
 for (const gv of [{ name: 'Geist Standard', p: {} }, { name: 'Geist groß, ohne Mütze', p: { geistH: 110, muetze: 0 } },
-                  { name: 'Geist klein, Maxi-Feuer', p: { geistH: 40, licht: 58, breite: 100 } }]) {
+                  { name: 'Geist klein, Teelicht 31', p: { geistH: 40, licht: 31, breite: 100 } }]) {
   const r = await pg.evaluate(p => {
     Object.assign(_lgfP, _LGF_DEF, p);
     const w = _mfWasm, d = _lgfDims(_lgfP), t0 = performance.now();
