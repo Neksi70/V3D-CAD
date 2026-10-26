@@ -8,6 +8,7 @@
 //   7. Geist, Mütze, Sitzstamm, Stock: je ein dichtes Stück, unten eben; zusammengesteckt keine Überschneidung
 // Start: python3 volme3d_server.py 8766 --dev   →   node tests/lagerfeuer_test.mjs
 import { chromium } from 'playwright';
+const _LGF_WEISS = '#f6f5f1';
 
 const URL = process.env.V3D_URL || 'http://127.0.0.1:8766/volme3d.html';
 const fails = [];
@@ -153,9 +154,11 @@ await pg.waitForFunction(() => document.getElementById('lgf-modal').classList.co
 await pg.waitForTimeout(800);
 await pg.locator('#lgf-modal .g3box').screenshot({ path: '/tmp/lgf/dialog.png' });
 await pg.evaluate(() => _lgfCreate());
-await pg.waitForFunction(n => objects.length >= n + 6, n0, { timeout: 60000 });
+await pg.waitForFunction(n => objects.length >= n + 7, n0, { timeout: 60000 });
 const names = await pg.evaluate(n => objects.slice(n).map(o => o.userData.name), n0);
-ok('Erstellen: Feuer + Geist-Teile', names.length === 6 && ['Sockel','Flamme','Geist #','Mütze','Sitzstamm','Marshmallow'].every(t => names.some(x => x.includes(t))), names);
+const farbe = await pg.evaluate(n => Object.fromEntries(objects.slice(n).map(o => [o.userData.name.replace(/ #.*/, ''), o.userData.color])), n0);
+ok('Marshmallow weiß, Stock braun', farbe['Marshmallow'] === _LGF_WEISS && farbe['Stock'] !== _LGF_WEISS, farbe);
+ok('Erstellen: Feuer + Geist-Teile', names.length === 7 && ['Sockel','Flamme','Geist #','Mütze','Sitzstamm','Stock #','Marshmallow #'].every(t => names.some(x => x.includes(t))), names);
 await pg.waitForTimeout(800);
 await pg.screenshot({ path: '/tmp/lgf/szene.png' });
 
