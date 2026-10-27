@@ -75,7 +75,7 @@ class Projekt:
                 "hat_farbe": s.rgb is not None, "hat_normalen": s.nrm is not None,
                 "dreiecke": 0 if s.tri is None else len(s.tri),
             } for s in self.scans.values()],
-            "koerper": [k.zustand() for k in self.koerper.values()],
+            "koerper": [dict(k.zustand(), nutzt=self.abhaengigkeiten(k)) for k in self.koerper.values()],
             "skizzen": [skizze_zustand(z) for z in self.skizzen.values()],
             "referenzen": list(self.referenzen.values()),
             "auswahlen": [{k: v for k, v in a.items() if k != "maske"} for a in self.auswahlen.values()],
@@ -93,6 +93,43 @@ class Projekt:
         self.undo.append((text, eintrag))
         self.redo.clear()
         self._kuerzen()
+
+    def abhaengigkeiten(self, k):
+        """Parent-Child: welche Skizzen, Referenzen und Koerper der Verlauf von k benutzt."""
+        aus = []
+
+        def dazu(art, nr):
+            try:
+                nr = int(nr)
+            except (TypeError, ValueError):
+                return
+            quelle = {"skizze": self.skizzen, "referenz": self.referenzen}.get(art)
+            if quelle is not None:
+                if nr in quelle:
+                    eintrag = "%s „%s“" % ("Skizze" if art == "skizze" else "Referenz", quelle[nr]["name"])
+                    if eintrag not in aus:
+                        aus.append(eintrag)
+            elif nr in self.koerper and nr != k.id:
+                eintrag = "Körper „%s“" % self.koerper[nr].name
+                if eintrag not in aus:
+                    aus.append(eintrag)
+        for e in k.verlauf:
+            for sch in ("skizze", "profil", "pfad"):
+                if e.get(sch) is not None:
+                    dazu("skizze", e[sch])
+            for nr in e.get("skizzen") or []:
+                dazu("skizze", nr)
+            if e.get("referenz") is not None:
+                dazu("referenz", e["referenz"])
+            ebene = e.get("ebene")
+            if isinstance(ebene, str) and ebene.startswith("ref:"):
+                dazu("referenz", ebene[4:])
+            for sch in ("flaeche", "von"):
+                if e.get(sch) is not None:
+                    dazu("koerper", e[sch])
+            for nr in e.get("aus") or []:
+                dazu("koerper", nr)
+        return aus
 
     def _koerper_stand(self):
         return {"liste": [k.kopie() for k in self.koerper.values()],
@@ -446,6 +483,24 @@ class Projekt:
             r["sichtbar"] = bool(sichtbar)
         if name:
             r["name"] = str(name)[:120]
+        self.referenzen[r["id"]] = r
+        return r
+
+    def referenz_aendern(self, rid, werte):
+        """Lage einer Referenz aendern (Griff im Modell): punkt / normale / richtung."""
+        r = self.referenz_holen(rid)
+        self._merke_koerper("Referenz „%s“ verschoben" % r["name"])
+        r = dict(r)
+        for k in ("punkt", "normale", "richtung"):
+            if werte.get(k) is not None and k in r:
+                v = [float(x) for x in werte[k]]
+                if k != "punkt":
+                    n = sum(x * x for x in v) ** 0.5
+                    if n < 1e-12:
+                        raise ValueError("Richtung darf nicht 0 sein.")
+                    v = [x / n for x in v]
+                r[k] = [round(x, 6) for x in v]
+        r["quelle"] = r.get("quelle", "") + "+griff" if "griff" not in str(r.get("quelle", "")) else r.get("quelle")
         self.referenzen[r["id"]] = r
         return r
 

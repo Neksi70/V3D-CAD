@@ -9,6 +9,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from './lib/OrbitControls.js';
+import { TransformControls } from './lib/TransformControls.js';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
@@ -1026,7 +1027,8 @@ leinwand.addEventListener('pointerup', (ev) => {
   if (WF.haupt && WF.haupt.id === 'w-3dskizze') { s3Klick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-uebergang') { ueKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-koerper-abw' && S.abweichung && S.abweichung.koerper) { wertLabel(x, y); return; }
-  if (WF.haupt && WF.haupt.id === 'w-auto-flaechen' && (S.kaefig || $('#kgModus').value === 'viereck') && $('#kgModus').value !== 'ziehen' && $('#kgModus').value !== 'pinsel') {
+  if (griffZieht) return;
+  if (WF.haupt && WF.haupt.id === 'w-auto-flaechen' && (S.kaefig || $('#kgModus').value === 'viereck') && !['ziehen', 'pinsel', 'griff'].includes($('#kgModus').value)) {
     kaefigKlick(x, y);
     return;
   }
@@ -2125,7 +2127,7 @@ function koerperListeZeichnen() {
       <span class="rechts"><button class="weg" title="Körper entfernen">✕</button></span>
       <span class="zahl"></span>`;
     el.querySelector('.name').textContent = m.name;
-    el.querySelector('.zahl').textContent = `Volumen ${zahlText(m.volumen || 0, 1)} mm³`;
+    el.querySelector('.zahl').textContent = `Volumen ${zahlText(m.volumen || 0, 1)} mm³` + (m.nutzt && m.nutzt.length ? ` · nutzt ${m.nutzt.join(', ')}` : '');
     el.addEventListener('click', () => koerperWaehlen(m.id));
     el.querySelector('.auge').addEventListener('click', (ev) => { ev.stopPropagation(); sicher(() => api('koerper/setzen', { kid: m.id, sichtbar: !m.sichtbar })); });
     el.querySelector('.weg').addEventListener('click', (ev) => {
@@ -2887,6 +2889,7 @@ function referenzListeZeichnen() {
 function refAuswahlFuellen() {
   const eb = [...S.referenzen.values()].filter((r) => r.art === 'ebene').map((r) => [r.id, r.name]);
   selectFuellen($('#kgRef'), eb);
+  selectFuellen($('#rfGriffRef'), [...S.referenzen.values()].filter((r) => r.art !== 'punkt').map((r) => [r.id, r.name]));
   selectFuellen($('#esRef'), eb);
   // Skizzenebene + Spiegelebene um Referenzen ergänzen
   for (const [sel, nurEbene] of [['#skEbene', false], ['#spEbene', true]]) {
@@ -4984,6 +4987,7 @@ function werkzeugOeffnen(liste, knopf = null) {
 }
 
 function werkzeugSchliessen(zuruecksetzen = true) {
+  if (typeof griffWeg === 'function' && griff.object) griffWeg();      // Ziehgriff gehört zum Werkzeug
   if (zuruecksetzen && WF.haupt) {
     const z = wfKnopf(WF.haupt, 'zurueck');
     if (z) z.click();
@@ -5095,7 +5099,7 @@ async function start() {
   setInterval(() => fetch('/api/puls').catch(() => status('Verbindung zum Dienst verloren – Programm neu starten.')), 10000);
   fetch('/api/puls');
   steuerung.addEventListener('change', kameraGrenzen);
-  window.v3dscan = { S, api, einpassen, werkzeugSetzen, punktAn, auswahlAnwenden, kamera, steuerung, renderer, wuerfelTreffer,
+  window.v3dscan = { S, api, einpassen, werkzeugSetzen, punktAn, auswahlAnwenden, kamera, steuerung, renderer, wuerfelTreffer, griffTest: () => ({ griff, griffObjekt }),
     werkzeugOeffnen, werkzeugSchliessen, bandSetzen, formWaehlen, kaefigEckeAn, kaefigKanteAn, kaefigFlaecheAn, aktionAusfuehren };
   konsole('V3D Scan ' + z.fassung + ' bereit.');
 }
@@ -5293,3 +5297,163 @@ leinwand.addEventListener('pointerup', () => {
 });
 
 $('#vlJeSeite').addEventListener('change', () => { $('#vlSeiten').hidden = !$('#vlJeSeite').checked; });
+
+// ===========================================================================
+// Ziehgriffe (v1.5): ein TransformControls für Scan-Ausrichtung, Käfig-Ecken, Grundkörper und Referenzen
+// ===========================================================================
+const griff = new TransformControls(kamera, leinwand);
+griff.setSize(0.9);
+szene.add(griff.getHelper());
+const griffObjekt = new THREE.Object3D();
+szene.add(griffObjekt);
+let griffZiel = null;        // {aendern(), fertig(), weg()}
+let griffZieht = false;
+griff.addEventListener('dragging-changed', (e) => {
+  steuerung.enabled = !e.value;
+  griffZieht = e.value;
+  if (!e.value && griffZiel && griffZiel.fertig) sicher(async () => griffZiel.fertig());
+});
+griff.addEventListener('objectChange', () => { if (griffZiel && griffZiel.aendern) griffZiel.aendern(); });
+function griffSetzen(ziel, { position, quaternion = null, modus = 'translate', raum = 'world' } = {}) {
+  griffWeg();
+  griffObjekt.position.copy(position);
+  griffObjekt.quaternion.copy(quaternion || new THREE.Quaternion());
+  griffObjekt.scale.set(1, 1, 1);
+  griffObjekt.updateMatrixWorld(true);
+  griff.attach(griffObjekt);
+  griff.setMode(modus);
+  griff.setSpace(raum);
+  griffZiel = ziel;
+}
+function griffWeg() {
+  if (griffZiel && griffZiel.weg) griffZiel.weg();
+  griffZiel = null;
+  griff.detach();
+}
+function zeilenMatrix(m) {           // THREE (spaltenweise) -> [[…4], …] zeilenweise, wie matrixSetzen erwartet
+  const e = m.elements;
+  return [0, 1, 2, 3].map((r) => [0, 1, 2, 3].map((c) => e[c * 4 + r]));
+}
+
+// 1) Scans im Modell verschieben/drehen (Align Interactive)
+function koordGriff() {
+  if (!$('#wertGriff').checked) { griffWeg(); return; }
+  const k = szenenKugel();
+  const start = new THREE.Matrix4().makeTranslation(k.center.x, k.center.y, k.center.z);
+  const startInv = start.clone().invert();
+  griffSetzen({
+    aendern() {
+      griffObjekt.updateMatrixWorld(true);
+      const M = griffObjekt.matrixWorld.clone().multiply(startInv);
+      const T = zeilenMatrix(M);
+      regVorschauSetzen(Object.fromEntries(sichtbareIds().map((id) => [id, T])),
+        '<b>Griff</b><br><small>Vorschau – „Anwenden“ übernimmt.</small>', 'gut', '#koordErgebnis');
+      const v = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+      M.decompose(v, q, sc);
+      const eu = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+      [['#wertVX', v.x], ['#wertVY', v.y], ['#wertVZ', v.z]].forEach(([i, w]) => { $(i).value = w.toFixed(3); });
+      [['#wertDX', eu.x], ['#wertDY', eu.y], ['#wertDZ', eu.z]].forEach(([i, w]) => { $(i).value = THREE.MathUtils.radToDeg(w).toFixed(2); });
+    },
+    weg() { $('#wertGriff').checked = false; },
+  }, { position: k.center, modus: $('#wertGriffModus').value });
+}
+
+// 2) Käfig-Ecken mit Griff (Manipulator Welt/Lokal)
+function kaefigGriff() {
+  const K = S.kaefig;
+  if ($('#kgModus').value !== 'griff' || !K || !K.wahl || !K.wahl.ecken.length) { if (griffZiel && griffZiel.kaefig) griffWeg(); return; }
+  const ids = [...K.wahl.ecken];
+  const V = K.V, mitte = new THREE.Vector3();
+  for (const i of ids) mitte.add(new THREE.Vector3(V[i * 3], V[i * 3 + 1], V[i * 3 + 2]));
+  mitte.divideScalar(ids.length);
+  // lokal: z = mittlere Normale der anliegenden Vierecke
+  const n = new THREE.Vector3(), F = K.F, a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), d = new THREE.Vector3();
+  const menge = new Set(ids);
+  for (let f = 0; f < F.length / 4; f++) {
+    if (![0, 1, 2, 3].some((e) => menge.has(F[f * 4 + e]))) continue;
+    const p = (e) => new THREE.Vector3(V[F[f * 4 + e] * 3], V[F[f * 4 + e] * 3 + 1], V[F[f * 4 + e] * 3 + 2]);
+    a.copy(p(2)).sub(p(0)); b.copy(p(3)).sub(p(1)); n.add(c.crossVectors(a, b));
+  }
+  const q = n.lengthSq() > 0 ? new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n.normalize()) : null;
+  const alt = mitte.clone();
+  griffSetzen({
+    kaefig: true,
+    aendern() {
+      d.copy(griffObjekt.position).sub(alt);
+      alt.copy(griffObjekt.position);
+      for (const i of ids) { V[i * 3] += d.x; V[i * 3 + 1] += d.y; V[i * 3 + 2] += d.z; }
+      K.geaendert = true;
+      kaefigLinien();
+    },
+  }, { position: mitte, quaternion: q, raum: $('#kgGriffRaum').value });
+}
+$('#kgModus').addEventListener('change', kaefigGriff);
+$('#kgGriffRaum').addEventListener('change', kaefigGriff);
+
+// 3) Grundkörper per Eingabe: Griff an der Vorschau setzt Mitte bzw. Größe
+function geGriff() {
+  if (!$('#geGriff').checked) { griffWeg(); return; }
+  const mitte = new THREE.Vector3(...dreiZahlen($('#geMitte').value));
+  const modus = $('#geGriffModus').value;
+  griffSetzen({
+    aendern() {
+      const p = griffObjekt.position;
+      $('#geMitte').value = [p.x, p.y, p.z].map((w) => +w.toFixed(3)).join('; ');
+      if (S.featVorschau) {          // um die Mitte skalieren, dann verschieben
+        S.featVorschau.scale.copy(griffObjekt.scale);
+        S.featVorschau.position.copy(p).sub(mitte.clone().multiply(griffObjekt.scale));
+      }
+    },
+    async fertig() {
+      const sc = griffObjekt.scale, art = $('#geArt').value;
+      if (modus === 'scale' && (sc.x !== 1 || sc.y !== 1 || sc.z !== 1)) {
+        if (art === 'quader') {
+          const g = dreiZahlen($('#geGroesse').value);
+          $('#geGroesse').value = [g[0] * sc.x, g[1] * sc.y, g[2] * sc.z].map((w) => +w.toFixed(3)).join('; ');
+        } else {
+          $('#geRadius').value = +(Number($('#geRadius').value) * Math.max(sc.x, sc.y)).toFixed(3);
+          $('#geRmax').value = +(Number($('#geRmax').value) * Math.max(sc.x, sc.y)).toFixed(3);
+          $('#geRmin').value = +(Number($('#geRmin').value) * Math.max(sc.x, sc.y)).toFixed(3);
+          $('#geHoehe').value = +(Number($('#geHoehe').value) * sc.z).toFixed(3);
+        }
+      }
+      await geAusfuehren(true);
+      geGriff();                           // Griff wieder auf die neue Vorschau
+    },
+    weg() { if (S.featVorschau) { S.featVorschau.position.set(0, 0, 0); S.featVorschau.scale.set(1, 1, 1); } },
+  }, { position: mitte, modus });
+}
+$('#geGriff').addEventListener('change', () => sicher(async () => { if ($('#geGriff').checked && !S.featVorschau) await geAusfuehren(true); geGriff(); }));
+$('#geGriffModus').addEventListener('change', () => { if ($('#geGriff').checked) geGriff(); });
+
+// 4) Referenz (z. B. Symmetrieebene) interaktiv nachjustieren
+function refGriff() {
+  const rid = Number($('#rfGriffRef').value);
+  const r = S.referenzen.get(rid);
+  if (!$('#rfGriff').checked || !r) { griffWeg(); return; }
+  const p = new THREE.Vector3(...r.punkt);
+  const achse = new THREE.Vector3(...(r.art === 'ebene' ? r.normale : r.richtung || [0, 0, 1])).normalize();
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), achse);
+  griffSetzen({
+    aendern() {
+      // Vorschau: Referenz-Objekt mitdrehen (um ihren Punkt)
+      const dq = griffObjekt.quaternion.clone().multiply(q.clone().invert());
+      r.obj.position.set(0, 0, 0); r.obj.quaternion.identity();
+      r.obj.applyMatrix4(new THREE.Matrix4().makeTranslation(-p.x, -p.y, -p.z));
+      r.obj.applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(dq));
+      r.obj.applyMatrix4(new THREE.Matrix4().makeTranslation(griffObjekt.position.x, griffObjekt.position.y, griffObjekt.position.z));
+    },
+    async fertig() {
+      const n = new THREE.Vector3(0, 0, 1).applyQuaternion(griffObjekt.quaternion).normalize();
+      const d = { rid, punkt: griffObjekt.position.toArray() };
+      d[r.art === 'ebene' ? 'normale' : 'richtung'] = n.toArray();
+      await api('referenz/aendern', d, 'Verschiebe Referenz…');
+      refGriff();
+    },
+  }, { position: p, quaternion: q, modus: $('#rfGriffModus').value });
+}
+$('#rfGriff').addEventListener('change', refGriff);
+$('#rfGriffModus').addEventListener('change', refGriff);
+$('#rfGriffRef').addEventListener('change', refGriff);
+$('#wertGriff').addEventListener('change', koordGriff);
+$('#wertGriffModus').addEventListener('change', koordGriff);

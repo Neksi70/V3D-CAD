@@ -1577,6 +1577,9 @@ def referenz_befehl(was, d):
         sichtbar = d.get("sichtbar")
         p.referenz_setzen(d["rid"], None if sichtbar is None else bool(sichtbar), d.get("name"))
         return {}
+    if was == "aendern":
+        p.referenz_aendern(d["rid"], d)
+        return {}
     if was == "entfernen":
         p.referenz_entfernen(d["rid"])
         return {}
