@@ -4125,7 +4125,7 @@ function kaAus() {
 function koerperExport(format) {
   if (!S.koerper.size) throw new Error('Noch keine Körper – erst einen Grundkörper erzeugen.');
   const ziel = S.koerperAktiv !== null ? S.koerperAktiv : 'alle';
-  herunterladen(`/api/koerper/export/${ziel}?format=${format}`);
+  herunterladen(`/api/koerper/export/${ziel}?format=${format}&einheit=${dateiEinheit()}`);
   konsole(`Export ${format.toUpperCase()}: ${ziel === 'alle' ? 'alle Körper' : S.koerper.get(ziel).meta.name}`, 'ok');
 }
 $('#koerperKanten').addEventListener('change', () => { for (const k of S.koerper.values()) koerperDarstellung(k); });
@@ -4282,7 +4282,7 @@ async function dateienImportieren(dateien) {
     await sicher(async () => {
       await mitSanduhr(`Lade ${datei.name}…`, async () => {
         const projekt = datei.name.toLowerCase().endsWith('.v3dscan');
-        const url = projekt ? '/api/projekt/laden' : '/api/import?name=' + encodeURIComponent(datei.name);
+        const url = projekt ? '/api/projekt/laden' : '/api/import?name=' + encodeURIComponent(datei.name) + '&einheit=' + dateiEinheit();
         const r = await fetch(url, { method: 'POST', body: datei });
         const j = await r.json();
         if (!r.ok || j.fehler) throw new Error(`${datei.name}: ${j.fehler || r.status}`);
@@ -4341,7 +4341,7 @@ const AKTIONEN = {
   speichern: { text: 'Projekt speichern', taste: 'Ctrl+S', fn: () => herunterladen('/api/projekt/speichern') },
   exportieren: { text: 'Aktiven Scan exportieren', taste: 'Ctrl+E', fn: () => {
     if (!S.aktiv) throw new Error('Kein Scan aktiv.');
-    herunterladen(`/api/export/${S.aktiv}?format=${$('#exportFormat').value}`);
+    herunterladen(`/api/export/${S.aktiv}?format=${$('#exportFormat').value}&einheit=${dateiEinheit()}`);
   } },
   rueckgaengig: { text: 'Rückgängig', taste: 'Ctrl+Z', fn: async () => { const j = await api('rueckgaengig', {}, 'Rückgängig…'); if (j.text) status('Rückgängig: ' + j.text); } },
   wiederholen: { text: 'Wiederholen', taste: 'Ctrl+Y', fn: async () => { const j = await api('wiederholen', {}, 'Wiederholen…'); if (j.text) status('Wiederholt: ' + j.text); } },
@@ -4365,6 +4365,8 @@ const AKTIONEN = {
   } },
   invertieren: { text: 'Auswahl umkehren', taste: 'Ctrl+I', fn: auswahlUmkehren },
   optionen: { text: 'Optionen (Navigation, Auto-Sicherung)', fn: optionenOeffnen },
+  hilfe: { text: 'Hilfe', taste: 'F1', fn: () => hilfeOeffnen() },
+  hilfeZu: { text: '', fn: () => $('#hilfeDialog').close() },
   blAnwenden: { text: 'Übergangskurve', fn: async () => {
     await api('skizze/uebergang', { sid_a: Number($('#blA').value), ende_a: $('#blEndeA').value, sid_b: Number($('#blB').value),
       ende_b: $('#blEndeB').value, staerke: Number($('#blStaerke').value) || 1 }, 'Erzeuge Übergangskurve…');
@@ -5120,3 +5122,64 @@ $('#randArt').addEventListener('change', () => {
   S.randPunkte = []; randZeichnen();
 });
 $('#randArt').dispatchEvent(new Event('change'));
+
+// Einheit einheitenloser Dateien (Import/Export), gemerkt je Rechner
+function dateiEinheit() { return $('#dateiEinheit').value || 'mm'; }
+try { const e = localStorage.getItem('v3dscan.einheit'); if (e) $('#dateiEinheit').value = e; } catch (e) { /* privat */ }
+$('#dateiEinheit').addEventListener('change', () => { try { localStorage.setItem('v3dscan.einheit', dateiEinheit()); } catch (e) { /* privat */ } });
+
+// Hilfe (v1.4): Arbeitsablauf + alle Werkzeuge, erzeugt aus den Werkzeugfenstern (veraltet nicht);
+// F1 springt zum gerade offenen Werkzeug
+const HILFE_ABLAUF = [
+  ['Scan → CAD in einem Klick', ['Scan laden (Menü → Öffnen; Einheit einheitenloser Dateien im Menü wählen)',
+    'START → „🪄 Scan → CAD“: erkennt Grundformen, baut Querschnitte und Körper, meldet die Abweichung',
+    'Ergebnis prüfen (ANALYSE → Abweichung), als STEP speichern oder als Bauplan an V3D CAD geben']],
+  ['Schritt für Schritt (parametrisch)', ['Scan bereinigen und ausrichten (PUNKTE, POLYGONE, AUSRICHTEN)',
+    'Grundformen erkennen (BEREICHE) und als Körper übernehmen', 'Querschnitt-Skizze (SKIZZE) mit Bedingungen und Maßen',
+    'Extrudieren/Drehen/Loft (CAD), Runden/Fasen – die Vorschau zeigt die Abweichung zum Scan',
+    'Verlauf: Skizze ändern → Körper rechnet nach']],
+  ['Freiform (organische Teile)', ['FREIFORM → Automatisch: Vierecksnetz über den Scan, glatte Flächen',
+    'Käfig von Hand: Ecken ziehen, Kanten/Vierecke wählen, extrudieren, Schleifen einfügen, scharfe Kanten',
+    '„Erzeugen“ baut die Flächen und – bei geschlossenem Scan – einen Volumenkörper']],
+];
+function hilfeOeffnen(suche = '') {
+  const box = $('#hilfeInhalt');
+  box.innerHTML = '';
+  $('#hilfeFassung').textContent = S.zustand && S.zustand.fassung ? 'V3D Scan ' + S.zustand.fassung : '';
+  const ablauf = document.createElement('div');
+  for (const [titel, schritte] of HILFE_ABLAUF) {
+    const h = document.createElement('h4'); h.textContent = titel; ablauf.appendChild(h);
+    const ol = document.createElement('ol');
+    for (const t of schritte) { const li = document.createElement('li'); li.textContent = t; ol.appendChild(li); }
+    ablauf.appendChild(ol);
+  }
+  box.appendChild(ablauf);
+  const h = document.createElement('h4'); h.textContent = 'Alle Werkzeuge'; box.appendChild(h);
+  // Werkzeugfenster: Titel + Hilfetexte, dazu der Reiter, in dem der Knopf liegt
+  const reiter = {};
+  document.querySelectorAll('[data-bandseite] [data-wf]').forEach((b) => {
+    const seite = b.closest('[data-bandseite]').dataset.bandseite;
+    for (const id of b.dataset.wf.split(/\s+/)) reiter[id] = reiter[id] || seite.toUpperCase();
+  });
+  const offen = WF.haupt ? WF.haupt.id : null;
+  const q = suche.toLowerCase();
+  let ziel = null;
+  document.querySelectorAll('section[data-titel]').forEach((sec) => {
+    const titel = sec.dataset.titel;
+    const texte = [...sec.querySelectorAll('.hilfe')].map((p) => p.textContent.trim()).filter(Boolean);
+    const knoepfe = [...sec.querySelectorAll('button[title]')].map((b) => `${b.textContent.trim()}: ${b.title}`).slice(0, 6);
+    const voll = [titel, ...texte, ...knoepfe].join(' ').toLowerCase();
+    if (q && !voll.includes(q)) return;
+    const d = document.createElement('div');
+    d.className = 'wz' + (sec.id === offen ? ' an' : '');
+    const b = document.createElement('b');
+    b.textContent = titel + (reiter[sec.id] ? `  ·  ${reiter[sec.id]}` : '');
+    d.appendChild(b);
+    for (const t of [...texte, ...knoepfe]) { const p = document.createElement('div'); p.textContent = t; d.appendChild(p); }
+    box.appendChild(d);
+    if (sec.id === offen) ziel = d;
+  });
+  if (!$('#hilfeDialog').open) $('#hilfeDialog').showModal();
+  if (ziel) ziel.scrollIntoView({ block: 'center' });
+}
+$('#hilfeSuche').addEventListener('input', () => hilfeOeffnen($('#hilfeSuche').value));

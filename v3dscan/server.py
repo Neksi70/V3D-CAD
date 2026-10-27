@@ -74,6 +74,17 @@ def maske_aus_b64(text, n):
     return bits[:n].astype(bool)
 
 
+EINHEITEN = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "inch": 25.4, "in": 25.4}
+
+
+def _einheit(q):
+    """Faktor Datei-Einheit -> mm (Import) bzw. mm -> Datei-Einheit (Export: Kehrwert)."""
+    e = (q.get("einheit") or "mm").lower()
+    if e not in EINHEITEN:
+        raise Fehler("Unbekannte Einheit „%s“ (mm, cm, m, inch)." % e)
+    return EINHEITEN[e]
+
+
 def masken_lesen(d):
     aus = {}
     for sid, text in (d.get("masken") or {}).items():
@@ -1673,7 +1684,7 @@ def elementliste_csv(sid):
     s = projekt.scan(sid)
     if not erk or erk["rev"] != s.rev:
         raise Fehler("Keine aktuelle Erkennung.")
-    zeilen = ["Nr;Typ;Nennmaß;gemessen;Länge/Tiefe;Achse;X;Y;Z;RMS;Punkte;Beschreibung"]
+    zeilen = ["Nr;Typ;Nennmaß;gemessen;Länge/Tiefe;Achse;X;Y;Z;RMS;Formabweichung;Bezug;Punkte;Beschreibung"]
 
     def z(v):
         return "" if v is None else ("%.4f" % v).replace(".", ",")
@@ -1683,6 +1694,8 @@ def elementliste_csv(sid):
         p = e.get("punkt", e.get("mitte")) or [None, None, None]
         zeilen.append(";".join([str(e["id"] + 1), er.TYP_NAMEN[e["typ"]][0], z(nenn), z(gem), z(e.get("hoehe")),
                                 e.get("achse_name") or "", z(p[0]), z(p[1]), z(p[2]), z(e["rms"]),
+                                ("%s %s" % (e["form"]["art"], z(e["form"]["wert"]))) if e.get("form") else "",
+                                ", ".join(e.get("bezug") or []),
                                 str(e["punkte"]), e["text"]]))
     return ("\ufeff" + "\r\n".join(zeilen) + "\r\n").encode("utf-8")
 
@@ -1889,6 +1902,10 @@ class Handler(BaseHTTPRequestHandler):
                 fmt = q.get("format", "ply")
                 with sperre:
                     s = projekt.scan(pfad.rsplit("/", 1)[1])
+                    faktor = 1.0 / _einheit(q)
+                    if faktor != 1.0:
+                        s = s.kopie()
+                        s.xyz = (s.xyz.astype(np.float64) * faktor).astype(np.float32)
                     with tempfile.TemporaryDirectory() as tmp:
                         datei = os.path.join(tmp, "x." + fmt)
                         ausgeben(s, datei, fmt)
@@ -1920,7 +1937,8 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         liste = [projekt.koerper_holen(wer)]
                         name = liste[0].name
-                    daten = kp.exportieren([k.shape for k in liste], fmt)
+                    _einheit(q)
+                    daten = kp.exportieren([k.shape for k in liste], fmt, (q.get("einheit") or "mm").lower())
                 name = "".join(c if c.isalnum() or c in "-_ ()" else "_" for c in name).strip() or "koerper"
                 name += ".stl" if fmt == "stl" else kp.FORMATE.get(fmt, ".step")
                 return self._senden(200, daten, "application/octet-stream", {
@@ -1972,6 +1990,9 @@ class Handler(BaseHTTPRequestHandler):
                     with open(datei, "wb") as f:
                         f.write(daten)
                     scan = einlesen(datei, name)
+                faktor = _einheit(q)
+                if faktor != 1.0:                     # einheitenlose Scan-Datei in inch/cm/m: intern immer mm
+                    scan.xyz = (scan.xyz.astype(np.float64) * faktor).astype(np.float32)
                 with sperre:
                     projekt.hinzufuegen(scan)
                     return self._senden(200, dict(projekt.zustand(), neu=scan.id))

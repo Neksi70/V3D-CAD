@@ -130,7 +130,8 @@ def grundkoerper_parameter(el, nennmass=True, verlaengern=0.0):
             raise ValueError("Kugelradius ungültig.")
         return {"art": art, "mitte": mitte.tolist(), "radius": r}
     a = _achse(el, nennmass)
-    punkt = _vek(el, "punkt")
+    # koaxial erkannt: Achspunkt auf die gemeinsame Achse (erkennung.bedingungen_zwischen)
+    punkt = _vek(el, "punkt_nenn") if nennmass and el.get("punkt_nenn") is not None else _vek(el, "punkt")
     h = float(el.get("hoehe") or 0)
     if not h > 0:
         raise ValueError("Element hat keine Höhe/Länge.")
@@ -690,12 +691,20 @@ def stl_daten(shapes, fein=True):
     return struct.pack("<80sI", b"V3D Scan STL (mm)", len(T)) + daten.tobytes()
 
 
-def exportieren(shapes, fmt):
-    """Liste von Shapes -> Dateiinhalt (bytes), Einheit mm."""
+def exportieren(shapes, fmt, einheit="mm"):
+    """Liste von Shapes -> Dateiinhalt (bytes). STEP/IGES immer in mm (die Datei nennt ihre Einheit, jedes CAD
+    rechnet um); einheit gilt nur fuer das einheitenlose STL."""
     fmt = (fmt or "step").lower()
     if fmt == "stl":
         if not shapes:
             raise ValueError("Kein Körper zum Exportieren.")
+        faktor = {"mm": 1.0, "cm": 0.1, "m": 0.001, "inch": 1 / 25.4, "in": 1 / 25.4}[einheit]
+        if faktor != 1.0:
+            from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+            from OCP.gp import gp_Pnt, gp_Trsf
+            t = gp_Trsf()
+            t.SetScale(gp_Pnt(0, 0, 0), faktor)
+            shapes = [BRepBuilderAPI_Transform(s_, t, True).Shape() for s_ in shapes]
         return stl_daten(shapes)
     if fmt not in FORMATE:
         raise ValueError("Unbekanntes Format „%s“ (step oder iges)." % fmt)
@@ -707,7 +716,7 @@ def exportieren(shapes, fmt):
         if FORMATE[fmt] == ".step":
             from OCP.Interface import Interface_Static
             from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
-            Interface_Static.SetCVal_s("write.step.unit", "MM")
+            Interface_Static.SetCVal_s("write.step.unit", "MM")       # STEP/IGES tragen die Einheit: immer mm
             w = STEPControl_Writer()
             for s in shapes:
                 if w.Transfer(s, STEPControl_AsIs) != IFSelect_RetDone:

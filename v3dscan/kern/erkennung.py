@@ -12,6 +12,8 @@
 #   5. Deuten: Bohrung/Zapfen/Rundung/Hohlkehle/Kuppel/Senkung, Nennmass
 #      runden, Achsen an X/Y/Z einrasten, gleiche Bohrungen zusammenfassen.
 
+import math
+
 import numpy as np
 
 from . import formen
@@ -283,6 +285,7 @@ def erkennen(scan, toleranz=None, winkel_grad=20.0, min_anteil=0.08, arten=ARTEN
             freiform += 1
 
     _deuten(elemente, P, N, labels, orientiert)
+    bedingungen_zwischen(elemente)
     if scan.ist_netz and len(scan.tri):
         lo, vox, b = raster
         arbeit_schluessel = _voxel_schluessel(P, lo, vox, b)
@@ -432,7 +435,82 @@ def _deuten(elemente, P, N, labels, orientiert):
             ausdehnung = np.ptp(flach @ vt.T, axis=0)
             el["ausdehnung"] = [round(float(x), 2) for x in sorted(ausdehnung, reverse=True)]
             el["typ"] = "ebene"
+        # Formabweichung (Ebenheit, Zylinderform …): Spannweite der Abstaende, ohne die aeussersten 0,5 %
+        try:
+            d, _ = abstand(art, el, pts)
+            if len(d) >= 10:
+                lo, hi = np.percentile(d, [0.5, 99.5])
+                el["form"] = {"art": FORM_NAMEN[art], "wert": round(float(hi - lo), 4)}
+        except (KeyError, ValueError):
+            pass
         el["text"] = beschreibung(el)
+
+
+FORM_NAMEN = {"ebene": "Ebenheit", "zylinder": "Zylinderform", "kugel": "Kugelform", "kegel": "Kegelform"}
+
+
+def bedingungen_zwischen(elemente, grad=1.5):
+    """Bedingungen beim Extrahieren (QuickSurface "Constraints"): fast parallele Achsen/Normalen werden exakt
+    parallel, fast rechtwinklige exakt rechtwinklig, Zylinder/Kegel auf nahezu derselben Achse koaxial.
+    Weltachsen (achse_name) haben Vorrang. Schreibt achse_nenn/normale_nenn, punkt_nenn und el["bezug"]."""
+    cos_p = math.cos(math.radians(grad))
+    sin_r = math.sin(math.radians(grad))
+    rich = []
+    for el in elemente:
+        v = el.get("achse") if el["art"] in ("zylinder", "kegel") else el.get("normale") if el["art"] == "ebene" else None
+        if v is not None:
+            rich.append((el, _einheit(np.asarray(v, float))))
+    # 1. Gruppen paralleler Richtungen (Vorzeichen egal); Weltachse oder groesstes Element gibt die Richtung vor
+    gruppen = []
+    for el, v in sorted(rich, key=lambda x: (x[0].get("achse_name") is None, -x[0].get("punkte", 0))):
+        for g in gruppen:
+            if abs(float(g["r"] @ v)) >= cos_p:
+                g["mit"].append((el, v))
+                break
+        else:
+            r = np.zeros(3)
+            if el.get("achse_name"):
+                r["XYZ".index(el["achse_name"])] = 1.0
+            else:
+                r = v
+            gruppen.append({"r": r, "mit": [(el, v)], "kopf": el})
+    # 2. rechtwinklig: spaetere Gruppen auf frueheren senkrecht stellen (Gram-Schmidt)
+    for i, g in enumerate(gruppen):
+        for h in gruppen[:i]:
+            c = float(g["r"] @ h["r"])
+            if abs(c) <= sin_r and abs(c) > 1e-12:
+                g["r"] = _einheit(g["r"] - c * h["r"])
+                g.setdefault("senkrecht", []).append(h["kopf"]["id"])
+    for g in gruppen:
+        for el, v in g["mit"]:
+            r = g["r"] if float(g["r"] @ v) >= 0 else -g["r"]
+            schl = "achse_nenn" if el["art"] in ("zylinder", "kegel") else "normale_nenn"
+            el[schl] = r
+            bez = el.setdefault("bezug", [])
+            if el is not g["kopf"] and not el.get("achse_name"):
+                bez.append("parallel zu #%d" % (g["kopf"]["id"] + 1))
+            for sid in g.get("senkrecht", []):
+                bez.append("rechtwinklig zu #%d" % (sid + 1))
+    # 3. koaxial: Zylinder/Kegel mit gleicher Richtung und (fast) derselben Achslinie
+    achsen = [el for el in elemente if el["art"] in ("zylinder", "kegel") and "achse_nenn" in el]
+    for i, a in enumerate(achsen):
+        for b in achsen[:i]:
+            ra, rb = a["achse_nenn"], b["achse_nenn"]
+            if abs(float(ra @ rb)) < cos_p:
+                continue
+            tol = max(0.05, 3 * max(a.get("rms", 0), b.get("rms", 0)), 0.03 * min(a.get("radius", 1), b.get("radius", 1)))
+            v = np.asarray(a["punkt"], float) - np.asarray(b["punkt"], float)
+            quer = v - (v @ rb) * rb
+            if np.linalg.norm(quer) <= tol:
+                q = np.asarray(b.get("punkt_nenn", b["punkt"]), float)
+                a["punkt_nenn"] = np.asarray(a["punkt"], float) - quer        # auf die Achse von b
+                a.setdefault("bezug", []).append("koaxial mit #%d" % (b["id"] + 1))
+                break
+    for el in elemente:
+        if el.get("bezug"):
+            el["bezug"] = sorted(set(el["bezug"]))
+            el["text"] = beschreibung(el)
+    return elemente
 
 
 TYP_NAMEN = {"ebene": ("Ebene", "Ebenen"), "bohrung": ("Bohrung", "Bohrungen"),
@@ -458,6 +536,15 @@ def _mitte_text(el):
 
 
 def beschreibung(el):
+    zusatz = ""
+    if el.get("form"):
+        zusatz += " · %s %s" % (el["form"]["art"], _mm(el["form"]["wert"], 3))
+    if el.get("bezug"):
+        zusatz += " · " + ", ".join(el["bezug"])
+    return _beschreibung(el) + zusatz
+
+
+def _beschreibung(el):
     typ = el["typ"]
     name = TYP_NAMEN[typ][0]
     achse = " · Achse %s" % el["achse_name"] if el.get("achse_name") else ""
