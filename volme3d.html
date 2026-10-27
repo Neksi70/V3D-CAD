@@ -1520,7 +1520,7 @@ const firebaseConfig = {
       <button class="btn" onclick="_svgImportOpen()" title="SVG importieren — Vektor-Datei (Logo, Schriftzug, Laser-Vorlage) als Körper extrudieren, flach einfügen oder als Skizze bearbeiten">⬆ SVG</button>
       <button class="btn" onclick="_scan2cad()" title="Scan → CAD mit einem Klick: gescanntes Teil (gewählt, sonst Datei wählen) wird automatisch zu einem echten CAD-Körper mit Skizzen im Verlauf">🪄 Scan→CAD</button>
       <button class="btn" onclick="_imgInsert()" title="Bild einfügen — Foto/Logo (PNG, JPG) wählen und danach aussuchen, was daraus werden soll: Gravur, Leuchtrelief, Box, Ausstecher …  Bild ins Fenster ziehen geht auch">🖼️ Bild</button>
-      <input type="file" id="fimport" accept=".stl,.step,.stp,.3mf,.obj,.glb,.gltf,.svg,.json" style="display:none" onchange="handleImport(event)">
+      <input type="file" id="fimport" accept=".stl,.step,.stp,.3mf,.obj,.glb,.gltf,.ply,.svg,.json" style="display:none" onchange="handleImport(event)">
       <input type="file" id="img-file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="_imgFile(event)">
     </div></div>
     <div class="tbg hot"><span class="tbg-l">Kombinieren</span><div class="tbg-row">
@@ -40204,6 +40204,7 @@ async function _importMeshFile(buf, filename, showDialog) {
   const schon = _libIsSimplified(buf, ext);   // schon vereinfacht → nicht noch einmal fragen/vereinfachen
   if (ext === '3mf') return _importThreeMF(buf, filename, { ask: !schon });
   if (ext === 'glb' || ext === 'gltf') return _importGLB(buf, filename);
+  if (ext === 'ply') return _importPLY(buf, filename);
   let geo;
   try { geo = ext === 'obj' ? _parseOBJ(new TextDecoder().decode(buf)) : parseSTL(buf, !schon); }   // Normalen erst nach dem Fenster
   catch (err) { notify('Import Fehler: ' + err.message, 'e'); return false; }
@@ -40242,7 +40243,7 @@ function _addImportedGeo(geo, filename, zUp, stlBuf, showDialog, stepBytes) {
       mesh.position.x -= c.x; mesh.position.z -= c.z; mesh.position.y -= bb.min.y;
       mesh.updateMatrixWorld(true);
     }
-    mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import', name: (filename||'modell').replace(/\.(stl|3mf|obj|glb|gltf)$/i, ''), color: currentColor, isHole: false, _origGeo: geo, _origStlBuf: stlBuf || null,
+    mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import', name: (filename||'modell').replace(/\.(stl|3mf|obj|glb|gltf|ply)$/i, ''), color: currentColor, isHole: false, _origGeo: geo, _origStlBuf: stlBuf || null,
       _stlCx: (geo.boundingBox ? (geo.boundingBox.min.x + geo.boundingBox.max.x) / 2 : 12.8),
       _stlCy: (geo.boundingBox ? (geo.boundingBox.min.y + geo.boundingBox.max.y) / 2 : 12.8),
       _stlCz: (geo.boundingBox ? (geo.boundingBox.min.z + geo.boundingBox.max.z) / 2 : 10.1) };
@@ -40501,6 +40502,11 @@ async function _importGLB(buf, filename, opts) {
   const bb = new THREE.Box3().setFromArray(D.pos), sz = bb.getSize(new THREE.Vector3()), d = Math.max(sz.x, sz.y, sz.z) || 1;
   const f = (d >= 0.005 && d <= 0.6) ? 1000 : d > 5 ? 1 : 60 / d;
   for (let i = 0; i < D.pos.length; i++) D.pos[i] *= f;
+  return _farbImport(D, filename, opts, false, D.nTex ? ', mit Textur' : ', mit Materialfarben');
+}
+// Gemeinsamer Rest von GLB- und PLY-Import: D = {pos (mm), col (sRGB 0..1 je Dreieck), area, nTri}.
+// Mehrere Farben → Fenster „wie viele Filamente“ → Mehrfarb-Bemalung; sonst einfarbig.
+async function _farbImport(D, filename, opts, zUp, artText) {
   // Gibt es überhaupt mehrere Farben? (grob: verschiedene 5-bit-Farben)
   const versch = new Set(); for (let t = 0; t < D.nTri && versch.size < 3; t += Math.max(1, (D.nTri / 5000) | 0)) versch.add((Math.round(D.col[t*3] * 31) << 10) | (Math.round(D.col[t*3+1] * 31) << 5) | Math.round(D.col[t*3+2] * 31));
   let N = opts.n;
@@ -40508,7 +40514,7 @@ async function _importGLB(buf, filename, opts) {
     if (versch.size < 2) N = 1;
     else {
       const esc = String(filename || 'Modell').replace(/[<>&]/g, '');
-      N = await _glbFarbDialog('„<b>' + esc + '</b>“: ' + D.nTri.toLocaleString('de') + ' Dreiecke' + (D.nTex ? ', mit Textur' : ', mit Materialfarben')
+      N = await _glbFarbDialog('„<b>' + esc + '</b>“: ' + D.nTri.toLocaleString('de') + ' Dreiecke' + artText
         + '.<br>Die Farben werden auf Filamentfarben verteilt und als Mehrfarb-Bemalung übernommen – im 3MF-Export landen sie bei Bambu Studio/OrcaSlicer auf den Filamenten.', D);
       if (N == null) return false;
     }
@@ -40524,8 +40530,8 @@ async function _importGLB(buf, filename, opts) {
   if (!geo.attributes.normal) geo.computeVertexNormals();
   geo.computeBoundingBox();
   const vor = objects.length;
-  const name = String(filename || 'modell').replace(/\.(glb|gltf)$/i, '');
-  _addImportedGeo(geo, name, false, null, !opts.n);
+  const name = String(filename || 'modell').replace(/\.(glb|gltf|ply)$/i, '');
+  _addImportedGeo(geo, name, !!zUp, null, !opts.n);
   const mesh = objects.length > vor ? objects[objects.length - 1] : null;
   if (!mesh || mesh.geometry !== geo) return false;
   if (idx && palR.pal.length > 1) {
@@ -40539,11 +40545,106 @@ async function _importGLB(buf, filename, opts) {
     mesh.material.color.set('#ffffff'); mesh.material.needsUpdate = true;
     notify('„' + name + '“ mit ' + hex.length + ' Filamentfarben übernommen – Feinschliff mit 🖍️ Mehrfarb-Bemalen, Export als 3MF ✓', 'ok');
   } else if (N <= 1 && versch.size < 2 && D.nTri) {
-    // einfarbige Datei: deren Farbe als Objektfarbe nehmen
-    const c = [D.col[0], D.col[1], D.col[2]], hex = _glbHex(c);
+    // einfarbige Datei: deren Farbe als Objektfarbe nehmen (Weiß = „keine Farbe“ → Standardfarbe)
+    const hex = _glbHex([D.col[0], D.col[1], D.col[2]]);
     if (hex !== '#ffffff') { mesh.userData.color = hex; mesh.material.color.set(hex); }
   }
   return true;
+}
+
+// ═══ PLY-IMPORT (_ply*) ══════════════════════════════════════════════════════
+// Scanner (Revopoint, Creality, Polycam …) liefern oft PLY: ASCII oder binär,
+// Dreiecke/Vielecke + Vertex- oder Flächenfarben. Einheit mm, Z oben (wie STL).
+// Reine Punktwolken (ohne Flächen) lassen sich nicht drucken → Hinweis.
+function _parsePLY(buf) {
+  const u8 = new Uint8Array(buf);
+  const kopfEnde = (() => { const s = 'end_header'; outer: for (let i = 0; i < Math.min(u8.length, 65536); i++) { for (let k = 0; k < s.length; k++) if (u8[i + k] !== s.charCodeAt(k)) continue outer; let j = i + s.length; while (j < u8.length && u8[j] !== 10) j++; return j + 1; } return -1; })();
+  if (kopfEnde < 0 || String.fromCharCode(u8[0], u8[1], u8[2]) !== 'ply') throw new Error('keine PLY-Datei');
+  const kopf = new TextDecoder().decode(u8.subarray(0, kopfEnde)).split(/\r?\n/);
+  let format = 'ascii'; const elems = [];
+  for (const z of kopf) {
+    const w = z.trim().split(/\s+/);
+    if (w[0] === 'format') format = w[1];
+    else if (w[0] === 'element') elems.push({ name: w[1], n: +w[2], props: [] });
+    else if (w[0] === 'property' && elems.length) {
+      const e = elems[elems.length - 1];
+      if (w[1] === 'list') e.props.push({ name: w[4], list: true, ct: w[2], t: w[3] }); else e.props.push({ name: w[2], t: w[1] });
+    }
+  }
+  const T = { char: ['getInt8', 1], int8: ['getInt8', 1], uchar: ['getUint8', 1], uint8: ['getUint8', 1], short: ['getInt16', 2], int16: ['getInt16', 2],
+              ushort: ['getUint16', 2], uint16: ['getUint16', 2], int: ['getInt32', 4], int32: ['getInt32', 4], uint: ['getUint32', 4], uint32: ['getUint32', 4],
+              float: ['getFloat32', 4], float32: ['getFloat32', 4], double: ['getFloat64', 8], float64: ['getFloat64', 8] };
+  const le = format === 'binary_little_endian', bin = format !== 'ascii';
+  const dv = new DataView(buf); let off = kopfEnde;
+  let tok = null, ti = 0;
+  if (!bin) tok = new TextDecoder().decode(u8.subarray(kopfEnde)).trim().split(/\s+/);
+  const lies = t => {
+    if (!bin) return +tok[ti++];
+    const d = T[t]; if (!d) throw new Error('PLY-Typ „' + t + '“ unbekannt');
+    const v = dv[d[0]](off, le); off += d[1]; return v;
+  };
+  let vx = null, vc = null, nv = 0; const tris = [], fcol = []; let hatFarbe = false;
+  const farbSkala = t => (t === 'float' || t === 'float32' || t === 'double' || t === 'float64') ? 1 : 1 / 255;
+  for (const e of elems) {
+    const P = e.props, ix = P.findIndex(p => p.name === 'x'), iy = P.findIndex(p => p.name === 'y'), iz = P.findIndex(p => p.name === 'z');
+    const ir = P.findIndex(p => /^(red|r|diffuse_red)$/.test(p.name)), ig = P.findIndex(p => /^(green|g|diffuse_green)$/.test(p.name)), ib = P.findIndex(p => /^(blue|b|diffuse_blue)$/.test(p.name));
+    const il = P.findIndex(p => p.list && /^vertex_ind(ex|ices)$/.test(p.name));
+    const row = new Array(P.length);
+    if (e.name === 'vertex') {
+      nv = e.n; vx = new Float32Array(nv * 3); if (ir >= 0 && ig >= 0 && ib >= 0) { vc = new Float32Array(nv * 3); hatFarbe = true; }
+      const sk = ir >= 0 ? farbSkala(P[ir].t) : 1;
+      for (let i = 0; i < e.n; i++) {
+        for (let k = 0; k < P.length; k++) { if (P[k].list) { const c = lies(P[k].ct); for (let m = 0; m < c; m++) lies(P[k].t); } else row[k] = lies(P[k].t); }
+        vx[i*3] = row[ix]; vx[i*3+1] = row[iy]; vx[i*3+2] = row[iz];
+        if (vc) { vc[i*3] = row[ir] * sk; vc[i*3+1] = row[ig] * sk; vc[i*3+2] = row[ib] * sk; }
+      }
+    } else if (e.name === 'face' && il >= 0) {
+      const sk = ir >= 0 ? farbSkala(P[ir].t) : 1, fFarbe = ir >= 0 && ig >= 0 && ib >= 0;
+      if (fFarbe) hatFarbe = true;
+      for (let i = 0; i < e.n; i++) {
+        let idx = null;
+        for (let k = 0; k < P.length; k++) {
+          if (P[k].list) { const c = lies(P[k].ct), a = new Array(c); for (let m = 0; m < c; m++) a[m] = lies(P[k].t); if (k === il) idx = a; }
+          else row[k] = lies(P[k].t);
+        }
+        if (!idx || idx.length < 3) continue;
+        for (let m = 1; m + 1 < idx.length; m++) {   // Vieleck → Fächer
+          tris.push(idx[0], idx[m], idx[m + 1]);
+          if (fFarbe) fcol.push(row[ir] * sk, row[ig] * sk, row[ib] * sk);
+        }
+      }
+    } else {
+      for (let i = 0; i < e.n; i++) for (let k = 0; k < P.length; k++) { if (P[k].list) { const c = lies(P[k].ct); for (let m = 0; m < c; m++) lies(P[k].t); } else lies(P[k].t); }
+    }
+  }
+  if (!vx) throw new Error('PLY ohne Punkte');
+  const nTri = tris.length / 3;
+  const pos = new Float32Array(nTri * 9), col = new Float32Array(nTri * 3), area = new Float32Array(nTri);
+  let w = 0;
+  for (let t = 0; t < nTri; t++) {
+    const a = tris[t*3], b = tris[t*3+1], c = tris[t*3+2];
+    if (a >= nv || b >= nv || c >= nv || a < 0 || b < 0 || c < 0) continue;
+    const o = w * 9;
+    for (let k = 0; k < 3; k++) { pos[o+k] = vx[a*3+k]; pos[o+3+k] = vx[b*3+k]; pos[o+6+k] = vx[c*3+k]; }
+    const ux = pos[o+3]-pos[o], uy = pos[o+4]-pos[o+1], uz = pos[o+5]-pos[o+2], qx = pos[o+6]-pos[o], qy = pos[o+7]-pos[o+1], qz = pos[o+8]-pos[o+2];
+    area[w] = 0.5 * Math.hypot(uy*qz-uz*qy, uz*qx-ux*qz, ux*qy-uy*qx);
+    if (fcol.length) { col[w*3] = fcol[t*3]; col[w*3+1] = fcol[t*3+1]; col[w*3+2] = fcol[t*3+2]; }
+    else if (vc) for (let k = 0; k < 3; k++) col[w*3+k] = (vc[a*3+k] + vc[b*3+k] + vc[c*3+k]) / 3;
+    else col[w*3] = col[w*3+1] = col[w*3+2] = 1;
+    w++;
+  }
+  return { pos: w === nTri ? pos : pos.slice(0, w * 9), col: col.subarray(0, w * 3), area: area.subarray(0, w), nTri: w, nPunkte: nv, hatFarbe };
+}
+async function _importPLY(buf, filename, opts) {
+  opts = opts || {};
+  let D;
+  try { D = _parsePLY(buf); } catch (e) { notify('PLY unlesbar: ' + (e.message || e), 'e'); return false; }
+  if (!D.nTri) {
+    notify('„' + filename + '“ ist eine reine Punktwolke (' + D.nPunkte.toLocaleString('de') + ' Punkte, keine Flächen) – zum Drucken erst im Scan-Programm vernetzen (Mesh erzeugen) oder 🪄 Scan → CAD nehmen.', 'w');
+    return false;
+  }
+  _fr('import-gelesen', { dreiecke: D.nTri, ply: 1, farbe: D.hatFarbe });
+  return _farbImport(D, filename, opts, true, D.hatFarbe ? ', mit Scan-Farben' : '');
 }
 
 // ═══ 🔑 SCHLÜSSELANHÄNGER-ÖSE AN JEDES MODELL (_kca*) ═══════════════════════
@@ -72741,7 +72842,7 @@ function _stlMakeCard(f, grid){
   const star = `<span class="ds-star${isFav?' on':''}" onclick="event.stopPropagation();_stlToggleFav(${idx})" title="Favorit">${isFav?'★':'☆'}</span>`;
   card.innerHTML=`<div class="ds-thumb-wrap">${inner}${chk}${star}${badge}</div>`+
     `<div class="ds-info"><div style="display:flex;align-items:center;gap:2px"><div class="ds-name" id="stlnm-${idx}" title="${_stlEsc(f.path)}"${canEdit?` ondblclick="_stlRenameStart(${idx})"`:''} style="flex:1;min-width:0">${_stlEsc(f.name)}</div>${ren}</div><div class="ds-date">${_stlFmtSize(f.size)} · ${new Date(f.mtime).toLocaleDateString()}</div></div>`+
-    `<div class="ds-acts"><button class="btn" onclick="_stlOpenInScene(${idx})">📥 Öffnen</button><button class="btn pri" onclick="_stlPrint(${idx})" title="Im Slicer öffnen">🖨 Drucken</button>${del}</div>`;
+    `<div class="ds-acts"><button class="btn" onclick="_stlOpenInScene(${idx})">📥 Öffnen</button><button class="btn pri" onclick="_stlPrint(${idx})" title="Im Slicer öffnen">🖨 Drucken</button>${/\.(stl|3mf|obj)$/i.test(f.name)?`<button class="btn" onclick="_stzOpen(${idx})" title="Mit Zielhöhe drucken: gleichmäßig auf eine Höhe (z. B. 32 mm) oder Prozent skalieren und direkt im Slicer öffnen – die Datei selbst bleibt unverändert">📏</button>`:''}${del}</div>`;
   grid.appendChild(card);
   const tw=card.querySelector('.ds-thumb-wrap'); f._thumbEl=tw;
   if(!f._thumbUrl && !f._thumbDone){ tw._stlF=f; _stlThumbObs.observe(tw); }
@@ -73039,6 +73140,112 @@ async function _stlPrint(idx){
     if(res.ok&&j.ok) notify(`🖨 In ${j.slicer||'Slicer'} geöffnet: ${f.name}`,'ok');
     else notify('Drucken: '+(j.error||('HTTP '+res.status)),'w');
   }catch(e){ _stlHelperOk=false; _stlUpdateHelperUI(); _stlHelperMissing(); }
+}
+// ═══ 📏 MIT ZIELHÖHE DRUCKEN (Bibliothek, _stz*) ═════════════════════════════
+// Idee aus KIS3D (eigene Umsetzung): Datei aus der Bibliothek gleichmäßig auf eine
+// Zielhöhe (oder Prozent) skalieren und direkt in den Slicer schicken – ohne Umweg
+// über die Szene. Die Originaldatei bleibt unverändert; geschickt wird eine
+// skalierte STL („name_32mm.stl“). Rechnet in mm, Z oben (STL/3MF; OBJ wird gekippt).
+let _stz = null;
+async function _stzGeo(f) {
+  const ext = (f.name.split('.').pop() || '').toLowerCase(), buf = await _stlReadBytes(f);
+  let pos;
+  if (ext === 'stl') pos = parseSTL(buf, true).attributes.position.array;
+  else if (ext === '3mf') {
+    const raw = await _p3mfParseAsync(buf);
+    const n = raw.reduce((s, r) => s + r.pos.length, 0); pos = new Float32Array(n);
+    let o = 0; for (const r of raw) { pos.set(r.pos, o); o += r.pos.length; }
+  } else if (ext === 'obj') {
+    const g = _parseOBJ(new TextDecoder().decode(buf)); g.rotateX(Math.PI / 2);   // Y oben → Z oben
+    pos = (g.index ? g.toNonIndexed() : g).attributes.position.array;
+  } else throw new Error('Für „' + f.name + '“ bitte erst öffnen (📥) und aus der Szene drucken');
+  if (!pos || !pos.length) throw new Error('Datei enthält keine Geometrie');
+  const bb = new THREE.Box3().setFromArray(pos);
+  return { pos, bb, size: bb.getSize(new THREE.Vector3()) };
+}
+function _stzFaktor() {
+  if (!_stz) return 1;
+  const v = parseFloat(String(document.getElementById('stz-wert').value).replace(',', '.'));
+  if (!(v > 0)) return 0;
+  return _stz.modus === 'prozent' ? v / 100 : v / (_stz.g.size.z || 1);
+}
+function _stzUpd() {
+  const f = _stzFaktor(), s = _stz.g.size, mm = x => (Math.round(x * 10) / 10).toLocaleString('de');
+  document.getElementById('stz-einheit').textContent = _stz.modus === 'prozent' ? '%' : 'mm hoch';
+  document.querySelectorAll('#stz-modal .vtb').forEach(b => b.classList.toggle('on', b.dataset.m === _stz.modus));
+  document.getElementById('stz-neu').innerHTML = f > 0
+    ? 'Neu: <b>' + mm(s.x * f) + ' × ' + mm(s.y * f) + ' × ' + mm(s.z * f) + ' mm</b> (' + (Math.round(f * 1000) / 10).toLocaleString('de') + ' %)'
+      + (Math.max(s.x, s.y) * f > 256 ? '<br><span style="color:#b45309">Größer als eine 256-mm-Platte.</span>' : '')
+    : '<span style="color:#b45309">Bitte einen Wert über 0 eingeben.</span>';
+  document.getElementById('stz-go').disabled = document.getElementById('stz-dl').disabled = !(f > 0);
+}
+function _stzModus(m) {
+  const el = document.getElementById('stz-wert'), f = _stzFaktor();
+  _stz.modus = m;
+  if (f > 0) el.value = String(m === 'prozent' ? Math.round(f * 1000) / 10 : Math.round(_stz.g.size.z * f * 10) / 10).replace('.', ',');
+  _stzUpd();
+}
+async function _stzOpen(idx) {
+  const f = _stlFiles[idx]; if (!f) return;
+  let m = document.getElementById('stz-modal');
+  if (!m) {
+    m = document.createElement('div'); m.id = 'stz-modal'; m.className = 'g3dm'; m.style.zIndex = '3650';
+    m.onclick = e => { if (e.target === m) _stzClose(); };
+    m.innerHTML = `<div class="g3box" style="width:400px;max-width:94vw">
+      <div class="g3hdr">📏 Mit Zielhöhe drucken<span class="vx" onclick="_stzClose()">✕</span></div>
+      <div style="padding:14px 18px;font-size:13px;line-height:1.55">
+        <div id="stz-name" style="font-weight:700;word-break:break-all"></div>
+        <div id="stz-alt" style="color:var(--dim);font-size:12px;margin-bottom:10px"></div>
+        <div class="vtbrow" style="display:flex;gap:4px;margin-bottom:8px"><button class="vtb" data-m="hoehe" onclick="_stzModus('hoehe')">Zielhöhe</button><button class="vtb" data-m="prozent" onclick="_stzModus('prozent')">Prozent</button></div>
+        <div style="display:flex;align-items:center;gap:8px"><input id="stz-wert" type="text" inputmode="decimal" oninput="_stzUpd()" onkeydown="if(event.key==='Enter')_stzSend(true)" style="width:90px;font-size:15px;border:1.5px solid var(--border);border-radius:9px;padding:5px 8px"><span id="stz-einheit"></span></div>
+        <div id="stz-neu" style="margin-top:10px"></div>
+        <div style="font-size:11px;color:var(--dim);margin-top:8px">Gleichmäßig in alle Richtungen. Die Originaldatei bleibt unverändert, geschickt wird eine skalierte STL.</div>
+      </div>
+      <div class="g3foot"><button class="btn" id="stz-dl" onclick="_stzSend(false)">⬇ Herunterladen</button><button class="btn pri" id="stz-go" onclick="_stzSend(true)">🖨 Im Slicer öffnen</button></div>
+    </div>`;
+    document.body.appendChild(m);
+  }
+  notify('„' + f.name + '“ wird gelesen …', 'i');
+  let g;
+  try { g = await _stzGeo(f); } catch (e) { notify(String(e.message || e), 'w'); return; }
+  _stz = { f, g, modus: _stz ? _stz.modus : 'hoehe' };
+  const mm = x => (Math.round(x * 10) / 10).toLocaleString('de');
+  document.getElementById('stz-name').textContent = f.name;
+  document.getElementById('stz-alt').textContent = 'Jetzt: ' + mm(g.size.x) + ' × ' + mm(g.size.y) + ' × ' + mm(g.size.z) + ' mm (B × T × H)';
+  const letzt = parseFloat(localStorage.getItem('v3d_stz_' + _stz.modus) || '');
+  document.getElementById('stz-wert').value = letzt > 0 ? String(letzt).replace('.', ',') : (_stz.modus === 'prozent' ? '100' : String(Math.round(g.size.z * 10) / 10).replace('.', ','));
+  document.getElementById('stz-go').title = _stlHelperOk ? 'Skaliert im Slicer öffnen' : 'Druck-Helfer nicht erreichbar – „Herunterladen“ geht trotzdem';
+  m.classList.add('show');
+  _stzUpd();
+  setTimeout(() => { const el = document.getElementById('stz-wert'); el.focus(); el.select(); }, 30);
+}
+function _stzClose() { const m = document.getElementById('stz-modal'); if (m) m.classList.remove('show'); }
+// Skalierte STL bauen (auf die Platte gesetzt, Mitte = 0) → {blob, name}
+function _stzBauen() {
+  const f = _stzFaktor(), { pos, bb } = _stz.g, cx = (bb.min.x + bb.max.x) / 2, cy = (bb.min.y + bb.max.y) / 2;
+  const out = new Float32Array(pos.length);
+  for (let i = 0; i < pos.length; i += 3) { out[i] = (pos[i] - cx) * f; out[i+1] = (pos[i+1] - cy) * f; out[i+2] = (pos[i+2] - bb.min.z) * f; }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(out, 3));
+  const hNeu = Math.round(_stz.g.size.z * f * 10) / 10;
+  const name = _stz.f.name.replace(/\.(stl|3mf|obj)$/i, '') + '_' + String(hNeu).replace('.', ',') + 'mm.stl';
+  return { blob: new Blob([_geoToBinaryStl(geo)], { type: 'model/stl' }), name, hNeu };
+}
+async function _stzSend(slicer) {
+  if (!_stz || !(_stzFaktor() > 0)) return;
+  const wert = parseFloat(String(document.getElementById('stz-wert').value).replace(',', '.'));
+  try { localStorage.setItem('v3d_stz_' + _stz.modus, String(wert)); } catch (e) {}
+  const { blob, name, hNeu } = _stzBauen();
+  if (!slicer || !_stlHelperOk) {
+    if (slicer) notify('Druck-Helfer nicht erreichbar – skalierte STL wird heruntergeladen', 'w');
+    _downloadBlob(blob, name); _stzClose(); return;
+  }
+  try {
+    const s = document.getElementById('stllib-slicer')?.value || '';
+    const res = await fetch(STLLIB_HELPER + '/print', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(name), 'X-Slicer': s }, body: await blob.arrayBuffer() });
+    const j = await res.json().catch(() => ({}));
+    if (res.ok && j.ok) { notify('🖨 In ' + (j.slicer || 'Slicer') + ' geöffnet: ' + name + ' (' + String(hNeu).replace('.', ',') + ' mm hoch)', 'ok'); _stzClose(); }
+    else notify('Drucken: ' + (j.error || ('HTTP ' + res.status)), 'w');
+  } catch (e) { _stlHelperOk = false; _stlUpdateHelperUI(); _stlHelperMissing(); }
 }
 function _stlHelperMissing(){ notify('Druck-Helfer nicht erreichbar — einmalig einrichten (Links in der Ordner-Ansicht / LIESMICH)','w'); }
 async function _stlPrintSelected(){
@@ -73732,8 +73939,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.278';
+const VOLME3D_VERSION = '1.18.279';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.279', date:'2026-10-27', changes:[
+    ['📏','<b>Neu in der 📚 Bibliothek: Mit Zielhöhe drucken.</b> In der Karte eines Modells auf <b>📏</b> klicken und die gewünschte Höhe in mm eingeben, zum Beispiel 32 mm für eine Tabletop-Figur, oder einen Prozentwert. V3D CAD zeigt die neuen Maße und öffnet das Modell gleichmäßig skaliert direkt im Slicer. Ohne Druck-Helfer wird die skalierte STL heruntergeladen. Die Originaldatei bleibt unverändert, der zuletzt benutzte Wert wird gemerkt.'],
+    ['📡','<b>PLY-Dateien importieren.</b> Viele Scanner speichern als PLY. Solche Dateien lassen sich jetzt ganz normal über <b>Import</b> laden, ASCII und binär, mit Drei- und Vielecken. Hat der Scan Farben, kommt dasselbe Farbfenster wie bei GLB, und die Farben werden zur Mehrfarb-Bemalung. Reine Punktwolken ohne Flächen erkennt V3D CAD und sagt Bescheid.'],
+  ]},
   { version:'1.18.278', date:'2026-10-27', changes:[
     ['🎨','<b>Neu: GLB-Dateien mit Farben importieren.</b> KI-Modelle aus Meshy, Tripo, Hunyuan &amp; Co. kommen meist als GLB mit Textur. Über <b>Import</b> lassen sie sich jetzt direkt laden. V3D CAD fragt, auf wie viele Filamentfarben die Farben verteilt werden sollen (2–8), und zeigt sie vorab. Die größte Fläche wird Filament 1. Die Farben landen als Mehrfarb-Bemalung im Modell, lassen sich mit 🖍️ nachbessern und kommen im 3MF-Export bei Bambu Studio und OrcaSlicer auf den Filamenten an.'],
     ['🔑','<b>Neu: Öse anbringen – aus jedem Modell wird ein Schlüsselanhänger.</b> Teil auswählen und im Eigenschaften-Feld <b>🔑 Öse anbringen</b> klicken. Dann Richtung, Loch-Ø und Ringbreite wählen, eine orange Vorschau zeigt den Ring. Der Ring liegt flach auf der Platte und druckt ohne Stützen. Steht das Modell oben über, rückt er so weit nach außen, dass das Loch frei bleibt. Eine Bemalung bleibt erhalten.'],
