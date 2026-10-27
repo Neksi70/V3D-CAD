@@ -3198,11 +3198,12 @@ async function afVorschau() {
 async function afAnwenden() {
   const id = Number($('#afScan').value);
   if (!S.scans.has(id)) throw new Error('Erst ein Dreiecksnetz laden (oder Punktwolke vernetzen).');
-  const eigener = S.kaefig && S.kaefig.scan === id && (S.kaefig.geaendert || (S.kaefig.scharf && S.kaefig.scharf.size));
+  const eigener = S.kaefig && S.kaefig.scan === id && (S.kaefig.geaendert || (S.kaefig.scharf && S.kaefig.scharf.size) || (S.kaefig.spitzen && S.kaefig.spitzen.size));
   const kaefig = eigener ? { V: zuB64(S.kaefig.V), F: zuB64(S.kaefig.F) } : null;
   const scharf = eigener ? [...S.kaefig.scharf].map((k) => k.split('-').map(Number)) : null;
+  const scharfe_ecken = eigener && S.kaefig.spitzen ? [...S.kaefig.spitzen] : null;
   const j = await api('freiform/auto', { id, flaechen: Number($('#afAnzahl').value) || 400, raster: Number($('#afRaster').value) || 9,
-    kantenwinkel: Number($('#afKante').value) || 0, glatt: $('#afGlatt').checked, kaefig, scharf }, 'Erzeuge Flächen…');
+    kantenwinkel: Number($('#afKante').value) || 0, glatt: $('#afGlatt').checked, kaefig, scharf, scharfe_ecken }, 'Erzeuge Flächen…');
   if (afLinien) { objektEntsorgen(afLinien); afLinien = null; }
   S.kaefig = null;
   const i = j.info;
@@ -3402,6 +3403,7 @@ function kaefigLinien() {
   $('#kgIrrInfo').textContent = irr.length ? `${irr.length} unregelmäßige Ecke(n)` : '';
   if ($('#kgIrr').checked) punkte(irr, 0xff7a00, 9);
   punkte(K.wahl.ecken, 0xffd000, 8);
+  punkte([...(K.spitzen || [])], 0xff2020, 11);
   const w = K.wahl;
   $('#kgWahlInfo').textContent = [w.ecken.length && `${w.ecken.length} Ecken`, w.kanten.size && `${w.kanten.size} Kanten`,
     w.flaechen.size && `${w.flaechen.size} Vierecke`, K.versteckt.size && `${K.versteckt.size} verborgen`].filter(Boolean).join(' · ');
@@ -3474,6 +3476,11 @@ function kaefigViereckKlick(x, y) {
 function kaefigKlick(x, y) {
   const K = S.kaefig, modus = $('#kgModus').value;
   if (modus === 'viereck') { sicher(() => kaefigViereckKlick(x, y)); return; }
+  if (modus === 'spitze') {
+    const i = kaefigEckeAn(x, y);
+    if (i !== null) { K.spitzen = K.spitzen || new Set(); if (K.spitzen.has(i)) K.spitzen.delete(i); else K.spitzen.add(i); kaefigLinien(); }
+    return;
+  }
   const umschalten = (menge, k) => { if (menge.has(k)) menge.delete(k); else menge.add(k); };
   if (modus === 'scharf') { const k = kaefigKanteAn(x, y); if (k) umschalten(K.scharf, k); }
   else if (modus === 'kanten') { const k = kaefigKanteAn(x, y); if (k) umschalten(K.wahl.kanten, k); }
@@ -3819,11 +3826,12 @@ function v10Fuellen() {
   const d2 = alle.filter((z) => z.meta.art !== '3d').map((z) => [z.meta.id, z.meta.name]);
   selectFuellen($('#e3Skizze'), d3);
   selectFuellen($('#sfSkizze'), d2);
-  const fk = $('#fuKurven'), alt = new Set([...fk.querySelectorAll('input:checked')].map((e) => Number(e.value)));
+  selectFuellen($('#kgSkizze'), d3);
+  const fk = $('#fuKurven'), fkAlt = new Set([...fk.querySelectorAll('input:checked')].map((e) => Number(e.value)));
   fk.innerHTML = d3.length ? '' : '<span class="info">keine 3D-Skizzen</span>';
   for (const [id, name] of d3) {
     const l = document.createElement('label'); l.className = 'el';
-    l.innerHTML = `<span><input type="checkbox" value="${id}"${alt.has(id) ? ' checked' : ''}> </span><span></span><span></span>`;
+    l.innerHTML = `<span><input type="checkbox" value="${id}"${fkAlt.has(id) ? ' checked' : ''}> </span><span></span><span></span>`;
     l.children[1].textContent = name; fk.appendChild(l);
   }
   for (const id of ['#pjSkizze', '#wiSkizze']) selectFuellen($(id), d2);
@@ -3917,8 +3925,10 @@ async function kgOp(op, extra = {}) {
   if (!S.kaefig) throw new Error('Erst einen Käfig anlegen (Vorschau, „Neu auf Auswahl“ oder „Wrap“).');
   const raster = S.kaefig.raster;
   const j = await api('freiform/kaefig_op', { id: S.kaefig.scan, V: zuB64(S.kaefig.V), F: zuB64(S.kaefig.F), op,
-    scharf: [...S.kaefig.scharf].map((k) => k.split('-').map(Number)), ...extra }, 'Bearbeite Käfig…');
+    scharf: [...S.kaefig.scharf].map((k) => k.split('-').map(Number)), scharfe_ecken: [...(S.kaefig.spitzen || [])], ...extra }, 'Bearbeite Käfig…');
+  const spitzen = S.kaefig.spitzen;
   kaefigSetzen(j, S.kaefig.scan);
+  S.kaefig.spitzen = j.scharfe_ecken ? new Set(j.scharfe_ecken) : spitzen;
   if (!j.topologie && op !== 'feiner' && op !== 'symmetrie' && raster) S.kaefig.raster = raster;
 }
 function kgWahl() {
@@ -4623,6 +4633,18 @@ const AKTIONEN = {
   kgAufScan: { text: 'Auf den Scan legen', fn: () => kgOp('auf_scan', kgWahl()) },
   kgLoeschen: { text: 'Vierecke löschen', fn: () => kgOp('loeschen', kgWahl()) },
   kgUmdrehen: { text: 'Normalen umdrehen', fn: () => kgOp('umdrehen') },
+  kgWaagrecht: { text: 'Ecken waagrecht (Ansicht)', fn: () => kgOp('ausrichten_sicht', { ...kgWahl(), richtung: new THREE.Vector3(0, 1, 0).applyQuaternion(kamera.quaternion).toArray() }) },
+  kgSenkrecht: { text: 'Ecken senkrecht (Ansicht)', fn: () => kgOp('ausrichten_sicht', { ...kgWahl(), richtung: new THREE.Vector3(1, 0, 0).applyQuaternion(kamera.quaternion).toArray() }) },
+  kgTeilraster: { text: 'Vierecke als eine Fläche', fn: async () => {
+    const w = kgWahl();
+    const j = await api('freiform/teilraster', { id: S.kaefig.scan, V: zuB64(S.kaefig.V), F: zuB64(S.kaefig.F), flaechen: w.flaechen }, 'Passe Fläche ein…');
+    neuerKoerperAus(j, `Fläche aus ${j.raster.join(' × ')} Vierecken erzeugt.`);
+  } },
+  kgAusSkizze: { text: 'Käfig aus 3D-Skizze', fn: async () => {
+    const id = kgScan();
+    const j = await api('freiform/kaefig_skizze', { id, sid: Number($('#kgSkizze').value), nu: Number($('#kgNu').value) || 6, nv: Number($('#kgNv').value) || 6 }, 'Lege Käfig an…');
+    kaefigSetzen(j, id);
+  } },
   kgVerbergen: { text: '', fn: () => { const w = kgWahl(); for (const f of w.flaechen) S.kaefig.versteckt.add(f); S.kaefig.wahl.flaechen.clear(); kaefigLinien(); } },
   kgIsolieren: { text: '', fn: () => {
     const w = kgWahl(); if (!w.flaechen.length) throw new Error('Vierecke wählen, die sichtbar bleiben sollen.');

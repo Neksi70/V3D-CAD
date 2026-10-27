@@ -15,6 +15,8 @@ import os
 import sys
 import time
 
+import math
+
 import numpy as np
 
 
@@ -143,7 +145,7 @@ def _glatte_normalen(X, T):
 
 
 def auto_flaechen(X, T, flaechen=300, raster=9, kantenwinkel=0.0, fortschritt=None, glatt=True, kaefig=None,
-                  scharf_von_hand=None):
+                  scharf_von_hand=None, scharfe_ecken=None, ecken_ausgleichen=True):
     """Geschlossenes oder offenes Scan-Netz -> (shape, info). raster = Punkte je Kante (>= 4).
     glatt: an jedem Kantenpunkt liegen die ersten Rasterreihen beider Nachbarflaechen in derselben
     Tangentialebene (Scan-Normale) -> annaehernd tangentiale Uebergaenge statt Knicke.
@@ -191,6 +193,9 @@ def auto_flaechen(X, T, flaechen=300, raster=9, kantenwinkel=0.0, fortschritt=No
         if k_ is not None:
             scharf[k_] = True
             ecke_scharf[[int(a_), int(b_)]] = True
+    for v_ in (scharfe_ecken or []):                  # Punkt-Crease: Spitze an der Ecke, Kanten bleiben glatt
+        if 0 <= int(v_) < len(ecke_scharf):
+            ecke_scharf[int(v_)] = True
     if glatt:
         kp_rand, kp_quer = _g1_kanten(E, EN, K, schluessel, _glatte_normalen(X, T), scharf, ecke_scharf)
         _g1_flaeche.schluessel = schluessel
@@ -222,15 +227,24 @@ def auto_flaechen(X, T, flaechen=300, raster=9, kantenwinkel=0.0, fortschritt=No
                 s = _g1_flaeche(G, (c0, c1, c2, c3), kp_rand, kp_quer)
             else:
                 s = _flaeche(G)
-            sewing.Add(BRepBuilderAPI_MakeFace(s, 1e-6).Face())
             flaechen_liste.append((s, (c0, c1, c2, c3)))
         except Exception:
             fehlgeschlagen += 1
         if fi % 50 == 0:
             wenn(fi / len(F))
+    if glatt and ecken_ausgleichen:
+        info_ecken = _ecken_ausgleichen(flaechen_liste, F, ecke_scharf, kante_mittel)
+    else:
+        info_ecken = {}
+    for s, _ in flaechen_liste:
+        try:
+            sewing.Add(BRepBuilderAPI_MakeFace(s, 1e-6).Face())
+        except Exception:
+            fehlgeschlagen += 1
     sewing.Perform()
     genaeht = sewing.SewedShape()
     info = {"vierecke": int(len(F)), "fehlgeschlagen": fehlgeschlagen, "freie_kanten": int(sewing.NbFreeEdges())}
+    info.update(info_ecken)
     scharf_menge = {(int(a), int(b)) for (a, b) in K[scharf]}
     info.update(_knicke(flaechen_liste, ausnahmen=scharf_menge))
     info["scharfe_kanten"] = int(scharf.sum())
@@ -1008,3 +1022,224 @@ def kaefig_unregelmaessig(F):
         if (i in rand and n not in (1, 2)) or (i not in rand and n != 4):
             aus.append((i, n, i in rand))
     return aus
+
+
+# --- v1.5: Ausrichten zur Ansicht, Kaefig aus 3D-Skizze, Teilraster als eine Flaeche ------------------------
+def kaefig_ausrichten_richtung(V, ids, richtung):
+    """Align H/V: gewaehlte Ecken bekommen entlang richtung (z. B. Bildschirm-Hoch = waagrecht ausrichten) den
+    Wert der ersten gewaehlten Ecke; quer dazu bleiben sie, wo sie sind."""
+    V = np.asarray(V, float).copy()
+    ids = [int(i) for i in ids]
+    if len(ids) < 2:
+        raise ValueError("Mindestens 2 Ecken wählen (die erste gibt die Lage vor).")
+    r = np.asarray(richtung, float)
+    r /= max(np.linalg.norm(r), 1e-12)
+    soll = V[ids[0]] @ r
+    for i in ids[1:]:
+        V[i] += (soll - V[i] @ r) * r
+    return V
+
+
+def kaefig_aus_kurve(K, X, T, nu=6, nv=6):
+    """New Freeform from 3D sketch: geschlossene Kurve -> vier Seiten (an den vier staerksten Knicken, sonst
+    nach Bogenlaenge geviertelt) -> Coons-Raster nu x nv, auf den Scan gelegt. -> (V, F, raster)."""
+    K = np.asarray(K, float)
+    if np.linalg.norm(K[0] - K[-1]) < 1e-9:
+        K = K[:-1]
+    n = len(K)
+    if n < 8:
+        raise ValueError("Die 3D-Skizze ist zu kurz für einen Käfig.")
+    # Knickwinkel je Punkt
+    a, b = K - np.roll(K, 1, 0), np.roll(K, -1, 0) - K
+    cosw = np.einsum("ij,ij->i", a, b) / np.maximum(np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1), 1e-12)
+    knick = np.arccos(np.clip(cosw, -1, 1))
+    ecken = []
+    for i in np.argsort(-knick):
+        if knick[i] < math.radians(25) or len(ecken) == 4:
+            break
+        if all(min(abs(i - j), n - abs(i - j)) > n // 10 for j in ecken):
+            ecken.append(int(i))
+    if len(ecken) < 4:                                   # glatte Kurve: nach Bogenlaenge vierteln
+        L = np.r_[0, np.cumsum(np.linalg.norm(np.diff(np.r_[K, K[:1]], axis=0), axis=1))]
+        ecken = [int(np.argmin(np.abs(L[:-1] - L[-1] * q))) for q in (0, 0.25, 0.5, 0.75)]
+    ecken = sorted(ecken)
+
+    def seite(i, j, m):
+        idx = np.arange(i, i + (j - i) % n + 1) % n
+        P = K[idx]
+        s_ = np.r_[0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]
+        t = np.linspace(0, s_[-1], m + 1)
+        return np.c_[[np.interp(t, s_, P[:, k]) for k in range(3)]].T
+    e0, e1, e2, e3 = ecken
+    unten = seite(e0, e1, nu)                            # v = 0, u laeuft
+    rechts = seite(e1, e2, nv)                           # u = 1, v laeuft
+    oben = seite(e3, e2, nu) if False else seite(e2, e3, nu)[::-1]
+    links = seite(e3, e0, nv)[::-1]
+    G = np.zeros((nu + 1, nv + 1, 3))
+    for i in range(nu + 1):
+        for j in range(nv + 1):
+            s_, t = i / nu, j / nv
+            G[i, j] = ((1 - t) * unten[i] + t * oben[i] + (1 - s_) * links[j] + s_ * rechts[j]
+                       - ((1 - s_) * (1 - t) * unten[0] + s_ * (1 - t) * unten[-1] + s_ * t * oben[-1] + (1 - s_) * t * oben[0]))
+    V = G.reshape(-1, 3)
+    innen = np.array([0 < i < nu and 0 < j < nv for i in range(nu + 1) for j in range(nv + 1)])
+    if X is not None and innen.any():
+        V[innen] = _Projektor(X, T)(V[innen])            # der Rand bleibt auf der Skizze
+    return V, _raster_flaechen(nu, nv), (nu, nv)
+
+
+def kaefig_teilraster(V, F, flaechen):
+    """Merge Quads: gewaehlte Vierecke muessen ein Rechteck aus Vierecken bilden -> Eckraster (nu+1)x(nv+1)
+    in fester Reihenfolge, fuer raster_eine_flaeche."""
+    F = np.asarray(F, np.int64)
+    wahl = [int(f) for f in flaechen]
+    if not wahl:
+        raise ValueError("Vierecke wählen (Modus Vierecke).")
+    menge = set(wahl)
+    kf = _kanten_flaechen(F)
+    RICHT = [(0, -1), (1, 0), (0, 1), (-1, 0)]          # Bewegung ueber Kante k (lokal) = 0 unten, 1 rechts, …
+    lage = {wahl[0]: ((0, 0), 0)}
+    stapel = [wahl[0]]
+    while stapel:
+        f = stapel.pop()
+        (i, j), rot = lage[f]
+        q = F[f].tolist()
+        for k in range(4):
+            a, b = q[k], q[(k + 1) % 4]
+            for g, kg in kf[(min(a, b), max(a, b))]:
+                if g == f or g not in menge:
+                    continue
+                dg = (k + rot) % 4
+                di, dj = RICHT[dg]
+                rot_g = ((dg + 2) % 4 - kg) % 4
+                if g in lage:
+                    if lage[g] != ((i + di, j + dj), rot_g):
+                        raise ValueError("Die gewählten Vierecke bilden kein sauberes Raster.")
+                    continue
+                lage[g] = ((i + di, j + dj), rot_g)
+                stapel.append(g)
+    if len(lage) != len(menge):
+        raise ValueError("Die gewählten Vierecke hängen nicht zusammen.")
+    pos = np.array([p for p, _ in lage.values()])
+    lo = pos.min(0)
+    nu, nv = (pos.max(0) - lo + 1).tolist()
+    if nu * nv != len(menge):
+        raise ValueError("Die gewählten Vierecke bilden kein Rechteck (%d × %d nötig, %d gewählt)." % (nu, nv, len(menge)))
+    G = -np.ones((nu + 1, nv + 1), np.int64)
+    ECKE = [(0, 0), (1, 0), (1, 1), (0, 1)]              # v0..v3 lokal
+    for f, ((i, j), rot) in lage.items():
+        for k, v in enumerate(F[f].tolist()):
+            x, y = ECKE[k]
+            for _ in range(rot):                         # um die Zellmitte drehen (90 Grad gegen den Uhrzeigersinn)
+                x, y = 1 - y, x
+            gi, gj = i - lo[0] + x, j - lo[1] + y
+            if G[gi, gj] not in (-1, v):
+                raise ValueError("Die gewählten Vierecke bilden kein sauberes Raster.")
+            G[gi, gj] = v
+    return np.asarray(V, float)[G.ravel()], (nu, nv)
+
+
+
+# --- v1.5: G1 an unregelmaessigen Ecken nachoptimieren ------------------------------------------------------
+def _ecken_ausgleichen(flaechen_liste, F, ecke_scharf, kante, anteile=(0.05, 0.12, 0.25), iterationen=3):
+    """Je Ecke mit 3, 5 … Nachbarvierecken: Drillpunkt und die beiden Nachbarpole jedes anliegenden Patches
+    so verschieben, dass die Normalen beider Seiten entlang der anliegenden Kanten moeglichst gleich sind
+    (Gauss-Newton, Verschiebung schwach bestraft). Exaktes G1 gibt es dort mit bikubischen Flaechen nicht -
+    der Restknick wird kleiner und sitzt dichter an der Ecke."""
+    from OCP.gp import gp_Pnt, gp_Vec
+    F = np.asarray(F, np.int64)
+    unregel = [i for i, n, r in kaefig_unregelmaessig(F) if not r and not (ecke_scharf is not None and ecke_scharf[i])]
+    if not unregel:
+        return {"ecken_ausgeglichen": 0}
+    an_ecke = {}
+    for pi, (s_, ecken) in enumerate(flaechen_liste):
+        for k, c in enumerate(ecken):
+            an_ecke.setdefault(c, []).append((pi, k))
+    m = flaechen_liste[0][0].NbUPoles()
+    # Pole je Ecke k (1-basiert): Drillpunkt + Nachbarn in der 2. Reihe
+    POLE = {0: [(2, 2), (3, 2), (2, 3)], 1: [(m - 1, 2), (m - 2, 2), (m - 1, 3)],
+            2: [(m - 1, m - 1), (m - 2, m - 1), (m - 1, m - 2)], 3: [(2, m - 1), (3, m - 1), (2, m - 2)]}
+    SEITEN = (((0, 1), "u", 0), ((3, 2), "u", 1), ((0, 3), "v", 0), ((1, 2), "v", 1))   # (Ecken-Positionen, Richtung, fest)
+
+    def normale(s_, art, fest, g):
+        u0, u1, v0, v1 = s_.Bounds()
+        u, v = (u0 + g * (u1 - u0), v0 if fest == 0 else v1) if art == "u" else (u0 if fest == 0 else u1, v0 + g * (v1 - v0))
+        p, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+        s_.D1(u, v, p, du, dv)
+        n = du.Crossed(dv)
+        return np.array([n.X(), n.Y(), n.Z()]) / max(n.Magnitude(), 1e-12)
+    vorher, nachher, gezaehlt = [], [], 0
+    for v in unregel:
+        patches = an_ecke.get(v, [])
+        if len(patches) < 3:
+            continue
+        # Kanten an v: je Nachbarecke w die beiden Patches mit ihrer Seite
+        kanten = {}
+        for pi, k in patches:
+            ecken = flaechen_liste[pi][1]
+            for (a, b), art, fest in SEITEN:
+                if v in (ecken[a], ecken[b]):
+                    w = ecken[b] if ecken[a] == v else ecken[a]
+                    vom_anfang = ecken[a] == v
+                    kanten.setdefault(w, []).append((pi, art, fest, vom_anfang))
+        kanten = [x for x in kanten.values() if len(x) == 2]
+        if not kanten:
+            continue
+        var = [(pi, ij) for pi, k in patches for ij in POLE[k]]
+        p0 = np.array([[flaechen_liste[pi][0].Pole(*ij).X(), flaechen_liste[pi][0].Pole(*ij).Y(),
+                        flaechen_liste[pi][0].Pole(*ij).Z()] for pi, ij in var])
+
+        def setzen(x):
+            for (pi, ij), q in zip(var, x.reshape(-1, 3)):
+                flaechen_liste[pi][0].SetPole(ij[0], ij[1], gp_Pnt(*map(float, q)))
+
+        def res_kante(e):
+            (pa, aa, fa, va), (pb, ab, fb, vb) = e
+            r = []
+            for f in anteile:
+                na = normale(flaechen_liste[pa][0], aa, fa, f if va else 1 - f)
+                nb = normale(flaechen_liste[pb][0], ab, fb, f if vb else 1 - f)
+                r.extend(np.cross(na, nb if na @ nb >= 0 else -nb))
+            return np.asarray(r)
+
+        def res(x):
+            setzen(x)
+            return np.concatenate([res_kante(e) for e in kanten])
+        # ein Pol wirkt nur auf die Kanten seines Patches: nur diese neu rechnen (schnellere Ableitung)
+        n_r = 3 * len(anteile)
+        betrifft = [[ki for ki, e in enumerate(kanten) if pi in (e[0][0], e[1][0])] for pi, _ in var]
+        x0 = p0.ravel().copy()
+        lam = 0.02 / max(kante, 1e-9)                  # 1 Kantenlaenge Verschiebung ~ 1 Grad Knick
+        r0 = res(x0)
+        vorher.append(float(np.degrees(np.arcsin(min(1.0, np.abs(r0).reshape(-1, 3).__pow__(2).sum(1).max() ** 0.5)))))
+        x = x0.copy()
+        for _ in range(iterationen):
+            r = res(x)
+            h = 1e-4 * kante
+            J = np.zeros((len(r), len(x)))
+            for j in range(len(x)):
+                pi, ij = var[j // 3]
+                alt = flaechen_liste[pi][0].Pole(*ij)
+                q = np.array([alt.X(), alt.Y(), alt.Z()])
+                q[j % 3] += h
+                flaechen_liste[pi][0].SetPole(ij[0], ij[1], gp_Pnt(*map(float, q)))
+                for ki in betrifft[j // 3]:
+                    J[ki * n_r:(ki + 1) * n_r, j] = (res_kante(kanten[ki]) - r[ki * n_r:(ki + 1) * n_r]) / h
+                flaechen_liste[pi][0].SetPole(ij[0], ij[1], alt)
+            A = np.r_[J, lam * np.eye(len(x))]
+            b = np.r_[-r, -lam * (x - x0)]
+            dx = np.linalg.lstsq(A, b, rcond=None)[0]
+            x = x + dx
+            if np.linalg.norm(dx) < 1e-6 * kante:
+                break
+        r1 = res(x)
+        k1 = float(np.degrees(np.arcsin(min(1.0, np.abs(r1).reshape(-1, 3).__pow__(2).sum(1).max() ** 0.5))))
+        if k1 > vorher[-1]:                          # nie schlechter machen
+            setzen(x0)
+            k1 = vorher[-1]
+        nachher.append(k1)
+        gezaehlt += 1
+    if not gezaehlt:
+        return {"ecken_ausgeglichen": 0}
+    return {"ecken_ausgeglichen": gezaehlt, "ecken_knick_vorher": round(max(vorher), 2),
+            "ecken_knick_nachher": round(max(nachher), 2)}

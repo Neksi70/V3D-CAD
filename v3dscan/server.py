@@ -1602,7 +1602,8 @@ def freiform_befehl(was, d):
                       "F": np.frombuffer(base64.b64decode(d["kaefig"]["F"]), np.uint32).reshape(-1, 4).astype(np.int64)}
         shape, info = ff.auto_flaechen(s.xyz, s.tri, flaechen, int(zahl(d, "raster", 9)), zahl(d, "kantenwinkel", 0),
                                        glatt=bool(d.get("glatt", True)), kaefig=kaefig,
-                                       scharf_von_hand=d.get("scharf") or None)
+                                       scharf_von_hand=d.get("scharf") or None,
+                                       scharfe_ecken=d.get("scharfe_ecken") or None)
         info.pop("quad", None)
         # Guete: Stichprobe der Scanpunkte gegen die Flaechen
         rng = np.random.default_rng(0)
@@ -1664,7 +1665,7 @@ def freiform_befehl(was, d):
             elif op == "einrasten":
                 V = ff._Projektor(s.xyz, s.tri)(V)
             elif op in ("extrudieren", "bruecke", "verschmelzen", "schleife", "loeschen", "ausrichten",
-                        "verschieben", "umdrehen", "auf_scan"):
+                        "verschieben", "umdrehen", "auf_scan", "ausrichten_sicht"):
                 ids = [int(i) for i in d.get("ids") or []]
                 kanten = [tuple(int(x) for x in k) for k in d.get("kanten") or []]
                 if op == "extrudieren":
@@ -1699,6 +1700,8 @@ def freiform_befehl(was, d):
                     V, F, zuordnung = ff.kaefig_loeschen(V, F, d["flaechen"])
                 elif op == "ausrichten":
                     V = ff.kaefig_ausrichten(V, ids)
+                elif op == "ausrichten_sicht":
+                    V = ff.kaefig_ausrichten_richtung(V, ids, d.get("richtung") or (0, 0, 1))
                 elif op == "verschieben":
                     if not ids:
                         raise Fehler("Ecken wählen (Modus Ecken).")
@@ -1715,6 +1718,8 @@ def freiform_befehl(was, d):
                "vierecke": int(len(F)), "raster": raster,
                "unregelmaessig": [[int(i), int(n), bool(r)] for i, n, r in ff.kaefig_unregelmaessig(F)]}
         if zuordnung is not None:
+            aus["scharfe_ecken"] = [int(zuordnung[i]) for i in d.get("scharfe_ecken") or []
+                                    if i < len(zuordnung) and zuordnung[i] >= 0]
             # scharfe Kanten mit umnummerieren; Raster ist nach Topologie-Aenderung nicht mehr gueltig
             neu = []
             for a, b in d.get("scharf") or []:
@@ -1724,6 +1729,27 @@ def freiform_befehl(was, d):
             aus["scharf"] = neu
             aus["topologie"] = True
         return aus
+    if was == "kaefig_skizze":
+        s = p.scan(d["id"])
+        z = p.skizze_holen(d["sid"])
+        if z.get("art") != "3d" or not z.get("geschlossen"):
+            raise Fehler("Bitte eine GESCHLOSSENE 3D-Skizze wählen.")
+        if s.tri is None or not len(s.tri):
+            raise Fehler("Die Freiform braucht ein Dreiecksnetz – Punktwolke erst vernetzen.")
+        K = np.asarray(_kurve_punkte(sk_feat.skizze_draht(z), 400), float)
+        V, F, raster = ff.kaefig_aus_kurve(K, s.xyz, s.tri,
+                                           int(zahl(d, "nu", 6)), int(zahl(d, "nv", 6)))
+        seg = np.stack([V[F], V[np.roll(F, -1, axis=1)]], 2).reshape(-1, 2, 3)
+        return {"V": _b64(V, np.float32), "F": _b64(F, np.uint32), "linien": _b64(seg, np.float32),
+                "vierecke": int(len(F)), "raster": raster}
+    if was == "teilraster":
+        s = p.scan(d["id"])
+        V = np.frombuffer(base64.b64decode(d["V"]), np.float32).reshape(-1, 3).astype(float)
+        F = np.frombuffer(base64.b64decode(d["F"]), np.uint32).reshape(-1, 4).astype(np.int64)
+        G, raster = ff.kaefig_teilraster(V, F, d.get("flaechen") or [])
+        face = ff.raster_eine_flaeche(G, raster, s.xyz, s.tri)
+        k = p.feature(face, "Freiform", "neu", None, {"typ": "freiform_raster"})
+        return {"koerper": k.id, "raster": list(raster)}
     if was == "eine_flaeche":
         s = p.scan(d["id"])
         V = np.frombuffer(base64.b64decode(d["V"]), np.float32).reshape(-1, 3).astype(float)

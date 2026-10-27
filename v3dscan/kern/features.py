@@ -316,7 +316,20 @@ def radius_vorschlag(shape, kanten, elemente):
 def koerper_bool(a, b, art, info=None):
     """art: vereinen | abziehen | schneiden (Schnittmenge) - mit Rueckfallebene (koerper.boolean)."""
     from . import koerper as kp
-    erg = kp.boolean(a, b, art, info)
+    try:
+        erg = kp.boolean(a, b, art, info)
+    except ValueError:
+        # Schnittmenge von Koerpern, deren Huellquader sich nicht einmal beruehren: klare Meldung statt
+        # "Rueckfallebene gescheitert"
+        if art == "schneiden":
+            from OCP.Bnd import Bnd_Box
+            from OCP.BRepBndLib import BRepBndLib
+            ba, bb = Bnd_Box(), Bnd_Box()
+            BRepBndLib.Add_s(a, ba)
+            BRepBndLib.Add_s(b, bb)
+            if ba.IsOut(bb):
+                raise ValueError("Ergebnis ist leer – berühren sich die Körper überhaupt?")
+        raise
     if kp.kennwerte(erg)["volumen"] < 1e-6:
         raise ValueError("Ergebnis ist leer – berühren sich die Körper überhaupt?")
     return erg
