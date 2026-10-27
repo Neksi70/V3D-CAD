@@ -404,3 +404,103 @@ def text(c):
     if "wert" in c:
         t += " = %g%s" % (c["wert"], "°" if c["art"] == "winkel" else " mm")
     return t
+
+
+def vorschlaege(ketten, grad=1.0, rel=0.01, vorhandene=()):
+    """Auto Constrain: Bedingungen, die die Skizze schon fast erfuellt - parallel/rechtwinklig (Linien,
+    auch ueber Konturen), gleich lang (Linien), gleicher Radius, konzentrisch. Je Gruppe gegen das erste
+    Element (keine Ketten aus Redundanzen). Achsparallele Linien bekommen nichts (das tut auto_bedingungen)."""
+    cos_p, sin_r = math.cos(math.radians(grad)), math.sin(math.radians(grad))
+    linien, kreise = [], []
+    for k, kette in enumerate(ketten):
+        if kette.get("hilfe"):
+            continue
+        for i, e in enumerate(kette["elemente"]):
+            if e["typ"] == "linie":
+                a, b = np.asarray(e["a"], float), np.asarray(e["b"], float)
+                L = float(np.linalg.norm(b - a))
+                if L > 1e-6:
+                    linien.append(((k, i), (b - a) / L, L))
+            elif e["typ"] in ("bogen", "kreis"):
+                kreise.append(((k, i), np.asarray(e["mitte"], float), float(e["r"])))
+    schon = {(c["art"], tuple(c.get("e", ())), tuple(c.get("f", ()))) for c in vorhandene}
+    aus = []
+
+    def neu(c):
+        s = (c["art"], tuple(c["e"]), tuple(c.get("f", ())))
+        if s not in schon and (c["art"], tuple(c.get("f", ())), tuple(c["e"])) not in schon:
+            schon.add(s)
+            aus.append(c)
+
+    def achsparallel(u):
+        return abs(u[0]) >= cos_p or abs(u[1]) >= cos_p
+    # parallele Gruppen
+    gruppen = []
+    for ref, u, L in linien:
+        if achsparallel(u):
+            continue
+        for g in gruppen:
+            if abs(float(g[0][1] @ u)) >= cos_p:
+                g.append((ref, u, L))
+                break
+        else:
+            gruppen.append([(ref, u, L)])
+    for g in gruppen:
+        for ref, u, L in g[1:]:
+            neu({"art": "parallel", "e": list(ref), "f": list(g[0][0])})
+    # rechtwinklig: Gruppenkoepfe untereinander (nicht achsparallel)
+    for i, g in enumerate(gruppen):
+        for h in gruppen[:i]:
+            if abs(float(g[0][1] @ h[0][1])) <= sin_r:
+                neu({"art": "rechtwinklig", "e": list(g[0][0]), "f": list(h[0][0])})
+                break
+    # gleich lang
+    erledigt = set()
+    for i, (ra, ua, la) in enumerate(linien):
+        if ra in erledigt:
+            continue
+        for rb, ub, lb in linien[i + 1:]:
+            if rb not in erledigt and abs(la - lb) <= rel * max(la, lb):
+                neu({"art": "gleich", "e": list(rb), "f": list(ra)})
+                erledigt.add(rb)
+    # gleicher Radius / konzentrisch
+    erledigt = set()
+    for i, (ra, ma, r_a) in enumerate(kreise):
+        for rb, mb, r_b in kreise[i + 1:]:
+            if np.linalg.norm(ma - mb) <= max(1e-3, rel * min(r_a, r_b)):
+                neu({"art": "konzentrisch", "e": list(rb), "f": list(ra)})
+            elif rb not in erledigt and abs(r_a - r_b) <= rel * max(r_a, r_b):
+                neu({"art": "gleich", "e": list(rb), "f": list(ra)})
+                erledigt.add(rb)
+    return aus
+
+
+def auto_hinzufuegen(ketten, bedingungen, **kw):
+    """Vorschlaege einzeln dazunehmen und je Schritt loesen; was der Skizze widerspricht, bleibt weg.
+    -> (ketten, bedingungen, angenommen, abgelehnt)"""
+    angenommen, abgelehnt = 0, 0
+    bed = list(bedingungen)
+    for c in vorschlaege(ketten, vorhandene=bed, **kw):
+        try:
+            ketten = skizze_loesen(ketten, bed + [c])
+            bed.append(c)
+            angenommen += 1
+        except ValueError:
+            abgelehnt += 1
+    return ketten, bed, angenommen, abgelehnt
+
+
+def ketten_umgebaut(bedingungen, k, anzahl_neu):
+    """Kontur k durch anzahl_neu Konturen ersetzt (Trimmen teilt): ihre Bedingungen fallen weg, hoehere
+    Konturnummern verschieben sich um anzahl_neu - 1."""
+    d = anzahl_neu - 1
+    aus = []
+    for c in bedingungen:
+        if k in _ketten_von(c):
+            continue
+        c = dict(c)
+        for s_ in ("e", "f", "achse", "p", "q"):
+            if s_ in c and int(c[s_][0]) > k:
+                c[s_] = [int(c[s_][0]) + d] + list(c[s_][1:])
+        aus.append(c)
+    return aus

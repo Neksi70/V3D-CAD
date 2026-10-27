@@ -1030,6 +1030,7 @@ leinwand.addEventListener('pointerup', (ev) => {
     kaefigKlick(x, y);
     return;
   }
+  if (WF.haupt && WF.haupt.id === 'w-skizze' && $('#skwModus').value === 'trimmen' && S.skVorschau) { sicher(() => skTrimKlick(x, y)); return; }
   if (WF.haupt && WF.haupt.id === 'w-skizze' && S.skzKlick) { skzKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-abwickeln') { awKlick(x, y); return; }
   if (WF.haupt && WF.haupt.dataset.flaechenwahl) { fwahlKlick(x, y); return; }
@@ -4387,6 +4388,12 @@ const AKTIONEN = {
     });
     meldung(`Beispiel „${name}“ geladen.`, 'ok');
   } },
+  skAutoBedingungen: { text: 'Auto-Bedingungen (Skizze)', fn: async () => {
+    if (!S.skVorschau) throw new Error('Erst eine Skizze anlegen oder bearbeiten.');
+    const j = await api('skizze/auto_bedingungen', { ...skZiel() }, 'Suche Bedingungen…');
+    skVorschauSetzen(j);
+    meldung(`${(j.bedingungen || []).length} Bedingungen in der Skizze.`, 'ok');
+  } },
   geVorschau: { text: 'Grundkörper: Vorschau', fn: () => geAusfuehren(true) },
   geAnwenden: { text: 'Grundkörper per Eingabe', fn: () => geAusfuehren(false) },
   rkAnwenden: { text: 'Referenz aus Körperfläche', fn: async () => {
@@ -5183,3 +5190,55 @@ function hilfeOeffnen(suche = '') {
   if (ziel) ziel.scrollIntoView({ block: 'center' });
 }
 $('#hilfeSuche').addEventListener('input', () => hilfeOeffnen($('#hilfeSuche').value));
+
+// Skizze v1.5: Trimmen per Klick, Pinsel-Fit über Schnittpunkte
+async function skTrimKlick(x, y) {
+  const E = skEbeneAktuell();
+  const p = E && ebenePunkt(x, y, E);
+  if (!p) return;
+  let best = null;
+  S.skVorschau.daten.ketten.forEach((k, ki) => k.elemente.forEach((el, ei) => {
+    const D = skDiskret(el);
+    for (let j = 0; j < D.length - 1; j++) {
+      const a = D[j], b = D[j + 1], dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
+      const t = l2 > 0 ? Math.min(1, Math.max(0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2)) : 0;
+      const d = Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+      if (!best || d < best.d) best = { d, ki, ei };
+    }
+  }));
+  if (!best) return;
+  const j = await api('skizze/trimmen', { ...skZiel(), kette: best.ki, element: best.ei, punkt: p }, 'Trimme…');
+  S.skHervor = null;
+  skVorschauSetzen(j);
+}
+let skPinsel = null;
+function skPinselSammeln(x, y) {
+  const v = S.skVorschau, E = v.daten.ebene, r = Number($('#pinselGroesse').value) || 20;
+  const w = leinwand.clientWidth, h = leinwand.clientHeight, q = new THREE.Vector3();
+  (v.daten.schnitt || []).forEach((P, ki) => P.forEach((pt, i) => {
+    q.copy(sk3d(E, pt[0], pt[1])).project(kamera);
+    if (q.z <= 1 && Math.hypot((q.x + 1) / 2 * w - x, (1 - q.y) / 2 * h - y) <= r) skPinsel.set(`${ki}:${i}`, pt);
+  }));
+}
+leinwand.addEventListener('pointerdown', (ev) => {
+  if (ev.button !== 0 || !WF.haupt || WF.haupt.id !== 'w-skizze' || $('#skwModus').value !== 'pinsel' || !S.skVorschau) return;
+  ev.stopImmediatePropagation(); ev.preventDefault();
+  steuerung.enabled = false;
+  skPinsel = new Map();
+  const [x, y] = lokalePos(ev);
+  skPinselSammeln(x, y);
+  leinwand.setPointerCapture(ev.pointerId);
+}, { capture: true });
+leinwand.addEventListener('pointermove', (ev) => { if (skPinsel) { const [x, y] = lokalePos(ev); skPinselSammeln(x, y); } });
+leinwand.addEventListener('pointerup', () => {
+  if (!skPinsel) return;
+  const punkte = [...skPinsel.values()];
+  skPinsel = null;
+  steuerung.enabled = true;
+  if (punkte.length < 3) { status('Zu wenige Schnittpunkte überstrichen (Pinselgröße im Auswahl-Fenster).'); return; }
+  sicher(async () => {
+    const j = await api('skizze/einpassen_punkte', { ...skZiel(), punkte, art: $('#skwFitArt').value }, 'Passe ein…');
+    skVorschauSetzen(j);
+    status(`${punkte.length} Schnittpunkte → ${j.texte[j.texte.length - 1][0]}`);
+  });
+});

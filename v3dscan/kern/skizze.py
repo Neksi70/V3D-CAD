@@ -1604,3 +1604,130 @@ def verlaengern(ketten, k, i, laenge=None):
         e["a"], e["p"] = neu_p, neu_p
     els[i] = e
     return {"geschlossen": False, "elemente": [element_json(x) for x in els]}
+
+
+# --- v1.5: Element in gewaehlte Schnittpunkte einpassen (Pinsel-Fit), Trimmen ---------------------------
+def _kreis_fit(P):
+    """Algebraischer Kreis (Kasa) -> (mitte, r, rms)."""
+    x, y = P[:, 0], P[:, 1]
+    A = np.c_[2 * x, 2 * y, np.ones(len(P))]
+    c = np.linalg.lstsq(A, x * x + y * y, rcond=None)[0]
+    m = c[:2]
+    r = math.sqrt(max(c[2] + m @ m, 1e-18))
+    return m, r, float(np.sqrt(np.mean((np.linalg.norm(P - m, axis=1) - r) ** 2)))
+
+
+def punkte_einpassen(P, art="auto"):
+    """Pinsel-Fit: Linie, Bogen oder Kreis in die gewaehlten Schnittpunkte (2D). auto = kleinste Abweichung,
+    Kreis nur, wenn die Punkte rundum liegen. -> neue (offene) Kette."""
+    P = np.asarray(P, float).reshape(-1, 2)
+    if len(P) < 3:
+        raise ValueError("Mindestens 3 Schnittpunkte überstreichen.")
+    c = P.mean(0)
+    _, sv, vt = np.linalg.svd(P - c, full_matrices=False)
+    t = (P - c) @ vt[0]
+    lin = _lin(c + t.min() * vt[0], c + t.max() * vt[0])
+    rms_lin = float(sv[1] / math.sqrt(len(P)))
+    if art == "linie":
+        return {"geschlossen": False, "elemente": [element_json(lin)]}
+    m, r, rms_k = _kreis_fit(P)
+    w = np.sort(np.degrees(np.arctan2(P[:, 1] - m[1], P[:, 0] - m[0])) % 360)
+    luecke = np.diff(np.r_[w, w[0] + 360])
+    rundum = luecke.max() < 40
+    if art == "kreis" or (art == "auto" and rundum and rms_k < rms_lin):
+        return {"geschlossen": True, "elemente": [element_json({"typ": "kreis", "mitte": m, "r": r})]}
+    if art == "auto" and (rms_lin <= rms_k * 1.2 or r > 50 * np.ptp(t)):
+        return {"geschlossen": False, "elemente": [element_json(lin)]}
+    # Bogen: von der groessten Luecke aus gesehen Anfang/Ende
+    j = int(np.argmax(luecke))
+    w0, w1 = w[(j + 1) % len(w)], w[j]
+    wm = w0 + ((w1 - w0) % 360) / 2
+    def pkt(g):
+        g = math.radians(g)
+        return m + r * np.array([math.cos(g), math.sin(g)])
+    return {"geschlossen": False, "elemente": [element_json({"typ": "bogen", "a": pkt(w0), "m": pkt(wm), "b": pkt(w1),
+                                                              "mitte": m, "r": r})]}
+
+
+def _schnitt_parameter(D, andere):
+    """Bogenlaengen-Anteile (0..1) entlang der Punktfolge D, an denen sie eine der Polylinien kreuzt."""
+    L = np.r_[0, np.cumsum(np.linalg.norm(np.diff(D, axis=0), axis=1))]
+    aus = []
+    for Q in andere:
+        for p, q in zip(Q[:-1], Q[1:]):
+            for k in range(len(D) - 1):
+                a, b = D[k], D[k + 1]
+                M = np.array([b - a, p - q]).T
+                if abs(np.linalg.det(M)) < 1e-14:
+                    continue
+                s_, u = np.linalg.solve(M, p - a)
+                if -1e-9 <= s_ <= 1 + 1e-9 and -1e-9 <= u <= 1 + 1e-9:
+                    aus.append((L[k] + s_ * (L[k + 1] - L[k])) / max(L[-1], 1e-12))
+    return sorted(aus)
+
+
+def trimmen(ketten, k, i, punkt):
+    """Trim (radieren): das Stueck von Element i zwischen den beiden naechsten Schnittpunkten um den Klick
+    entfernen; ohne Schnittpunkt auf einer Seite bis zum Elementende. Die Kontur wird dort offen
+    (aus einer geschlossenen wird eine offene, aus einer offenen ggf. zwei). -> neue Ketten-Liste."""
+    kette = ketten[k]
+    els = [element_lesen(e) for e in kette["elemente"]]
+    e = els[i]
+    D = diskret(e, 1.0) if e["typ"] != "linie" else np.array([e["a"], e["b"]], float)
+    if e["typ"] == "linie":
+        D = np.array([e["a"] + (e["b"] - e["a"]) * t for t in np.linspace(0, 1, 101)])
+    andere = [diskret(element_lesen(x), 1.0) for kk, kt in enumerate(ketten) for ii, x in enumerate(kt["elemente"])
+              if not (kk == k and ii == i) and x["typ"] != "punkt"]
+    roh = _schnitt_parameter(D, andere)
+    if e["typ"] == "kreis":
+        roh = [0.0 if t >= 1 - 1e-6 else t for t in roh]       # ringsum: 360 Grad = 0 Grad
+        ts = sorted({round(t, 5) for t in roh})
+    else:
+        ts = sorted({round(t, 5) for t in roh if 1e-6 < t < 1 - 1e-6})
+    L = np.r_[0, np.cumsum(np.linalg.norm(np.diff(D, axis=0), axis=1))] / max(np.linalg.norm(np.diff(D, axis=0), axis=1).sum(), 1e-12)
+    t_klick = float(L[int(np.argmin(np.linalg.norm(D - np.asarray(punkt, float), axis=1)))])
+    vollkreis = e["typ"] == "kreis"
+    lo = max([t for t in ts if t < t_klick], default=None)
+    hi = min([t for t in ts if t > t_klick], default=None)
+    if vollkreis:
+        if len(ts) < 2:
+            raise ValueError("Der Kreis wird nur einmal geschnitten – zum Trimmen braucht es zwei Schnittpunkte.")
+        lo = lo if lo is not None else ts[-1] - 1          # ueber 0 hinweg
+        hi = hi if hi is not None else ts[0] + 1
+        # Restbogen von hi bis lo+1 (gegen den Uhrzeigersinn)
+        m, r = e["mitte"], e["r"]
+        def pkt(t):
+            g = 2 * math.pi * t
+            return m + r * np.array([math.cos(g), math.sin(g)])
+        bogen = {"typ": "bogen", "a": pkt(hi), "m": pkt((hi + lo + 1) / 2), "b": pkt(lo + 1), "mitte": m, "r": r}
+        neu = list(ketten)
+        neu[k] = {"geschlossen": False, "elemente": [element_json(bogen)]}
+        return neu
+    teile = []
+    for von, bis in ((0.0, lo), (hi, 1.0)):
+        if von is None or bis is None or bis - von < 1e-6:
+            continue
+        a = _punkt_bei(e, von)[0] if von > 0 else np.asarray(e["a"], float)
+        b = _punkt_bei(e, bis)[0] if bis < 1 else np.asarray(e["b"], float)
+        if e["typ"] == "linie":
+            teile.append(_lin(a, b))
+        elif e["typ"] == "bogen":
+            mm = _punkt_bei(e, (von + bis) / 2)[0]
+            teile.append({"typ": "bogen", "a": a, "m": mm, "b": b, "mitte": e["mitte"], "r": e["r"]})
+        else:
+            Q = D[(L >= von - 1e-9) & (L <= bis + 1e-9)]
+            if len(Q) >= 4:
+                teile.append(spline_fit(np.r_[[a], Q[1:-1], [b]], 0.001))
+    vorne = els[:i] + (teile[:1] if lo is not None else [])
+    hinten = (teile[-1:] if hi is not None and (lo is None or len(teile) == 2) else []) + els[i + 1:]
+    if lo is None and hi is not None:
+        vorne = els[:i]
+    neu = list(ketten)
+    if kette["geschlossen"]:
+        stueck = hinten + vorne                       # offen an der Trimmstelle, sonst zusammenhaengend
+        neu[k] = {"geschlossen": False, "elemente": [element_json(x) for x in stueck]}
+        if not stueck:
+            del neu[k]
+        return neu
+    ersatz = [{"geschlossen": False, "elemente": [element_json(x) for x in s_]} for s_ in (vorne, hinten) if s_]
+    return neu[:k] + ersatz + neu[k + 1:]

@@ -916,7 +916,8 @@ def skizze_befehl(was, d):
         daten = kp.exportieren([sk_feat.skizze_drahtmodell(skz)], "iges")
         return {"iges": base64.b64encode(daten).decode("ascii"), "name": skz.get("name", "skizze")}
     if was in ("zeichnen", "spline", "versatz", "spiegeln", "kopieren", "ecke", "bedingung", "abstand",
-               "kette_entfernen", "laenge", "winkel", "hilfe", "bedingung_entfernen", "trennen", "verlaengern"):
+               "kette_entfernen", "laenge", "winkel", "hilfe", "bedingung_entfernen", "trennen", "verlaengern", "auto_bedingungen", "einpassen_punkte",
+               "trimmen"):
         skz, gespeichert = _skizze_ziel(d)
         ketten = [dict(k) for k in skz["ketten"]]
         schnitt = list(skz.get("schnitt", []))
@@ -1035,6 +1036,23 @@ def skizze_befehl(was, d):
             i, k = kette()
             ketten[i] = sk.verlaengern(ketten, i, int(d.get("element", 0)), zahl(d, "laenge", 0) or None)
             text = "Linie verlängert"
+        elif was == "auto_bedingungen":
+            ketten, bedingungen, ja, nein = loeser.auto_hinzufuegen(ketten, bedingungen, grad=zahl(d, "grad", 1.0),
+                                                                   rel=zahl(d, "prozent", 1.0) / 100.0)
+            text = "%d Bedingungen erkannt" % ja + (", %d passten nicht" % nein if nein else "")
+        elif was == "einpassen_punkte":
+            neu_k = sk.punkte_einpassen(d.get("punkte") or [], d.get("art", "auto"))
+            ketten.append(neu_k)
+            schnitt.append([])
+            text = "%s eingepasst" % {"linie": "Linie", "bogen": "Bogen", "kreis": "Kreis"}[neu_k["elemente"][0]["typ"]]
+        elif was == "trimmen":
+            i, k = kette()
+            vorher = len(ketten)
+            ketten = sk.trimmen(ketten, i, int(d.get("element", 0)), d.get("punkt") or [0, 0])
+            n_neu = len(ketten) - vorher + 1
+            bedingungen = loeser.ketten_umgebaut(bedingungen, i, n_neu)
+            schnitt = schnitt[:i] + [[] for _ in range(n_neu)] + schnitt[i + 1:]
+            text = "Getrimmt"
         elif was == "bedingung_entfernen":
             n = int(d.get("index", -1))
             if not 0 <= n < len(bedingungen):

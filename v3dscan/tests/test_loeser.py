@@ -134,6 +134,31 @@ def dienst():
         holen("/api/skizze/zeichnen", {"art": "linie", "punkte": [[60, 10], [70, 10]]})
         a = holen("/api/skizze/verlaengern", {"kette": 2, "element": 0})
         pruefe(a["skizze"]["ketten"][2]["elemente"][0]["b"] == [90, 10], "Linie bis zur Rechteckseite verlängert")
+        # v1.5: Auto-Bedingungen, Trimmen, Pinsel-Fit
+        holen("/api/skizze/neu", {"ebene": {"art": "welt", "name": "xy", "versatz": 0}})
+        c_, s_ = math.cos(0.35), math.sin(0.35)
+        P = [[c_ * x - s_ * y, s_ * x + c_ * y] for x, y in ([0, 0], [40.2, 0.3], [40, 30.1], [-0.2, 30])]
+        holen("/api/skizze/zeichnen", {"art": "polylinie", "punkte": P + [P[0]]})
+        a = holen("/api/skizze/auto_bedingungen", {})
+        E = a["skizze"]["ketten"][0]["elemente"]
+        d = [np.subtract(e["b"], e["a"]) for e in E]
+        winkel = abs(float(d[0] @ d[1]) / (np.linalg.norm(d[0]) * np.linalg.norm(d[1])))
+        pruefe(len(a["bedingungen"]) >= 4 and winkel < 1e-6 and abs(np.linalg.norm(d[0]) - np.linalg.norm(d[2])) < 1e-6,
+               "Auto-Bedingungen: schiefes Viereck → exaktes Rechteck (%d Bedingungen)" % len(a["bedingungen"]))
+        holen("/api/skizze/neu", {"ebene": {"art": "welt", "name": "xy", "versatz": 0}})
+        holen("/api/skizze/zeichnen", {"art": "rechteck", "punkte": [[0, 0], [40, 30]]})
+        holen("/api/skizze/zeichnen", {"art": "kreis", "punkte": [[20, 30], [30, 30]]})
+        a = holen("/api/skizze/trimmen", {"kette": 1, "element": 0, "punkt": [20, 40]})
+        e = a["skizze"]["ketten"][1]["elemente"][0]
+        pruefe(e["typ"] == "bogen" and np.allclose(e["m"], [20, 20], atol=1e-6), "Kreis oben weggetrimmt → unterer Halbbogen")
+        a = holen("/api/skizze/trimmen", {"kette": 0, "element": 2, "punkt": [20, 30]})
+        pruefe(len(a["skizze"]["ketten"]) == 2 and not a["skizze"]["ketten"][0]["geschlossen"]
+               and [t for t in a["texte"][0]].count("Linie 10.00 mm") == 2, "Rechteck-Oberkante zwischen den Kreisschnitten getrimmt: %s" % a["texte"][0])
+        t = np.linspace(0.3, 2.2, 30)
+        pts = np.c_[5 + 8 * np.cos(t), 3 + 8 * np.sin(t)].tolist()
+        a = holen("/api/skizze/einpassen_punkte", {"punkte": pts})
+        e = a["skizze"]["ketten"][-1]["elemente"][0]
+        pruefe(e["typ"] == "bogen" and abs(e["r"] - 8) < 1e-6 and np.allclose(e["mitte"], [5, 3]), "Pinsel-Fit: Bogen R8 um (5, 3)")
         # v1.3: Punkt als Skizzenelement
         holen("/api/skizze/neu", {"ebene": {"art": "welt", "name": "xy", "versatz": 0}})
         holen("/api/skizze/zeichnen", {"art": "rechteck", "punkte": [[0, 0], [40, 30]]})
