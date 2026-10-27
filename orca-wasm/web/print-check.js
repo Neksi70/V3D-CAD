@@ -122,7 +122,7 @@ export function keyWhere(key) { return (LABELS[key] || [, ''])[1]; }
 
 // Anzeige-Werte (Enums)
 const ENUM_DE = {
-  'tree(auto)': 'Tree(auto)', 'normal(auto)': 'Normal(auto)', 'tree(manual)': 'Tree(manual)', 'normal(manual)': 'Normal(manual)',
+  'tree(auto)': 'Baum (auto) (Tree(auto))', 'normal(auto)': 'Normal (auto)', 'tree(manual)': 'Baum (manuell) (Tree(manual))', 'normal(manual)': 'Normal (manuell)',
   auto_brim: 'Automatisch (Auto)', outer_only: 'Nur äußerer Rand (Outer brim only)', no_brim: 'Keine Umrandung (No-brim)', brim_ears: 'Mouse ear',
   inner_only: 'Nur innerer Rand (Inner brim only)', outer_and_inner: 'Äußerer und innerer Rand (Outer and inner brim)', painted: 'Bemalt (Painted)',
   arachne: 'Arachne', classic: 'Klassisch (Classic)',
