@@ -2686,12 +2686,14 @@ function opZiel(op, ziel) {
 function exParameter() {
   const sid = Number($('#exSkizze').value);
   if (!S.skizzen.has(sid)) throw new Error('Erst eine Skizze anlegen (Querschnitt-Skizze → Übernehmen).');
-  return { sid, modus: $('#exModus').value, laenge: Number($('#exLaenge').value) || 10, laenge2: Number($('#exLaenge2').value) || 0,
+  const extra = $('#exModus').value === 'auswahl' ? { masken: auswahlMasken() } : {};
+  if (extra.masken && !Object.keys(extra.masken).length) throw new Error('Erst Scanpunkte wählen, bis zu denen extrudiert werden soll.');
+  return { ...extra, sid, modus: $('#exModus').value, laenge: Number($('#exLaenge').value) || 10, laenge2: Number($('#exLaenge2').value) || 0,
     umkehren: $('#exUmkehren').checked, schraege: Number($('#exSchraege').value) || 0, als_flaeche: $('#exFlaeche').checked,
     ...opZiel('#exOperation', '#exZiel') };
 }
 $('#exModus').addEventListener('change', () => {
-  $('#exLaengeReihe').hidden = $('#exModus').value === 'auto';
+  $('#exLaengeReihe').hidden = ['auto', 'auswahl'].includes($('#exModus').value);
   $('#exLaenge2Teil').hidden = $('#exModus').value !== 'beidseitig';
 });
 function opText(info) {
@@ -3107,7 +3109,8 @@ function kwParameter(was) {
       return { kid: kid('#esK'), rid, behalten: $('#esSeite').value };
     }
     case 'duplizieren': return { kid: kid('#duK'), flaechen: [...S.fwahl] };
-    case 'verlaengern': return { kid: kid('#vlK'), laenge: Number($('#vlLaenge').value) || 5 };
+    case 'verlaengern': return { kid: kid('#vlK'), laenge: Number($('#vlLaenge').value) || 5,
+      seiten: $('#vlJeSeite').checked ? ['#vlU0', '#vlU1', '#vlV0', '#vlV1'].map((i) => Number($(i).value) || 0) : null };
     case 'projizieren': {
       const sid = Number($('#pjSkizze').value);
       if (!S.skizzen.has(sid)) throw new Error('Erst eine Skizze anlegen.');
@@ -3272,7 +3275,7 @@ $('#skStapel').addEventListener('change', () => { $('#skStapelReihe').hidden = !
 async function loAusfuehren(vorschau) {
   const sids = [...$('#loListe').querySelectorAll('input:checked')].map((e) => Number(e.value));
   if (sids.length < 2) throw new Error('Mindestens zwei Skizzen anhaken.');
-  const j = await api('feature/loft', { sids, glatt: $('#loGlatt').checked, vorschau, ...opZiel('#loOperation', '#loZiel') }, vorschau ? 'Baue Vorschau…' : 'Erzeuge Loft…');
+  const j = await api('feature/loft', { sids, glatt: $('#loGlatt').checked, verlaengern: Number($('#loVerl').value) || 0, vorschau, ...opZiel('#loOperation', '#loZiel') }, vorschau ? 'Baue Vorschau…' : 'Erzeuge Loft…');
   if (vorschau) { featVorschauZeigen(j.vorschau); $('#loInfo').textContent = `${zahlText(j.info.volumen, 1)} mm³ · ${opText(j.info)}`; return; }
   featVorschauWeg(); $('#loInfo').textContent = '';
   S.koerperAktiv = j.koerper; for (const k of S.koerper.values()) koerperDarstellung(k);
@@ -3620,7 +3623,7 @@ async function gwAusfuehren(vorschau) {
   const kid = Number($('#gwK').value);
   if (!S.koerper.has(kid)) throw new Error('Erst einen Körper erzeugen (z. B. Grundkörper aus dem Zylinder).');
   const j = await api('feature/gewinde', { kid, id: S.erkennung.id, element: el.id, steigung: Number($('#gwSteigung').value) || 1.5,
-    laenge: Number($('#gwLaenge').value) || 0, vorschau }, vorschau ? 'Baue Gewinde…' : 'Schneide Gewinde…');
+    laenge: Number($('#gwLaenge').value) || 0, auslauf: $('#gwAuslauf').value, vorschau }, vorschau ? 'Baue Gewinde…' : 'Schneide Gewinde…');
   const t = `${j.info.art} Ø ${zahlText(j.info.durchmesser, 2)} × ${zahlText(j.info.steigung, 2)} · Länge ${zahlText(j.info.laenge, 1)} mm`;
   if (vorschau) { featVorschauZeigen(j.vorschau); $('#gwInfo').textContent = t; return; }
   featVorschauWeg(); $('#gwInfo').textContent = '';
@@ -3815,6 +3818,14 @@ function v10Fuellen() {
   const d3 = alle.filter((z) => z.meta.art === '3d').map((z) => [z.meta.id, z.meta.name]);
   const d2 = alle.filter((z) => z.meta.art !== '3d').map((z) => [z.meta.id, z.meta.name]);
   selectFuellen($('#e3Skizze'), d3);
+  selectFuellen($('#sfSkizze'), d2);
+  const fk = $('#fuKurven'), alt = new Set([...fk.querySelectorAll('input:checked')].map((e) => Number(e.value)));
+  fk.innerHTML = d3.length ? '' : '<span class="info">keine 3D-Skizzen</span>';
+  for (const [id, name] of d3) {
+    const l = document.createElement('label'); l.className = 'el';
+    l.innerHTML = `<span><input type="checkbox" value="${id}"${alt.has(id) ? ' checked' : ''}> </span><span></span><span></span>`;
+    l.children[1].textContent = name; fk.appendChild(l);
+  }
   for (const id of ['#pjSkizze', '#wiSkizze']) selectFuellen($(id), d2);
   selectFuellen($('#rfSkizze'), alle.map((z) => [z.meta.id, z.meta.name]));
   for (const id of ['#blA', '#blB']) selectFuellen($(id), alle.map((z) => [z.meta.id, z.meta.name]));
@@ -3855,7 +3866,8 @@ async function fu(vorschau) {
   const q = $('#fuQuelle').value;
   if (!q) throw new Error('Erst einen Flächenkörper mit offenem Rand oder eine geschlossene 3D-Skizze anlegen.');
   const d = q[0] === 'k' ? { kid: Number(q.slice(1)), rand: (Number($('#fuRand').value) || 1) - 1 } : { sid: Number(q.slice(1)) };
-  const j = await api('feature/fuellen', { ...d, stetig: $('#fuStetig').checked, auf_scan: $('#fuScan').checked,
+  const kurven = [...$('#fuKurven').querySelectorAll('input:checked')].map((e) => Number(e.value));
+  const j = await api('feature/fuellen', { ...d, kurven, stetig: $('#fuStetig').checked, auf_scan: $('#fuScan').checked,
     id: Number($('#fuScanWahl').value) || null, vorschau }, vorschau ? 'Fülle…' : 'Erzeuge Füllfläche…');
   if (vorschau) { featVorschauZeigen(j.vorschau); $('#fuInfo').textContent = `Fläche ${zahlText(j.info.flaeche, 1)} mm²` + (j.info.scanpunkte ? ` · ${j.info.scanpunkte} Scanpunkte` : ''); return; }
   featVorschauWeg(); neuerKoerperAus(j, 'Füllfläche erzeugt.');
@@ -4394,6 +4406,21 @@ const AKTIONEN = {
     skVorschauSetzen(j);
     meldung(`${(j.bedingungen || []).length} Bedingungen in der Skizze.`, 'ok');
   } },
+  knRadiusAuswahl: { text: 'Radius aus Auswahl', fn: async () => {
+    const masken = auswahlMasken();
+    if (!Object.keys(masken).length) throw new Error('Erst Scanpunkte auf der Rundung wählen (Lasso/Pinsel/Zauberstab).');
+    const j = await api('feature/radius_auswahl', { masken }, 'Passe Radius ein…');
+    $('#knRadius').value = j.radius; $('#knArt').value = 'runden';
+    meldung(`Radius aus Auswahl: R ${zahlText(j.radius, 3)} (RMS ${zahlText(j.rms, 3)} mm)`, 'ok');
+  } },
+  sfVorschau: { text: 'Fläche aus Skizze: Vorschau', fn: async () => {
+    const j = await api('feature/skizze_flaeche', { sid: Number($('#sfSkizze').value), vorschau: true }, 'Baue Fläche…');
+    featVorschauZeigen(j.vorschau); $('#sfInfo').textContent = `Fläche ${zahlText(j.info.flaeche, 1)} mm²`;
+  } },
+  sfAnwenden: { text: 'Fläche aus Skizze', fn: async () => {
+    const j = await api('feature/skizze_flaeche', { sid: Number($('#sfSkizze').value) }, 'Erzeuge Fläche…');
+    featVorschauWeg(); neuerKoerperAus(j, 'Fläche aus Skizze erzeugt.');
+  } },
   geVorschau: { text: 'Grundkörper: Vorschau', fn: () => geAusfuehren(true) },
   geAnwenden: { text: 'Grundkörper per Eingabe', fn: () => geAusfuehren(false) },
   rkAnwenden: { text: 'Referenz aus Körperfläche', fn: async () => {
@@ -4919,7 +4946,7 @@ function werkzeugOeffnen(liste, knopf = null) {
   if (haupt && haupt.id === 'w-koerper-abw') kaFuellen();
   if (haupt && ['w-skizze', 'w-extrudieren', 'w-drehen', 'w-kanten'].includes(haupt.id)) featureAuswahlFuellen();
   if (haupt && haupt.id === 'w-skizze') skFelderZeigen();
-  if (haupt && haupt.id === 'w-extrudieren') $('#exLaengeReihe').hidden = $('#exModus').value === 'auto';
+  if (haupt && haupt.id === 'w-extrudieren') $('#exLaengeReihe').hidden = ['auto', 'auswahl'].includes($('#exModus').value);
   if (haupt && haupt.id === 'w-kanten') knZeichnen();
   if (haupt && (haupt.dataset.kw || haupt.id === 'w-auto-flaechen' || haupt.id === 'w-flaeche')) kwFuellen();
   if (haupt && haupt.id === 'w-schale') scZeichnen();
@@ -5242,3 +5269,5 @@ leinwand.addEventListener('pointerup', () => {
     status(`${punkte.length} Schnittpunkte → ${j.texte[j.texte.length - 1][0]}`);
   });
 });
+
+$('#vlJeSeite').addEventListener('change', () => { $('#vlSeiten').hidden = !$('#vlJeSeite').checked; });

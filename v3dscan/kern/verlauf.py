@@ -101,7 +101,7 @@ def _werkzeug(e, projekt):
         return ft.drehen(projekt.skizze_holen(e["skizze"]), e.get("winkel", 360), None if el in (None, "") else int(el),
                          e.get("winkel2", 0))
     if t == "loft":
-        return ft.loft([projekt.skizze_holen(s) for s in e["skizzen"]], e.get("glatt", True))
+        return ft.loft([projekt.skizze_holen(s) for s in e["skizzen"]], e.get("glatt", True), e.get("verlaengern", 0))
     if t == "sweep":
         return ft.sweep(projekt.skizze_holen(e["profil"]), projekt.skizze_holen(e["pfad"]))
     if t == "rohr":
@@ -128,8 +128,14 @@ def schritt(shape, e, projekt):
         kanten = kanten_finden(shape, e["kanten_ref"])
         return ft.kanten_runden(shape, kanten, e["radius"], fase=t in ("fase", "fasen"))
     if t == "gewinde":
-        w = ft.gewinde(e["start"], e["achse_v"], e["r"], e["laenge"], e["steigung"], e["aussen"])
-        return kp.boolean(shape, w, "abziehen")
+        aus = e.get("auslauf", "voll")
+        w = ft.gewinde(e["start"], e["achse_v"], e["r"], e["laenge"], e["steigung"], e["aussen"],
+                       auslauf="verlaengert" if aus in ("verlaengert", "fase") else "voll")
+        shape = kp.boolean(shape, w, "abziehen")
+        if aus == "fase":
+            shape = kp.boolean(shape, ft.gewinde_fase(e["start"], e["achse_v"], e["r"], e["laenge"], e["steigung"],
+                                                      e["aussen"]), "abziehen")
+        return shape
     if t == "verschieben":
         return ft.verschieben(shape, e.get("versatz") or (0, 0, 0), e.get("drehung") or (0, 0, 0))
     if t == "spiegeln":

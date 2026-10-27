@@ -1607,16 +1607,6 @@ def verlaengern(ketten, k, i, laenge=None):
 
 
 # --- v1.5: Element in gewaehlte Schnittpunkte einpassen (Pinsel-Fit), Trimmen ---------------------------
-def _kreis_fit(P):
-    """Algebraischer Kreis (Kasa) -> (mitte, r, rms)."""
-    x, y = P[:, 0], P[:, 1]
-    A = np.c_[2 * x, 2 * y, np.ones(len(P))]
-    c = np.linalg.lstsq(A, x * x + y * y, rcond=None)[0]
-    m = c[:2]
-    r = math.sqrt(max(c[2] + m @ m, 1e-18))
-    return m, r, float(np.sqrt(np.mean((np.linalg.norm(P - m, axis=1) - r) ** 2)))
-
-
 def punkte_einpassen(P, art="auto"):
     """Pinsel-Fit: Linie, Bogen oder Kreis in die gewaehlten Schnittpunkte (2D). auto = kleinste Abweichung,
     Kreis nur, wenn die Punkte rundum liegen. -> neue (offene) Kette."""
@@ -1630,7 +1620,12 @@ def punkte_einpassen(P, art="auto"):
     rms_lin = float(sv[1] / math.sqrt(len(P)))
     if art == "linie":
         return {"geschlossen": False, "elemente": [element_json(lin)]}
-    m, r, rms_k = _kreis_fit(P)
+    kf = _kreis_fit(P)                               # vorhandene geometrische Einpassung (oben)
+    if kf is None:
+        return {"geschlossen": False, "elemente": [element_json(lin)]}
+    m, r, res = kf
+    m, r = np.asarray(m, float), float(r)
+    rms_k = float(np.sqrt(np.mean(res ** 2)))
     w = np.sort(np.degrees(np.arctan2(P[:, 1] - m[1], P[:, 0] - m[0])) % 360)
     luecke = np.diff(np.r_[w, w[0] + 360])
     rundum = luecke.max() < 40

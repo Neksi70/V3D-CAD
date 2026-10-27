@@ -1119,6 +1119,14 @@ def feature_befehl(was, d):
             if tiefe is None:
                 raise Fehler("Im Profil liegen keine Scanpunkte – Länge von Hand angeben.")
             von, bis = tiefe
+        elif modus == "auswahl":
+            # Optimise to selected points: Hoehe = mittlerer Abstand der gewaehlten Scanpunkte zur Skizzenebene
+            Pw, _ = _gewaehlte_punkte(d)
+            E = sk.ebene_lesen(skz["ebene"])
+            h = float(np.median((Pw - E["ursprung"]) @ E["n"]))
+            if abs(h) < 1e-6:
+                raise Fehler("Die gewählten Punkte liegen in der Skizzenebene.")
+            von, bis = (0.0, h) if h > 0 else (h, 0.0)
         else:
             L = zahl(d, "laenge", 10)
             if modus == "mitte":
@@ -1179,6 +1187,21 @@ def feature_befehl(was, d):
             return {"vorschau": netz_json(kp.vernetzen(shape)), "info": info}
         k = p.koerper_ersetzen_mehrere(kids, shape, "Körper aus Flächen", {"typ": "aus_flaechen", "aus": kids})
         return {"koerper": k.id, "info": info}
+    if was == "radius_auswahl":
+        # Rundungsradius aus den gewaehlten Scanpunkten (Zylinder einpassen)
+        from kern import formen as fo_
+        Pw, _ = _gewaehlte_punkte(d)
+        if len(Pw) < 20:
+            raise Fehler("Für den Radius mehr Punkte auf der Rundung wählen.")
+        z = fo_.zylinder(Pw)
+        return {"radius": round(float(z["radius"]), 3), "rms": round(float(z.get("rms", 0)), 4)}
+    if was == "skizze_flaeche":
+        z = p.skizze_holen(d["sid"])
+        shape = sk_feat.skizze_als_flaeche(z)
+        if d.get("vorschau"):
+            return {"vorschau": netz_json(kp.vernetzen(shape)), "info": {"flaeche": round(kp.kennwerte(shape)["flaeche"], 2)}}
+        k = p.feature(shape, "Fläche aus Skizze", "neu", None, {"typ": "skizze_flaeche", "skizze": z["id"]})
+        return {"koerper": k.id}
     if was == "trennen":
         teile = sk_feat.koerper_trennen(p.koerper_holen(d["kid"]).shape)
         neu = p.koerper_aufteilen(d["kid"], teile)
@@ -1192,12 +1215,16 @@ def feature_befehl(was, d):
         laenge = zahl(d, "laenge", 0) or float(el.get("hoehe", 10))
         a = np.asarray(el["achse"], float)
         start = np.asarray(el["punkt"], float) - a * float(el.get("hoehe", laenge)) / 2
-        werkzeug = sk_feat.gewinde(start, a, r, laenge, zahl(d, "steigung", 1.5), aussen)
+        auslauf = d.get("auslauf", "voll")
+        werkzeug = sk_feat.gewinde(start, a, r, laenge, zahl(d, "steigung", 1.5), aussen,
+                                   auslauf="verlaengert" if auslauf in ("verlaengert", "fase") else "voll")
         k = p.koerper_holen(d["kid"])
         from kern.koerper import boolean
         shape = boolean(k.shape, werkzeug, "abziehen")
+        if auslauf == "fase":
+            shape = boolean(shape, sk_feat.gewinde_fase(start, a, r, laenge, zahl(d, "steigung", 1.5), aussen), "abziehen")
         info = {"durchmesser": round(2 * r, 3), "steigung": zahl(d, "steigung", 1.5), "laenge": round(laenge, 3),
-                "art": "Außengewinde" if aussen else "Innengewinde"}
+                "art": "Außengewinde" if aussen else "Innengewinde", "auslauf": auslauf}
         if d.get("vorschau"):
             return {"vorschau": netz_json(kp.vernetzen(shape)), "info": info}
         p.koerper_aendern(k.id, shape, "Gewinde", dict(info, typ="gewinde", start=start.tolist(), achse_v=a.tolist(),
@@ -1209,8 +1236,9 @@ def feature_befehl(was, d):
         return _koerper_werkzeug(was, d)
     if was == "loft":
         sids = [int(x) for x in d.get("sids") or []]
-        werkzeug = sk_feat.loft([p.skizze_holen(x) for x in sids], bool(d.get("glatt", True)))
-        return _feature_ergebnis(werkzeug, "Loft", d, {"typ": "loft", "skizzen": sids, "glatt": bool(d.get("glatt", True))})
+        werkzeug = sk_feat.loft([p.skizze_holen(x) for x in sids], bool(d.get("glatt", True)), zahl(d, "verlaengern", 0))
+        return _feature_ergebnis(werkzeug, "Loft", d, {"typ": "loft", "skizzen": sids, "glatt": bool(d.get("glatt", True)),
+                                                       "verlaengern": zahl(d, "verlaengern", 0)})
     if was == "sweep":
         werkzeug = sk_feat.sweep(p.skizze_holen(d["profil"]), p.skizze_holen(d["pfad"]))
         return _feature_ergebnis(werkzeug, "Sweep", d, {"typ": "sweep", "profil": d["profil"], "pfad": d["pfad"]})
@@ -1278,7 +1306,11 @@ def feature_befehl(was, d):
             if len(kand) > 300:
                 kand = kand[np.random.default_rng(0).choice(len(kand), 300, replace=False)]
             scan_p = kand
-        shape = sk_feat.flaeche_fuellen(rand, nachbar, scan_p, bool(d.get("stetig", True)))
+        kurven = []
+        for ks in d.get("kurven") or []:
+            zk = p.skizze_holen(ks)
+            kurven.append(sk_feat.skizze_draht(zk))
+        shape = sk_feat.flaeche_fuellen(rand, nachbar, scan_p, bool(d.get("stetig", True)), kurven)
         info = {"flaeche": round(kp.kennwerte(shape)["flaeche"], 2), "scanpunkte": 0 if scan_p is None else int(len(scan_p))}
         if d.get("vorschau"):
             return {"vorschau": netz_json(kp.vernetzen(shape)), "info": info}
@@ -1397,6 +1429,13 @@ def _koerper_werkzeug(was, d):
         ex = TopExp_Explorer(f.shape, TopAbs_FACE)
         if not ex.More():
             raise Fehler("„%s“ enthält keine Fläche." % f.name)
+        if d.get("behalten") == "beide":
+            # Trim manuell: beide Seiten als eigene Koerper - das unerwuenschte Stueck danach loeschen
+            teile = [ff.koerper_schneiden(k.shape, ex.Current(), b_) for b_ in ("unten", "oben")]
+            if vorschau:
+                return antwort(teile[0], None, None)
+            neu = p.koerper_aufteilen(k.id, teile)
+            return {"koerper": [x.id for x in neu]}
         shape = ff.koerper_schneiden(k.shape, ex.Current(), d.get("behalten", "unten"))
         return antwort(shape, {"typ": "beschneiden", "flaeche": f.id, "behalten": d.get("behalten")}, "Beschnitt")
     if was == "ebene_schneiden":
@@ -1424,8 +1463,9 @@ def _koerper_werkzeug(was, d):
         shape = sk_feat.flaechen_kopieren(k.shape, [int(x) for x in d.get("flaechen") or []])
         return antwort(shape, {"typ": "duplizieren", "von": k.id}, "Flächenkopie", neu=True)
     if was == "verlaengern":
-        shape = sk_feat.flaeche_verlaengern(k.shape, zahl(d, "laenge", 5))
-        return antwort(shape, {"typ": "verlaengern", "laenge": zahl(d, "laenge", 5)}, "Verlängert")
+        seiten = d.get("seiten")
+        shape = sk_feat.flaeche_verlaengern(k.shape, zahl(d, "laenge", 5), [float(x) for x in seiten] if seiten else None)
+        return antwort(shape, {"typ": "verlaengern", "laenge": zahl(d, "laenge", 5), "seiten": seiten}, "Verlängert")
     if was == "projizieren":
         shape = sk_feat.skizze_auf_flaeche(k.shape, p.skizze_holen(d["sid"]), d.get("behalten", "innen"))
         return antwort(shape, {"typ": "projizieren", "skizze": d["sid"], "behalten": d.get("behalten", "innen")}, "Projektion")

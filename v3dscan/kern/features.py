@@ -498,16 +498,32 @@ def _pfad_draht(skz):
     return kette_draht(k, E), k, E
 
 
-def loft(skizzen, glatt=True):
-    """Volumenkoerper durch die Aussenkonturen mehrerer Skizzen (Reihenfolge = Liste)."""
+def loft(skizzen, glatt=True, verlaengern=0.0):
+    """Volumenkoerper durch die Aussenkonturen mehrerer Skizzen (Reihenfolge = Liste). verlaengern (mm):
+    Expand - der Loft laeuft ueber die erste und letzte Kontur hinaus (Kontur in Loft-Richtung versetzt)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
     from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+    from OCP.gp import gp_Trsf, gp_Vec
     if len(skizzen) < 2:
         raise ValueError("Für einen Loft mindestens zwei Skizzen wählen.")
     op = BRepOffsetAPI_ThruSections(True, not glatt, 1e-6)
     op.CheckCompatibility(True)
+    drahte = []
     for skz in skizzen:
         E = sk.ebene_lesen(skz["ebene"])
-        op.AddWire(kette_draht(_aussenkette(skz), E))
+        drahte.append(kette_draht(_aussenkette(skz), E))
+    if verlaengern and verlaengern > 0:
+        mitten = [np.asarray(_mitte(d_), float) for d_ in drahte]
+
+        def versetzt(draht, richtung):
+            r = richtung / max(np.linalg.norm(richtung), 1e-12) * float(verlaengern)
+            t = gp_Trsf()
+            t.SetTranslation(gp_Vec(*map(float, r)))
+            return BRepBuilderAPI_Transform(draht, t, True).Shape()
+        drahte = [versetzt(drahte[0], mitten[0] - mitten[1])] + drahte + [versetzt(drahte[-1], mitten[-1] - mitten[-2])]
+    for d_ in drahte:
+        from OCP.TopoDS import TopoDS
+        op.AddWire(TopoDS.Wire_s(d_))
     try:
         op.Build()
     except Exception:
@@ -959,7 +975,7 @@ def formschraege(shape, nummern, winkel_grad, richtung=(0, 0, 1), neutral_punkt=
     return d.Shape()
 
 
-def gewinde(punkt, achse, radius, laenge, steigung, aussen=True, profilwinkel=60.0):
+def gewinde(punkt, achse, radius, laenge, steigung, aussen=True, profilwinkel=60.0, auslauf="voll"):
     """Gewindekoerper (Helix-Sweep eines Dreiecksprofils) an einem Zylinder.
     aussen=True: Gewinde auf einem Bolzen (wird abgezogen: Nut), sonst Muttergewinde (wird
     abgezogen aus der Bohrungswand). Rueckgabe = Werkzeug zum Abziehen.
@@ -974,6 +990,10 @@ def gewinde(punkt, achse, radius, laenge, steigung, aussen=True, profilwinkel=60
         raise ValueError("Radius, Länge und Steigung müssen größer 0 sein.")
     a = np.asarray(achse, float) / np.linalg.norm(achse)
     p0 = np.asarray(punkt, float)
+    if auslauf == "verlaengert":
+        # Gewinde laeuft an beiden Enden eine Steigung ueber den Koerper hinaus: keine halben Gaenge am Rand
+        p0 = p0 - a * steigung
+        laenge = laenge + 2 * steigung
     tiefe = (0.6134 if aussen else 0.5413) * steigung
     # Helix auf dem Zylinder am Gewindegrund (aussen: Kern, innen: Bohrung + Tiefe)
     r_helix = radius
@@ -1003,6 +1023,36 @@ def gewinde(punkt, achse, radius, laenge, steigung, aussen=True, profilwinkel=60
         raise ValueError("Gewinde ließ sich nicht erzeugen.")
     op.MakeSolid()
     return op.Shape()
+
+
+def gewinde_fase(punkt, achse, radius, laenge, steigung, aussen=True):
+    """45-Grad-Fase an beiden Gewindeenden (Bolzen: Kegelstumpf-Ring aussen weg, Bohrung: Senkung)
+    -> Werkzeug zum Abziehen."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone, BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    a = np.asarray(achse, float) / np.linalg.norm(achse)
+    p0 = np.asarray(punkt, float)
+    t = (0.6134 if aussen else 0.5413) * steigung
+    teile = []
+    for ende, richtung in ((p0, a), (p0 + a * laenge, -a)):
+        ax = gp_Ax2(gp_Pnt(*map(float, ende - richtung * 0.01)), gp_Dir(*map(float, richtung)))
+        h = t + 0.01
+        if aussen:
+            ring = BRepPrimAPI_MakeCylinder(ax, radius + 2 * t + 1, h).Shape()
+            kegel = BRepPrimAPI_MakeCone(ax, radius - t, radius + 0.01, h).Shape()
+            teile.append(BRepAlgoAPI_Cut(ring, kegel).Shape())
+        else:
+            teile.append(BRepPrimAPI_MakeCone(ax, radius + t + 0.01, radius, h).Shape())
+    return BRepAlgoAPI_Fuse(teile[0], teile[1]).Shape()
+
+
+def skizze_als_flaeche(skz):
+    """Surface from 2D sketch: geschlossene Konturen als ebene Flaeche(n) (mit Loechern)."""
+    fl = flaechen(skz)
+    if not fl:
+        raise ValueError("Die Skizze hat keine geschlossene Kontur.")
+    return _verbund(fl)
 
 
 # === Surfacing (v1.0): 3D-Skizze, Fill, Blend, Extend, Offset, Duplicate, Sew, Project, Roll ===========
@@ -1076,7 +1126,7 @@ def freie_raender(shape):
     return aus
 
 
-def flaeche_fuellen(rand_draht, nachbar=None, scan_punkte=None, stetig=True):
+def flaeche_fuellen(rand_draht, nachbar=None, scan_punkte=None, stetig=True, kurven=()):
     """Fill Surface: Plattenflaeche in einen geschlossenen Rand. nachbar = Schale, an die tangential
     angeschlossen wird (G1), scan_punkte = innere Punkte, durch die die Flaeche gehen soll (On Scan Data)."""
     from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeFilling
@@ -1108,6 +1158,11 @@ def flaeche_fuellen(rand_draht, nachbar=None, scan_punkte=None, stetig=True):
         ex.Next()
     if n == 0:
         raise ValueError("Der Rand hat keine Kanten.")
+    for kd in kurven:                                 # innere Fuehrungskurven: die Flaeche geht hindurch
+        exk = TopExp_Explorer(kd, TopAbs_EDGE)
+        while exk.More():
+            mf.Add(TopoDS.Edge_s(exk.Current()), GeomAbs_C0, False)
+            exk.Next()
     if scan_punkte is not None:
         for q in np.asarray(scan_punkte, float)[:400]:
             mf.Add(gp_Pnt(*map(float, q)))
@@ -1164,7 +1219,7 @@ def flaechen_kopieren(shape, nummern):
     return _verbund(teile)
 
 
-def flaeche_verlaengern(shape, laenge):
+def flaeche_verlaengern(shape, laenge, seiten=None):
     """Flaeche ueber alle Raender um laenge verlaengern (Extend Surface): Raster der Flaeche
     abtasten, linear ueber den Rand fortsetzen, neu als B-Spline einpassen."""
     from OCP.BRep import BRep_Tool
@@ -1191,18 +1246,23 @@ def flaeche_verlaengern(shape, laenge):
             G[i, j] = (q.X(), q.Y(), q.Z())
     lu = float(np.mean(np.linalg.norm(G[-1] - G[0], axis=1)))
     lv = float(np.mean(np.linalg.norm(G[:, -1] - G[:, 0], axis=1)))
-    ku = max(1, int(np.ceil(laenge / (lu / (n - 1)))))
-    kv = max(1, int(np.ceil(laenge / (lv / (n - 1)))))
-    su, sv = laenge / ku, laenge / kv
+    # je Seite eigene Laenge (u-Anfang, u-Ende, v-Anfang, v-Ende); 0 = Seite bleibt
+    L = [float(x) for x in (seiten if seiten is not None else [laenge] * 4)]
+    if len(L) != 4 or min(L) < 0 or max(L) <= 0:
+        raise ValueError("Je Seite eine Länge ≥ 0 angeben (mindestens eine > 0).")
     # in u fortsetzen (Tangente aus den letzten Zeilen, auf Schrittlaenge normiert)
-    def fort(R, rueck, k, schritt):
+    def fort(R, rueck, laenge_seite, zeilen_abstand):
+        if laenge_seite <= 0:
+            return R
+        k = max(1, int(np.ceil(laenge_seite / max(zeilen_abstand, 1e-9))))
+        schritt = laenge_seite / k
         t = R[-1] - R[-2] if not rueck else R[0] - R[1]
         t = t / np.maximum(np.linalg.norm(t, axis=-1, keepdims=True), 1e-12) * schritt
         basis = R[-1] if not rueck else R[0]
         neu = np.array([basis + t * (i + 1) for i in range(k)])
         return np.concatenate([R, neu]) if not rueck else np.concatenate([neu[::-1], R])
-    G = fort(fort(G, False, ku, su), True, ku, su)
-    G = np.swapaxes(fort(fort(np.swapaxes(G, 0, 1), False, kv, sv), True, kv, sv), 0, 1)
+    G = fort(fort(G, False, L[1], lu / (n - 1)), True, L[0], lu / (n - 1))
+    G = np.swapaxes(fort(fort(np.swapaxes(G, 0, 1), False, L[3], lv / (n - 1)), True, L[2], lv / (n - 1)), 0, 1)
     arr = TColgp_Array2OfPnt(1, G.shape[0], 1, G.shape[1])
     for i in range(G.shape[0]):
         for j in range(G.shape[1]):
