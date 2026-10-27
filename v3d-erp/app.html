@@ -234,6 +234,7 @@ main{padding:0!important;min-width:0;display:flex;flex-direction:column}
 .pd-balken>div>i{position:absolute;inset:0 auto 0 0;background:color-mix(in srgb,var(--green) 70%,#fff)}.pd-balken>div.laeuft>i{background:color-mix(in srgb,var(--blue) 55%,#fff)}
 .pd-balken>div>span{position:relative;padding:0 4px;line-height:22px;white-space:nowrap}
 .sl-ab td{background:#eef1f6}.sl-leer{opacity:.5}
+.pd-frei{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;padding:10px 12px;border-radius:8px;background:#eef7f0;font-size:15px}.pd-frei input{width:22px;height:22px}
 .ws-gruende{display:flex;flex-wrap:wrap;gap:6px}.ws-gruende .btn{font-size:15px;padding:8px 12px}
 .charge-alle{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fff8e6;border:1px solid #f3d38a;border-radius:6px;padding:8px 10px;margin:6px 0 10px}
 .charge-alle input{max-width:220px}
@@ -678,14 +679,15 @@ async function seiteBank(){
 // ================================================================ Belege
 async function seiteBelege(bereich, sel){
   const arten = G.belegarten.filter(x=>x.bereich===bereich);
+  const filterArten = bereich === 'EK' ? [...arten, ...G.belegarten.filter(x => x.code === 'WK')] : arten.filter(x => x.code !== 'WK');
   M().innerHTML = `<div class="kopfzeile"><h1>${bereich==='VK'?'Verkaufsbelege':'Einkaufsbelege'}</h1><span class="sp"></span>
     ${bereich==='VK'?'<button class="btn" id="slNeu" title="Ein Lieferschein aus offenen Positionen mehrerer Aufträge eines Kunden">Lieferschein aus offenen Aufträgen</button>':''}
     ${bereich==='EK'?'<button class="btn" id="erEin" title="XRechnung (XML) oder ZUGFeRD-PDF eines Lieferanten als Rechnungseingang übernehmen">E-Rechnung einlesen</button><input type="file" id="erDatei" accept=".xml,.pdf,application/xml,text/xml,application/pdf" hidden>':''}
     <div class="menue" id="neuM"><button class="btn pri">Neu ▾</button><div class="ddl">${arten.map(a=>`<button data-a="${a.code}">${esc(a.name)}</button>`).join('')}</div></div></div>
-    <div class="card"><div class="filter"><input id="fs" placeholder="Suchen: Nummer, Name, Betreff, Projekt"><select id="fa"><option value="">Alle Belegarten</option>${arten.map(a=>`<option value="${a.code}">${esc(a.name)}</option>`).join('')}</select>
+    <div class="card"><div class="filter"><input id="fs" placeholder="Suchen: Nummer, Name, Betreff, Projekt"><select id="fa"><option value="">Alle Belegarten</option>${filterArten.map(a=>`<option value="${a.code}">${esc(a.name)}</option>`).join('')}</select>
     <select id="fst"><option value="">Alle Status</option><option value="entwurf">Entwurf</option><option value="verarbeitet">Verarbeitet</option></select></div>
     <div class="liste"><table><thead><tr><th>Belegart</th><th>Nummer</th><th>Datum</th><th>${bereich==='VK'?'Kunde':'Lieferant'}</th><th>Betreff</th><th>Projekt</th><th class="r">Netto</th><th>Status</th></tr></thead><tbody id="bl"></tbody></table></div></div>`;
-  menueAuf('#neuM', code => location.hash = '#/neu/'+code);
+  menueAuf('#neuM', code => code === 'LS' ? sammelLieferschein() : location.hash = '#/neu/'+code);
   if ($('#slNeu')) $('#slNeu').onclick = sammelLieferschein;
   if ($('#erEin')){ $('#erEin').onclick = () => $('#erDatei').click();
     $('#erDatei').onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return;
@@ -738,7 +740,7 @@ async function belegMaske(b){
   const anschrift = a => a ? [a.name1, a.name2, a.strasse, [a.plz,a.ort].filter(Boolean).join(' '), a.land&&a.land!=='DE'?a.land:''].filter(Boolean).map(esc).join('<br>')
                            : `<span class="hinweis">${vk?'Kundennummer':'Lieferantennummer'} rechts eingeben oder mit ! suchen</span>`;
   const sysStatus = b.status==='verarbeitet' ? 'verarbeitet' : (b.id ? 'gespeichert' : 'neu');
-  setTitel((vk ? 'Verkaufsbelegerfassung' : 'Einkaufsbelegerfassung') + (b.nummer ? ' · ' + b.nummer : ''));
+  setTitel((vk && b.belegart !== 'WK' ? 'Verkaufsbelegerfassung' : 'Einkaufsbelegerfassung') + (b.nummer ? ' · ' + b.nummer : ''));
   M().innerHTML = `<div class="kopfzeile noprint" style="margin-bottom:8px">
     <div class="menue" id="nM"><button class="btn pri" data-ak="n">${ak('Neu','N')} ▾</button><div class="ddl">${G.belegarten.filter(x=>x.bereich===b.bereich).map(x=>`<button data-a="${x.code}">${esc(x.name)}</button>`).join('')}</div></div>
     <div class="menue" id="suM"><button class="btn pri" data-ak="u">S<u>u</u>chen ▾</button><div class="ddl"><button data-a="liste">Belegliste ${vk?'Verkauf':'Einkauf'}</button><button data-a="adresse">Belege dieses ${vk?'Kunden':'Lieferanten'}</button><button data-a="kette">Belege dieses Vorgangs</button></div></div>
@@ -874,7 +876,7 @@ async function belegMaske(b){
     betreff:$('#kBet').value, ihre_referenz:$('#kRef').value, zahlungsbed_id:+$('#kZb').value||null, kopftext:$('#kKt').value, fusstext:$('#kFt').value, memo:b.memo||null,
     positionen:b.positionen.filter(p=>p.text||p.artikel_id).map(p=>({artikel_id:p.artikel_id||null,text:p.text,menge:num(p.menge??1),me:p.me||'Stk',einzelpreis:num(p.einzelpreis??0),rabatt_pct:num(p.rabatt_pct||0),steuer_pct:p.steuer_pct??19,vorgaenger_pos_id:p.vorgaenger_pos_id||null,charge_nr:p.charge_nr||null,charge_id:p.charge_id||null}))});
   const speichern = async () => { const n = await api('belege',{body:sammeln()}); b.id=n.id; return n; };
-  menueAuf('#nM', code => location.hash='#/neu/'+code);
+  menueAuf('#nM', code => code === 'LS' ? sammelLieferschein() : location.hash='#/neu/'+code);
   $('#dSu').onkeydown = async e => { if (e.key!=='Enter') return; const q=$('#dSu').value.trim(); if(!q) return;
     const l = await api(`belege?bereich=${b.bereich}&suche=${encodeURIComponent(q)}`); const t = l.find(x=>(x.nummer||'').toLowerCase()===q.toLowerCase()) || l[0];
     if (t) location.hash='#/beleg/'+t.id; else toast('Kein Beleg gefunden.', true); };
@@ -887,7 +889,7 @@ async function belegMaske(b){
     if (r.abweichungen?.length) mengenAbgleich(r.beleg, r.abweichungen); };
   if ($('#wM')) menueAuf('#wM', async ziel => { const n = await api(`belege/${b.id}/weiter`,{body:{ziel}}); toast(`${n.belegart_name} als Entwurf angelegt.`); location.hash='#/beleg/'+n.id; });
   const listeDialog = (titel, l) => dialog(titel, '', `<div class="liste" style="max-height:360px"><table><tbody>${l.map(x=>`<tr class="klick" onclick="document.getElementById('dlg').close();location.hash='#/beleg/${x.id}'"><td>${esc(x.belegart_name||ba(x.belegart).name)}</td><td>${esc(x.nummer||'Entwurf')}</td><td>${fmt(x.datum)}</td><td>${x.status==='entwurf'?'<span class="pill st-entwurf">Entwurf</span>':''}</td><td class="r">${eur(x.brutto)} €</td></tr>`).join('')||'<tr><td class="hinweis">Keine Belege.</td></tr>'}</tbody></table></div>`, [['Schließen','']]);
-  menueAuf('#suM', async r => { if (r==='liste') location.hash='#/belege/'+b.bereich;
+  menueAuf('#suM', async r => { if (r==='liste') location.hash='#/belege/'+(b.belegart==='WK'?'EK':b.bereich);
     if (r==='adresse'){ if(!adresseId) return toast('Erst Kunde/Lieferant wählen.', true); const a = await api('adressen/'+adresseId); listeDialog('Belege von ' + a.kurz, a.belege.filter(x => G.belegarten.find(y=>y.code===x.belegart)?.bereich===b.bereich)); }
     if (r==='kette') listeDialog('Belege dieses Vorgangs', b.kette); });
   menueAuf('#bMn', async r => {
@@ -1308,14 +1310,15 @@ async function seiteEinstellungen(){
         <button class="btn" data-farbe="#004aad,#f39200"><span style="display:inline-block;width:12px;height:12px;background:#004aad;border-radius:2px"></span> GSB-Blau</button>
         <button class="btn" data-farbe="#f97316,#1d4ed8"><span style="display:inline-block;width:12px;height:12px;background:#f97316;border-radius:2px"></span> V3D-Orange</button>
         <button class="btn" data-farbe="#475569,#0ea5e9"><span style="display:inline-block;width:12px;height:12px;background:#475569;border-radius:2px"></span> Neutral</button></div></div>
-    <div class="card"><b>Produktion</b><div style="display:grid;gap:8px;margin-top:8px">${f('arbeitsgaenge','Arbeitsgänge (mit ; getrennt)','Bohren; Gewinde schneiden; …')}${f('maschinen','Maschinen / Arbeitsplätze (mit ; getrennt, optional)','BZ 1; BZ 2; Gewindeautomat')}</div>
+    <div class="card"><b>Produktion</b><div style="display:grid;gap:8px;margin-top:8px">${f('arbeitsgaenge','Arbeitsgänge (mit ; getrennt)','Bohren; Gewinde schneiden; …')}${f('maschinen','Maschinen / Arbeitsplätze (mit ; getrennt, optional)','BZ 1; BZ 2; Gewindeautomat')}
+      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-k="ls_nur_freigegeben" ${e.ls_nur_freigegeben ? 'checked' : ''} style="width:auto"> Lieferschein nur mit von der Produktion freigegebener Menge (Häkchen „Für den Versand freigeben“ beim Fertigmelden)</label></div>
       <p class="hinweis">Erscheinen als Knöpfe am Werkstatt-Tablet. Ein eigener Arbeitsplan je Artikel geht unter Artikel → Grundlagen.</p></div>
     <div class="card"><b>Standardtexte für neue Belege</b><div style="display:grid;gap:8px;margin-top:8px">${t('kopftext_vk','Kopftext Verkauf')}${t('fusstext_vk','Fußtext Verkauf')}${t('kopftext_ek','Kopftext Einkauf')}${t('fusstext_ek','Fußtext Einkauf')}</div></div>
   </div>
   <div class="card" style="position:sticky;top:12px"><b>Vorschau</b><div class="tisch" style="margin-top:8px;padding:12px"><div class="blatt" id="eVor" style="min-width:0;padding:24px 28px;font-size:12px"></div></div></div>
   </div>`;
   const vorschau = () => {
-    $$('[data-k]').forEach(i => e[i.dataset.k] = i.value);
+    $$('[data-k]').forEach(i => e[i.dataset.k] = i.type === 'checkbox' ? (i.checked ? '1' : '') : i.value);
     thema(e);
     $('#eLogoV').innerHTML = e.logo ? `<img src="${e.logo}" style="max-height:56px;max-width:220px">` : '<span class="hinweis">kein Logo</span>';
     $('#eVor').innerHTML = `${kopfHTML(e)}<div class="bk-oben" style="margin:18px 0 10px"><div class="bk-links"><div class="bk-abs">${esc(absender(e))}</div><div class="bk-anschrift">Beispielkunde GmbH<br>Musterweg 5<br>12345 Musterstadt</div></div>
@@ -1445,9 +1448,10 @@ async function seiteChargen(sel){
       ${c.bewegungen.map(m=>`<tr><td>${fmt(m.datum)}</td><td>${esc(m.text||m.art)}</td><td>${m.beleg_id?`<a href="#/beleg/${m.beleg_id}">${esc(m.nummer||'')}</a>`:''}</td><td class="r" style="color:${m.menge<0?'var(--red)':'var(--green)'}">${m.menge>0?'+':''}${zahl(m.menge)}</td></tr>`).join('')}
       ${c.rechnungen.map(r=>`<tr><td>${fmt(r.datum)}</td><td>berechnet</td><td><a href="#/beleg/${r.id}">${esc(r.nummer||'Entwurf')}</a></td><td></td></tr>`).join('')}</tbody></table>
       <div style="margin-top:14px;display:flex;gap:12px;align-items:center"><b>Fertigung</b>${fs[0]?fortschrittBalken(fs[0]):''}</div>
-      ${fl.length?`<table style="margin-top:6px"><thead><tr><th>Start</th><th>Ende</th><th>Palette</th><th>Arbeitsgang</th><th>Maschine</th><th>Wer</th><th class="r">Gut</th><th class="r">Ausschuss</th><th class="r">Dauer</th><th>Bemerkung</th></tr></thead><tbody>
-      ${fl.map(f=>`<tr><td>${fmt(f.start)} ${f.start.slice(11,16)}</td><td>${f.ende?fmt(f.ende)+' '+f.ende.slice(11,16):`<span class="pill s-open">${f.status==='pause'?'Pause':'läuft'}</span>`}</td><td>${esc(f.palette||'')}</td><td>${esc(f.arbeitsgang)}</td><td>${esc(f.maschine||'')}</td><td>${esc(f.mitarbeiter||'')}</td><td class="r">${f.ende?zahl(f.menge_gut):''}</td><td class="r">${f.menge_ausschuss?zahl(f.menge_ausschuss):''}</td><td class="r">${dauer(f.minuten)}</td><td>${esc(f.bemerkung||'')}</td></tr>`).join('')}</tbody></table>`:'<p class="hinweis">Noch keine Rückmeldung aus der Produktion.</p>'}</div>`;
+      ${fl.length?`<table style="margin-top:6px"><thead><tr><th>Start</th><th>Ende</th><th>Palette</th><th>Arbeitsgang</th><th>Maschine</th><th>Wer</th><th class="r">Gut</th><th class="r">Ausschuss</th><th class="r">Dauer</th><th>Versand</th><th>Bemerkung</th></tr></thead><tbody>
+      ${fl.map(f=>`<tr><td>${fmt(f.start)} ${f.start.slice(11,16)}</td><td>${f.ende?fmt(f.ende)+' '+f.ende.slice(11,16):`<span class="pill s-open">${f.status==='pause'?'Pause':'läuft'}</span>`}</td><td>${esc(f.palette||'')}</td><td>${esc(f.arbeitsgang)}</td><td>${esc(f.maschine||'')}</td><td>${esc(f.mitarbeiter||'')}</td><td class="r">${f.ende?zahl(f.menge_gut):''}</td><td class="r">${f.menge_ausschuss?zahl(f.menge_ausschuss):''}</td><td class="r">${dauer(f.minuten)}</td><td>${!f.ende ? '' : f.freigabe ? '<span class="pill st-verarbeitet">📦 frei</span>' : `<button class="btn ch-frei" data-f="${f.id}">📦 freigeben</button>`}</td><td>${esc(f.bemerkung||'')}</td></tr>`).join('')}</tbody></table>`:'<p class="hinweis">Noch keine Rückmeldung aus der Produktion.</p>'}</div>`;
     $('#chDok').onclick = () => dokumenteDialog('charge', c.id, c.dokumente, () => detail(id), 'Messprotokoll, Werkszeugnis, Prüfbericht …');
+    $$('#chD .ch-frei').forEach(x => x.onclick = async () => { await api(`fertigung/${x.dataset.f}/freigeben`, {body:{an:true}}); toast('Für den Versand freigegeben.'); detail(id); });
     $('#chAus').onclick = () => dialog('Ausschuss buchen', esc('Charge ' + c.chargennr + ' · Rest ' + zahl(c.rest)), `<div class="zeile"><label>Menge</label><input id="auM"></div><div class="zeile"><label>Grund</label><input id="auG" placeholder="z. B. Gewinde ausgerissen"></div>`,
       [['Abbrechen',''], ['Buchen','pri', async () => { await api(`chargen/${c.id}/ausschuss`, {body:{menge:num(document.getElementById('auM').value), grund:document.getElementById('auG').value}}); toast('Ausschuss gebucht.'); laden(); detail(id); }]]);
   };
@@ -1514,9 +1518,10 @@ function mengenAbgleich(wk, abw){
 // ================================================================ Sammel-Lieferschein aus offenen Auftragspositionen
 async function sammelLieferschein(){
   const kunden = await api('offene_positionen');
-  if (!kunden.length) return toast('Keine offenen Auftragspositionen.', true);
-  dialog('Lieferschein aus offenen Aufträgen', 'Schritt 1: Kunde wählen',
-    `<div class="pd-liste">${kunden.map(k => `<button class="btn" data-k="${k.adresse_id}"><b>${esc(k.kurz)}</b> <span class="hinweis">${esc(k.kundennr||'')} · ${k.anzahl} offene Position${k.anzahl==1?'':'en'}</span></button>`).join('')}</div>`, [['Abbrechen','']]);
+  if (!kunden.length){ if (confirm('Keine offenen Auftragspositionen. Leeren Lieferschein ohne Auftrag anlegen?')) location.hash = '#/neu/LS'; return; }
+  dialog('Lieferschein aus offenen Aufträgen', 'Schritt 1: Kunde wählen – der Lieferschein wird mit Auftrag und Charge verknüpft',
+    `<div class="pd-liste">${kunden.map(k => `<button class="btn" data-k="${k.adresse_id}"><b>${esc(k.kurz)}</b> <span class="hinweis">${esc(k.kundennr||'')} · ${k.anzahl} offene Position${k.anzahl==1?'':'en'}</span></button>`).join('')}</div>`,
+    [['Leerer Lieferschein ohne Auftrag','', () => { location.hash = '#/neu/LS'; }], ['Abbrechen','']]);
   document.querySelectorAll('#dBody [data-k]').forEach(b => b.onclick = () => sammelPositionen(+b.dataset.k, kunden.find(k => k.adresse_id === +b.dataset.k)));
 }
 async function sammelPositionen(aid, kunde){
@@ -1526,11 +1531,11 @@ async function sammelPositionen(aid, kunde){
     const kopf = p.ab_id !== ab ? `<tr class="sl-ab"><td colspan="7"><b>${esc(p.ab_nummer)}</b> vom ${fmt(p.ab_datum)}</td></tr>` : ''; ab = p.ab_id;
     const fehlt = p.kundenmaterial && p.im_haus <= 0;
     return kopf + `<tr class="${fehlt ? 'sl-leer' : ''}"><td><input type="checkbox" class="slH" data-i="${i}" ${fehlt ? 'disabled' : ''} style="width:auto"></td>
-      <td>${esc(p.artikelnr||'')}</td><td>${esc(p.text)}</td><td>${p.chargen.length ? esc(p.chargen.join(', ')) : (p.kundenmaterial ? '<span class="hinweis">kein Material im Haus</span>' : '<span class="hinweis">ohne Kundenmaterial</span>')}</td>
+      <td>${esc(p.artikelnr||'')}</td><td>${esc(p.text)}</td><td>${p.chargen.length ? esc(p.chargen.join(', ')) : (p.kundenmaterial ? `<span class="hinweis">${E.ls_nur_freigegeben ? 'noch nichts von der Produktion freigegeben' : 'kein Material im Haus'}</span>` : '<span class="hinweis">ohne Kundenmaterial</span>')}</td>
       <td class="r">${zahl(p.offen)} ${esc(p.me)}</td><td class="r">${p.kundenmaterial ? zahl(p.im_haus) : '–'}</td>
       <td><input class="slM zahl" data-i="${i}" value="${p.vorschlag > 0 ? zahl(p.vorschlag) : ''}" style="width:90px" ${fehlt ? 'disabled' : ''}></td></tr>`; }).join('');
   dialog('Lieferschein aus offenen Aufträgen', esc(`${kunde.kurz} · Positionen anhaken, Menge prüfen`),
-    `<div class="liste" style="max-height:56vh"><table><thead><tr><th></th><th>Artikel</th><th>Bezeichnung</th><th>Charge</th><th class="r">offen</th><th class="r">im Haus</th><th>liefern</th></tr></thead><tbody>${zeilen}</tbody></table></div>
+    `<div class="liste" style="max-height:56vh"><table><thead><tr><th></th><th>Artikel</th><th>Bezeichnung</th><th>Charge</th><th class="r">offen</th><th class="r">${E.ls_nur_freigegeben ? 'freigegeben' : 'im Haus'}</th><th>liefern</th></tr></thead><tbody>${zeilen}</tbody></table></div>
      <div style="display:flex;gap:8px;margin-top:8px"><button class="btn" id="slAlle">Alle</button><button class="btn" id="slKeine">Keine</button><span class="sp"></span><span class="hinweis" id="slInfo"></span></div>`,
     [['‹ Anderer Kunde','', () => { setTimeout(sammelLieferschein); return false; }], ['Abbrechen',''],
      ['Lieferschein erstellen','pri', async () => {
@@ -1568,8 +1573,8 @@ async function produktionZeichnen(box){
     <h3 style="margin:4px 0 8px">Läuft gerade (${d.laufend.length})</h3>
     <div class="ws-raster">${d.laufend.map(karte).join('') || '<p class="hinweis" style="font-size:16px">Gerade läuft nichts. Mit „▶ Starten“ eine Palette anfangen.</p>'}</div>
     ${d.erledigt.length ? `<h3 style="margin:22px 0 8px;color:var(--mute)">Heute / gestern fertig gemeldet</h3>
-    <div class="card"><table><thead><tr><th>Ende</th><th>Charge</th><th>Palette</th><th>Arbeitsgang</th><th>Wer</th><th class="r">Gut</th><th class="r">Ausschuss</th><th class="r">Dauer</th><th></th></tr></thead><tbody>
-    ${d.erledigt.map(f=>`<tr data-id="${f.id}"><td>${fmt(f.ende)} ${new Date(f.ende).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})}</td><td><b>${esc(f.chargennr)}</b> <span class="hinweis">${esc(f.kunde_kurz)}</span></td><td>${esc(f.palette||'')}</td><td>${esc(f.arbeitsgang)}${f.maschine?` <span class="hinweis">${esc(f.maschine)}</span>`:''}</td><td>${esc(f.mitarbeiter||'')}</td><td class="r">${zahl(f.menge_gut)}</td><td class="r" style="color:${f.menge_ausschuss?'var(--red)':''}">${f.menge_ausschuss?zahl(f.menge_ausschuss):''}</td><td class="r">${dauer(f.minuten)}</td><td><button class="btn pd-zur" title="Fertigmeldung zurücknehmen">↶</button></td></tr>`).join('')}</tbody></table></div>` : ''}`;
+    <div class="card"><table><thead><tr><th>Ende</th><th>Charge</th><th>Palette</th><th>Arbeitsgang</th><th>Wer</th><th class="r">Gut</th><th class="r">Ausschuss</th><th class="r">Dauer</th><th>Versand</th><th></th></tr></thead><tbody>
+    ${d.erledigt.map(f=>`<tr data-id="${f.id}"><td>${fmt(f.ende)} ${new Date(f.ende).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})}</td><td><b>${esc(f.chargennr)}</b> <span class="hinweis">${esc(f.kunde_kurz)}</span></td><td>${esc(f.palette||'')}</td><td>${esc(f.arbeitsgang)}${f.maschine?` <span class="hinweis">${esc(f.maschine)}</span>`:''}</td><td>${esc(f.mitarbeiter||'')}</td><td class="r">${zahl(f.menge_gut)}</td><td class="r" style="color:${f.menge_ausschuss?'var(--red)':''}">${f.menge_ausschuss?zahl(f.menge_ausschuss):''}</td><td class="r">${dauer(f.minuten)}</td><td>${f.freigabe ? '<span class="pill st-verarbeitet">📦 frei</span>' : '<button class="btn pd-frei-btn" title="Gutmenge für den Lieferschein freigeben">📦 freigeben</button>'}</td><td><button class="btn pd-zur" title="Fertigmeldung zurücknehmen">↶</button></td></tr>`).join('')}</tbody></table></div>` : ''}`;
   const neu = () => produktionZeichnen(box);
   const finde = el => [...d.laufend, ...d.erledigt].find(f => f.id === +el.closest('[data-id]').dataset.id);
   box.querySelector('#pdNeu').onclick = () => produktionStart(d, neu);
@@ -1580,6 +1585,8 @@ async function produktionZeichnen(box){
   box.querySelectorAll('.pd-weg').forEach(b => b.onclick = () => { const f = finde(b);
     dialog('Start löschen?', esc(`Charge ${f.chargennr} · ${f.arbeitsgang}`), '<p>Nur wenn versehentlich gestartet – es wird nichts gebucht.</p>',
       [['Abbrechen',''], ['Löschen','', async () => { await api('fertigung/'+f.id, {method:'DELETE'}); toast('Gelöscht.'); neu(); }]]); });
+  box.querySelectorAll('.pd-frei-btn').forEach(b => b.onclick = async () => { const f = finde(b);
+    await api(`fertigung/${f.id}/freigeben`, {body:{an:true}}); toast(`${zahl(f.menge_gut)} Stück von Charge ${f.chargennr} für den Versand freigegeben.`); neu(); });
   box.querySelectorAll('.pd-zur').forEach(b => b.onclick = () => { const f = finde(b);
     dialog('Fertigmeldung zurücknehmen?', esc(`Charge ${f.chargennr} · ${f.arbeitsgang}`), `<p>Die Palette läuft danach wieder.${f.menge_ausschuss?` Der gebuchte Ausschuss (${zahl(f.menge_ausschuss)}) wird storniert.`:''}</p>`,
       [['Abbrechen',''], ['↶ Zurücknehmen','pri', async () => { await api(`fertigung/${f.id}/zurueck`, {body:{}}); toast('Zurückgenommen.'); neu(); }]]); });
@@ -1629,11 +1636,13 @@ function produktionEnde(f, fertig){
     `<div class="raster2"><div class="zeile"><label>Gut (${esc(f.me||'Stk')})</label><input id="peG" class="pd-gross" inputmode="decimal" value="${f.menge_plan ? String(f.menge_plan).replace('.',',') : ''}"></div>
      <div class="zeile"><label>Ausschuss</label><input id="peA" class="pd-gross" inputmode="decimal" placeholder="0"></div></div>
      <div class="zeile"><label>Grund (bei Ausschuss)</label><input id="peR"></div><div class="ws-gruende">${AUSSCHUSS_GRUENDE.map(g => `<button class="btn" data-g="${g}">${g}</button>`).join('')}</div>
-     <div class="zeile" style="margin-top:8px"><label>Bemerkung</label><input id="peB" placeholder="optional"></div>`,
+     <div class="zeile" style="margin-top:8px"><label>Bemerkung</label><input id="peB" placeholder="optional"></div>
+     <label class="pd-frei"><input type="checkbox" id="peF" ${f.letzter_gang ? 'checked' : ''}> 📦 <b>Für den Versand freigeben</b> – die Gutmenge darf auf den Lieferschein
+       <span class="hinweis">${f.letzter_gang ? '(letzter Arbeitsgang)' : '(nur wenn danach kein weiterer Arbeitsgang mehr kommt)'}</span></label>`,
     [['Abbrechen',''], ['■ Fertig melden','ok', async () => {
-      const aus = num(document.getElementById('peA').value);
-      const r = await api(`fertigung/${f.id}/beenden`, {body:{menge_gut:num(document.getElementById('peG').value), menge_ausschuss:aus, grund:document.getElementById('peR').value, bemerkung:document.getElementById('peB').value}});
-      toast(`Fertig: ${r.arbeitsgang} · Charge ${r.chargennr} · ${zahl(r.menge_gut)} gut${aus?`, ${zahl(aus)} Ausschuss gebucht`:''}`); fertig(); }]]);
+      const aus = num(document.getElementById('peA').value), frei = document.getElementById('peF').checked;
+      const r = await api(`fertigung/${f.id}/beenden`, {body:{menge_gut:num(document.getElementById('peG').value), menge_ausschuss:aus, grund:document.getElementById('peR').value, bemerkung:document.getElementById('peB').value, freigabe:frei}});
+      toast(`Fertig: ${r.arbeitsgang} · Charge ${r.chargennr} · ${zahl(r.menge_gut)} gut${aus?`, ${zahl(aus)} Ausschuss gebucht`:''}${frei?' · für Versand freigegeben':''}`); fertig(); }]]);
   document.querySelectorAll('#dBody [data-g]').forEach(g => g.onclick = () => { document.getElementById('peR').value = g.dataset.g; });
   setTimeout(() => document.getElementById('peG').select(), 50);
 }
@@ -1644,11 +1653,11 @@ async function seiteProduktion(){
   M().innerHTML = `<div class="kopfzeile"><h1>Produktion</h1><span class="sp"></span><span class="hinweis">Die Werkstatt meldet am Tablet (Login „werkstatt“) – hier siehst du dasselbe live.</span></div>
     <div id="pdBox"></div>
     <div class="card" style="margin-top:16px"><div class="kopfzeile" style="margin-bottom:6px"><b style="font-size:16px">Fortschritt je Charge</b><span class="sp"></span><label class="hinweis"><input type="checkbox" id="pdAlle" style="width:auto"> auch erledigte</label></div>
-    <div class="liste"><table><thead><tr><th>Charge</th><th>Kunde</th><th>Artikel</th><th class="r">Eingang</th><th>Arbeitsgänge</th><th class="r">Ausschuss</th><th class="r">Geliefert</th><th>Status</th></tr></thead><tbody id="pdF"></tbody></table></div></div>`;
+    <div class="liste"><table><thead><tr><th>Charge</th><th>Kunde</th><th>Artikel</th><th class="r">Eingang</th><th>Arbeitsgänge</th><th class="r">Ausschuss</th><th class="r">Freigegeben</th><th class="r">Geliefert</th><th>Status</th></tr></thead><tbody id="pdF"></tbody></table></div></div>`;
   await produktionZeichnen($('#pdBox'));
-  const laden = async () => { let l = await api('produktion/fortschritt'); if (!$('#pdAlle').checked) l = l.filter(c => c.status !== 'fertig' || c.rest > 0);
-    $('#pdF').innerHTML = l.map(c => `<tr class="klick" onclick="location.hash='#/chargen/${c.charge_id}'"><td><b>${esc(c.chargennr)}</b></td><td>${esc(c.kunde_kurz)}</td><td>${esc(c.artikelnr||'')} ${esc(c.artikel_kurz||'')}</td><td class="r">${zahl(c.eingang)}</td><td>${fortschrittBalken(c)}</td><td class="r">${c.ausschuss?zahl(c.ausschuss):''}</td><td class="r">${zahl(c.geliefert)}</td><td><span class="pill ${c.status==='fertig'?'st-verarbeitet':c.status==='in Arbeit'?'s-open':'st-entwurf'}">${c.status}</span></td></tr>`).join('')
-      || '<tr><td colspan="8" class="hinweis">Keine Chargen im Haus.</td></tr>'; };
+  const laden = async () => { let l = await api('produktion/fortschritt'); if (!$('#pdAlle').checked) l = l.filter(c => !['fertig','freigegeben'].includes(c.status) || c.rest > 0);
+    $('#pdF').innerHTML = l.map(c => `<tr class="klick" onclick="location.hash='#/chargen/${c.charge_id}'"><td><b>${esc(c.chargennr)}</b></td><td>${esc(c.kunde_kurz)}</td><td>${esc(c.artikelnr||'')} ${esc(c.artikel_kurz||'')}</td><td class="r">${zahl(c.eingang)}</td><td>${fortschrittBalken(c)}</td><td class="r">${c.ausschuss?zahl(c.ausschuss):''}</td><td class="r">${c.freigegeben?zahl(c.freigegeben):''}</td><td class="r">${zahl(c.geliefert)}</td><td><span class="pill ${c.status==='freigegeben'||c.status==='fertig'?'st-verarbeitet':c.status==='wartet'?'st-entwurf':'s-open'}">${c.status}</span><div class="hinweis" style="font-size:11.5px;margin-top:2px">${esc(c.status_text||'')}</div></td></tr>`).join('')
+      || '<tr><td colspan="9" class="hinweis">Keine Chargen im Haus.</td></tr>'; };
   $('#pdAlle').onchange = laden; await laden();
 }
 

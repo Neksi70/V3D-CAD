@@ -37,8 +37,13 @@ SELECT = """SELECT f.*, c.chargennr, c.adresse_id, c.artikel_id, a.kurz kunde_ku
             LEFT JOIN artikel ar ON ar.id=c.artikel_id LEFT JOIN beleg b ON b.id=c.eingang_beleg_id LEFT JOIN projekt p ON p.id=b.projekt_id"""
 
 
-def _aufbereiten(l):
+def _aufbereiten(l, db=None):
+    plaene = {}
     for f in l:
+        if db is not None:
+            if f["artikel_id"] not in plaene:
+                plaene[f["artikel_id"]] = arbeitsgaenge(db, f["artikel_id"])
+            f["letzter_gang"] = plaene[f["artikel_id"]][-1] == f["arbeitsgang"]
         f["minuten"] = _minuten(f)
         f["status"] = "fertig" if f["ende"] else ("pause" if f["pause_seit"] else "laeuft")
     return l
@@ -48,7 +53,7 @@ def lesen(db, fid):
     f = zeile(db.execute(SELECT + " WHERE f.id=?", (fid,)))
     if not f:
         raise Fehler("Rückmeldung nicht gefunden.")
-    return _aufbereiten([f])[0]
+    return _aufbereiten([f], db)[0]
 
 
 def starten(db, d, benutzer=None):
@@ -99,14 +104,25 @@ def beenden(db, fid, d, benutzer=None):
         raise Fehler("Mengen dürfen nicht negativ sein.")
     if gut + aus <= 0:
         raise Fehler("Bitte Gutmenge und/oder Ausschuss eintragen.")
+    # Plausibilität: je Arbeitsgang nicht mehr melden, als von der Charge eingegangen ist (Tippfehler / falsche Charge)
+    eingang = db.execute("SELECT COALESCE(SUM(menge),0) m FROM charge_bewegung WHERE charge_id=? AND art='eingang'", (f["charge_id"],)).fetchone()["m"]
+    schon = db.execute("""SELECT COALESCE(SUM(COALESCE(menge_gut,0)+COALESCE(menge_ausschuss,0)),0) m FROM fertigung
+                          WHERE charge_id=? AND arbeitsgang=? AND ende IS NOT NULL AND id<>?""", (f["charge_id"], f["arbeitsgang"], fid)).fetchone()["m"]
+    if schon + gut + aus > eingang + 1e-9:
+        raise Fehler(f"Charge {f['chargennr']} hat {eingang:,.0f} Stück; für „{f['arbeitsgang']}“ sind schon {schon:,.0f} gemeldet – "
+                     f"zusammen mit {gut + aus:,.0f} wäre das zu viel. Falsche Charge oder Tippfehler?".replace(",", "."))
+    if "freigabe" in d:
+        freigabe = 1 if d.get("freigabe") else 0
+    else:                       # ohne Angabe: der letzte Arbeitsgang des Arbeitsplans gibt für den Versand frei
+        freigabe = 1 if arbeitsgaenge(db, f["artikel_id"])[-1] == f["arbeitsgang"] else 0
     with transaktion(db):
         ende = jetzt()
         pmin = f["pause_min"] or 0
         if f["pause_seit"]:
             pmin += (_dt.datetime.fromisoformat(ende) - _dt.datetime.fromisoformat(f["pause_seit"])).total_seconds() / 60
         bem = " · ".join(x for x in [f["bemerkung"], (d.get("bemerkung") or "").strip()[:500]] if x) or None
-        db.execute("""UPDATE fertigung SET ende=?, pause_seit=NULL, pause_min=?, menge_gut=?, menge_ausschuss=?, bemerkung=? WHERE id=?""",
-                   (ende, round(pmin, 1), gut, aus, bem, fid))
+        db.execute("""UPDATE fertigung SET ende=?, pause_seit=NULL, pause_min=?, menge_gut=?, menge_ausschuss=?, bemerkung=?, freigabe=? WHERE id=?""",
+                   (ende, round(pmin, 1), gut, aus, bem, freigabe, fid))
         if aus > 0:
             if aus > erp.charge_rest(db, f["charge_id"]) + 1e-9:
                 raise Fehler("Mehr Ausschuss als Kundenmaterial der Charge im Haus ist.")
@@ -114,7 +130,23 @@ def beenden(db, fid, d, benutzer=None):
             db.execute("INSERT INTO charge_bewegung(charge_id,datum,art,menge,text,benutzer) VALUES(?,?,?,?,?,?)",
                        (f["charge_id"], erp.heute(), "ausschuss", -aus,
                         f"Ausschuss {f['arbeitsgang']}{' Palette ' + f['palette'] if f['palette'] else ''}" + (f": {grund}" if grund else ""), benutzer))
-        erp.protokoll(db, benutzer, "fertigung", fid, "beendet", {"gut": gut, "ausschuss": aus})
+        erp.protokoll(db, benutzer, "fertigung", fid, "beendet", {"gut": gut, "ausschuss": aus, "freigabe": freigabe})
+    return lesen(db, fid)
+
+
+def freigeben(db, fid, an=True, benutzer=None):
+    """Gutmenge einer beendeten Rückmeldung nachträglich für den Versand freigeben (oder zurücknehmen)."""
+    f = lesen(db, fid)
+    if not f["ende"]:
+        raise Fehler("Erst fertig melden, dann freigeben.")
+    if not an:
+        verplant = -db.execute("SELECT COALESCE(SUM(menge),0) m FROM charge_bewegung WHERE charge_id=? AND art='lieferung'", (f["charge_id"],)).fetchone()["m"]
+        frei_rest = db.execute("SELECT COALESCE(SUM(menge_gut),0) m FROM fertigung WHERE charge_id=? AND freigabe=1 AND id<>?", (f["charge_id"], fid)).fetchone()["m"]
+        if verplant > frei_rest + 1e-9:
+            raise Fehler("Davon ist schon etwas geliefert – Freigabe kann nicht zurückgenommen werden.")
+    with transaktion(db):
+        db.execute("UPDATE fertigung SET freigabe=? WHERE id=?", (1 if an else 0, fid))
+        erp.protokoll(db, benutzer, "fertigung", fid, "freigegeben" if an else "Freigabe zurückgenommen")
     return lesen(db, fid)
 
 
@@ -127,7 +159,12 @@ def zuruecknehmen(db, fid, benutzer=None):
         if f["menge_ausschuss"]:
             db.execute("INSERT INTO charge_bewegung(charge_id,datum,art,menge,text,benutzer) VALUES(?,?,?,?,?,?)",
                        (f["charge_id"], erp.heute(), "korrektur", f["menge_ausschuss"], f"Storno Ausschuss {f['arbeitsgang']} (Rückmeldung zurückgenommen)", benutzer))
-        db.execute("UPDATE fertigung SET ende=NULL, menge_gut=NULL, menge_ausschuss=NULL WHERE id=?", (fid,))
+        if f.get("freigabe"):
+            verplant = -db.execute("SELECT COALESCE(SUM(menge),0) m FROM charge_bewegung WHERE charge_id=? AND art='lieferung'", (f["charge_id"],)).fetchone()["m"]
+            frei_rest = db.execute("SELECT COALESCE(SUM(menge_gut),0) m FROM fertigung WHERE charge_id=? AND freigabe=1 AND id<>?", (f["charge_id"], fid)).fetchone()["m"]
+            if verplant > frei_rest + 1e-9 and erp.nur_freigegeben(db):
+                raise Fehler("Davon ist schon etwas geliefert – Rückmeldung kann nicht zurückgenommen werden.")
+        db.execute("UPDATE fertigung SET ende=NULL, menge_gut=NULL, menge_ausschuss=NULL, freigabe=0 WHERE id=?", (fid,))
         erp.protokoll(db, benutzer, "fertigung", fid, "zurückgenommen")
     return lesen(db, fid)
 
@@ -155,7 +192,7 @@ def liste(db, charge_id=None, projekt_id=None, von=None, laufend=False, limit=30
     if von:
         sql += " AND (f.ende IS NULL OR f.ende>=?)"
         par.append(von)
-    return _aufbereiten(zeilen(db.execute(sql + f" ORDER BY f.ende IS NOT NULL, f.ende DESC, f.start DESC LIMIT {int(limit)}", par)))
+    return _aufbereiten(zeilen(db.execute(sql + f" ORDER BY f.ende IS NOT NULL, f.ende DESC, f.start DESC LIMIT {int(limit)}", par)), db)
 
 
 def fortschritt(db, charge_ids=None, nur_offen=True):
@@ -186,10 +223,23 @@ def fortschritt(db, charge_ids=None, nur_offen=True):
             verlust += aus
         if not s and charge_ids is None and c["geliefert"] >= c["eingang"] - 1e-9:
             continue
-        status = "fertig" if all(x["fertig"] for x in schritte) else ("in Arbeit" if s else "wartet")
+        frei = db.execute("SELECT COALESCE(SUM(menge_gut),0) m FROM fertigung WHERE charge_id=? AND freigabe=1 AND ende IS NOT NULL", (c["id"],)).fetchone()["m"]
+        ziel = c["eingang"] - c["ausschuss"]
+        naechster = next((x["arbeitsgang"] for x in schritte if not x["fertig"]), None)
+        if frei >= ziel - 1e-9 and ziel > 0:
+            status, text = "freigegeben", "komplett für den Versand freigegeben"
+        elif all(x["fertig"] for x in schritte) and s:
+            status, text = "fertig", "alle Arbeitsgänge fertig"
+        elif frei > 0:
+            status, text = "teilweise frei", f"{frei:,.0f} freigegeben".replace(",", ".") + (f" · als Nächstes: {naechster}" if naechster else "")
+        elif s:
+            status, text = "in Arbeit", " · ".join([x["arbeitsgang"] + " ✓" for x in schritte if x["fertig"]] + ([f"als Nächstes: {naechster}"] if naechster else []))
+        else:
+            status, text = "wartet", f"als Nächstes: {naechster}" if naechster else ""
         out.append(dict(charge_id=c["id"], chargennr=c["chargennr"], kunde_kurz=c["kunde_kurz"], artikelnr=c["artikelnr"], artikel_kurz=c["artikel_kurz"],
                         eingang=c["eingang"], geliefert=c["geliefert"], ausschuss=c["ausschuss"], rest=c["rest"], datum=c["datum"],
-                        status=status, schritte=schritte))
+                        freigegeben=frei, lieferbar=erp.charge_lieferbar(db, c["id"]) if erp.nur_freigegeben(db) else None,
+                        status=status, status_text=text, naechster=naechster, schritte=schritte))
     return out
 
 

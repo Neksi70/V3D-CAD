@@ -68,7 +68,7 @@ ROUTEN = []
 FEHLVERSUCHE = {}      # Anmeldesperre: Schlüssel → (Anzahl, letzter Versuch)
 # Was die Rolle „werkstatt“ (Tablet in der Produktion) darf – sonst nichts
 WERKSTATT_ERLAUBT = re.compile(r"^(GET /api/(ich|grundlagen|einstellungen|werkstatt|produktion(/[a-z]+)?)|POST /api/meilensteine/\d+/(erledigt|hinweis)"
-                               r"|POST /api/produktion/start|POST /api/fertigung/\d+/(pause|weiter|beenden|zurueck)|DELETE /api/fertigung/\d+)$")
+                               r"|POST /api/produktion/start|POST /api/fertigung/\d+/(pause|weiter|beenden|zurueck|freigeben)|DELETE /api/fertigung/\d+)$")
 
 
 def route(methode, muster):
@@ -560,6 +560,11 @@ def r_fertigung_beenden(fid, body, benutzer, **_):
 @route("POST", "/api/fertigung/(?P<fid>\\d+)/zurueck")
 def r_fertigung_zurueck(fid, benutzer, **_):
     return produktion.zuruecknehmen(DB, fid, benutzer)
+
+
+@route("POST", "/api/fertigung/(?P<fid>\\d+)/freigeben")
+def r_fertigung_freigeben(fid, body, benutzer, **_):
+    return produktion.freigeben(DB, fid, bool(body.get("an", True)), benutzer)
 
 
 @route("DELETE", "/api/fertigung/(?P<fid>\\d+)")

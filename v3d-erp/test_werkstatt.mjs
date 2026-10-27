@@ -14,6 +14,7 @@ await pg.close();
 const ctx = await b.newContext({viewport:{width:1024,height:768}});
 pg = await ctx.newPage(); pg.on('pageerror', e=>errs.push('PAGE '+e.message));
 await pg.goto(B); await pg.fill('#lu','werkstatt'); await pg.fill('#lp','werkstatt'); await pg.click('button.pri');
+await pg.waitForSelector('.ws-modus'); await pg.click('.ws-modus [data-m="schritte"]');   // Tablet startet seit 22.10. in „Produktion“
 await pg.waitForSelector('.ws-karte');
 out.karten = await pg.locator('.ws-karte:not(.fertig)').count();
 out.bereiche = await pg.locator('.ws-bereiche [data-b]').allInnerTexts();

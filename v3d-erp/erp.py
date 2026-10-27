@@ -36,7 +36,7 @@ def schema_anlegen(db):
                          ("beleg_position", "charge_nr", "TEXT"), ("beleg_position", "charge_id", "INTEGER"),
                          ("offener_posten", "mahnstufe", "INTEGER NOT NULL DEFAULT 0"), ("offener_posten", "letzte_mahnung", "TEXT"),
                          ("offener_posten", "mahnsperre", "INTEGER NOT NULL DEFAULT 0"),
-                         ("artikel", "arbeitsplan", "TEXT")]:
+                         ("artikel", "arbeitsplan", "TEXT"), ("fertigung", "freigabe", "INTEGER NOT NULL DEFAULT 0")]:
         if sp not in [r["name"] for r in db.execute(f"PRAGMA table_info({tab})")]:
             db.execute(f"ALTER TABLE {tab} ADD COLUMN {sp} {typ}")
     if not db.execute("SELECT 1 FROM mahnstufe LIMIT 1").fetchone():
@@ -127,13 +127,13 @@ def grundlagen_anlegen(db):
 EINSTELLUNGEN = ["firma_name", "firma_zusatz", "strasse", "plz", "ort", "telefon", "email", "web", "ust_id", "steuernr",
                  "handelsregister", "geschaeftsfuehrer", "bank_name", "iban", "bic", "logo",
                  "kopftext_vk", "fusstext_vk", "kopftext_ek", "fusstext_ek", "farbe_haupt", "farbe_akzent", "betriebsstaette",
-                 "arbeitsgaenge", "maschinen"]
+                 "arbeitsgaenge", "maschinen", "ls_nur_freigegeben"]
 STANDARD_EINSTELLUNGEN = dict(
     firma_name="Muster Fertigung GmbH", firma_zusatz="Sondermaschinen · Vorrichtungen · Serienteile",
     strasse="Beispielstraße 1", plz="58089", ort="Hagen", telefon="02331 000000", email="info@muster-fertigung.example",
     web="www.muster-fertigung.example", ust_id="DE000000000", steuernr="", handelsregister="Amtsgericht Hagen HRB 0000",
     geschaeftsfuehrer="Max Mustermann", bank_name="Musterbank Hagen", iban="DE00 0000 0000 0000 0000 00", bic="MUSTDEXXX",
-    arbeitsgaenge="Bohren; Gewinde schneiden; Entgraten; Prüfen; Verpacken", maschinen="",
+    arbeitsgaenge="Bohren; Gewinde schneiden; Entgraten; Prüfen; Verpacken", maschinen="", ls_nur_freigegeben="",
     logo="", kopftext_vk="Vielen Dank für Ihre Anfrage. Gerne bieten wir Ihnen an:",
     fusstext_vk="Für Rückfragen stehen wir Ihnen gern zur Verfügung.", kopftext_ek="Wir bestellen zu den vereinbarten Bedingungen:",
     fusstext_ek="Bitte bestätigen Sie uns Liefertermin und Preis.",
@@ -498,9 +498,11 @@ def belegkette(db, bid):
 
 
 def belege_liste(db, bereich="VK", suche="", belegart="", status=""):
+    # Wareneingang Kundenmaterial gehört für den Anwender zum Einkauf (Daten bleiben in der Verkaufskette AB→WK→LS)
     sql = """SELECT b.id,b.belegart,b.nummer,b.status,b.datum,b.betreff,b.netto,b.brutto,a.kurz adresse_kurz,
                     p.projektnr FROM beleg b JOIN belegart ba ON ba.code=b.belegart JOIN adresse a ON a.id=b.adresse_id
-             LEFT JOIN projekt p ON p.id=b.projekt_id WHERE ba.bereich=?"""
+             LEFT JOIN projekt p ON p.id=b.projekt_id
+             WHERE (CASE WHEN b.belegart='WK' THEN 'EK' ELSE ba.bereich END)=?"""
     p = [bereich]
     if belegart:
         sql += " AND b.belegart=?"
@@ -570,11 +572,24 @@ def beleg_verarbeiten(db, bid, benutzer=None):
             meldungen.append(f"{len(pos)} Charge(n) eingebucht")
         if art["code"] == "LS":
             for p in pos:
+                if p["artikel_id"] and not p["charge_id"] and not p["vorgaenger_pos_id"] and db.execute(
+                        """SELECT 1 FROM charge c WHERE c.adresse_id=? AND c.artikel_id=?
+                           AND (SELECT COALESCE(SUM(menge),0) FROM charge_bewegung WHERE charge_id=c.id) > 0 LIMIT 1""",
+                        (b["adresse_id"], p["artikel_id"])).fetchone():
+                    raise Fehler(f"Position {p['pos']} ist nicht mit Auftrag und Charge verknüpft, obwohl Kundenmaterial im Haus ist. "
+                                 "Bitte den Lieferschein über „Lieferschein aus offenen Aufträgen“ bzw. aus der Auftragsbestätigung erstellen.")
+            je_charge = {}
+            for p in pos:
                 if p["charge_id"]:
-                    rest = charge_rest(db, p["charge_id"])
-                    if p["menge"] > rest + 1e-9:
-                        nr = db.execute("SELECT chargennr FROM charge WHERE id=?", (p["charge_id"],)).fetchone()["chargennr"]
-                        raise Fehler(f"Charge {nr} hat nur noch {rest:g} – Position {p['pos']} will {p['menge']:g}.")
+                    je_charge[p["charge_id"]] = je_charge.get(p["charge_id"], 0) + p["menge"]
+            for cid, m in je_charge.items():
+                lieferbar = charge_lieferbar(db, cid, entwuerfe=False)
+                if m > lieferbar + 1e-9:
+                    nr = db.execute("SELECT chargennr FROM charge WHERE id=?", (cid,)).fetchone()["chargennr"]
+                    grund = "von der Produktion freigegeben" if nur_freigegeben(db) else "im Haus"
+                    raise Fehler(f"Charge {nr}: nur {lieferbar:g} {grund} – der Lieferschein will {m:g}.")
+            for p in pos:
+                if p["charge_id"]:
                     db.execute("INSERT INTO charge_bewegung(charge_id,datum,art,menge,beleg_id,pos_id,text,benutzer) VALUES(?,?,?,?,?,?,?,?)",
                                (p["charge_id"], b["datum"], "lieferung", -p["menge"], bid, p["id"], f"Lieferschein {nummer}", benutzer))
         # Meilensteine im Projekt automatisch erledigen
@@ -689,8 +704,7 @@ def _im_haus(db, ab_pos_id):
     for c in db.execute("""SELECT c.id, c.chargennr FROM charge c JOIN beleg_position wp ON wp.id=c.eingang_pos_id
                            WHERE wp.vorgaenger_pos_id=? ORDER BY c.datum, c.id""", (ab_pos_id,)):
         hat_wk = True
-        rest = charge_rest(db, c["id"]) - db.execute("""SELECT COALESCE(SUM(p.menge),0) m FROM beleg_position p JOIN beleg b ON b.id=p.beleg_id
-                                                         WHERE p.charge_id=? AND b.status='entwurf' AND b.belegart='LS'""", (c["id"],)).fetchone()["m"]
+        rest = charge_lieferbar(db, c["id"])
         if rest > 1e-9:
             summe += rest
             nrn.append(c["chargennr"])
@@ -776,6 +790,25 @@ def charge_rest(db, cid):
     return db.execute("SELECT COALESCE(SUM(menge),0) m FROM charge_bewegung WHERE charge_id=?", (cid,)).fetchone()["m"]
 
 
+def nur_freigegeben(db):
+    r = db.execute("SELECT wert FROM einstellung WHERE schluessel='ls_nur_freigegeben'").fetchone()
+    return bool(r and (r["wert"] or "").strip() not in ("", "0"))
+
+
+def charge_lieferbar(db, cid, entwuerfe=True, ohne_beleg=None):
+    """Was von der Charge auf einen Lieferschein darf: Rest im Haus, abzüglich LS-Entwürfe;
+    mit Einstellung „Lieferschein nur nach Produktionsfreigabe“ höchstens die freigegebene Menge minus bereits Geliefertes."""
+    rest = charge_rest(db, cid)
+    if nur_freigegeben(db):
+        frei = db.execute("SELECT COALESCE(SUM(menge_gut),0) m FROM fertigung WHERE charge_id=? AND freigabe=1 AND ende IS NOT NULL", (cid,)).fetchone()["m"]
+        geliefert = -db.execute("SELECT COALESCE(SUM(menge),0) m FROM charge_bewegung WHERE charge_id=? AND art='lieferung'", (cid,)).fetchone()["m"]
+        rest = min(rest, frei - geliefert)
+    if entwuerfe:
+        rest -= db.execute("""SELECT COALESCE(SUM(p.menge),0) m FROM beleg_position p JOIN beleg b ON b.id=p.beleg_id
+                              WHERE p.charge_id=? AND b.status='entwurf' AND b.belegart='LS' AND b.id IS NOT ?""", (cid, ohne_beleg)).fetchone()["m"]
+    return max(0.0, rest)
+
+
 def _charge_finden_oder_anlegen(db, nr, adresse_id, artikel_id, beleg_id, pos_id, kunden_ls, datum):
     r = db.execute("SELECT id FROM charge WHERE chargennr=? AND adresse_id=? AND artikel_id IS ?", (nr, adresse_id, artikel_id)).fetchone()
     if r:
@@ -792,8 +825,7 @@ def _chargen_zuordnen(db, pos, ab_pos_id):
         chargen = []
     offen, teile = pos["menge"], []
     for c in chargen:
-        rest = charge_rest(db, c["id"]) - db.execute("""SELECT COALESCE(SUM(p.menge),0) m FROM beleg_position p JOIN beleg b ON b.id=p.beleg_id
-                                                         WHERE p.charge_id=? AND b.status='entwurf' AND b.belegart='LS'""", (c["id"],)).fetchone()["m"]
+        rest = charge_lieferbar(db, c["id"])
         if rest <= 0 or offen <= 0:
             continue
         m = min(rest, offen)

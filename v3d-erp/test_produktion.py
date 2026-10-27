@@ -61,7 +61,7 @@ class TestProduktion(unittest.TestCase):
         produktion.beenden(self.db, f3["id"], dict(menge_gut=990))
         p = produktion.fortschritt(self.db, [self.charge])[0]
         self.assertTrue(all(x["fertig"] for x in p["schritte"]), p)
-        self.assertEqual(p["status"], "fertig")
+        self.assertEqual(p["status"], "freigegeben")
         self.assertEqual(p["schritte"][1]["soll"], 990)       # Ausschuss beim Bohren kommt beim Gewinde nicht mehr an
 
     def test_zuruecknehmen_storniert_ausschuss(self):
@@ -88,3 +88,68 @@ class TestProduktion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTommi27(TestProduktion):
+    """Tommis Sprachnachrichten 27.10.: Status, Freigabe für den Versand, verknüpfter Lieferschein, WK im Einkauf."""
+
+    def ab_pos(self):
+        return self.db.execute("SELECT vorgaenger_pos_id p FROM beleg_position WHERE charge_id=?", (self.charge,)).fetchone()["p"]
+
+    def test_zu_viel_gemeldet(self):
+        f = produktion.starten(self.db, dict(charge_id=self.charge, palette="1", arbeitsgang="Bohren"))
+        produktion.beenden(self.db, f["id"], dict(menge_gut=1000))
+        f2 = produktion.starten(self.db, dict(charge_id=self.charge, palette="2", arbeitsgang="Bohren"))
+        with self.assertRaises(erp.Fehler) as e:
+            produktion.beenden(self.db, f2["id"], dict(menge_gut=500))
+        self.assertIn("Falsche Charge", str(e.exception))
+
+    def test_status_text(self):
+        f = produktion.starten(self.db, dict(charge_id=self.charge, arbeitsgang="Bohren"))
+        produktion.beenden(self.db, f["id"], dict(menge_gut=1000))
+        p = produktion.fortschritt(self.db, [self.charge])[0]
+        self.assertEqual(p["status"], "in Arbeit")
+        self.assertIn("Bohren ✓", p["status_text"])
+        self.assertIn("als Nächstes: Gewinde schneiden", p["status_text"])
+        self.assertEqual(produktion.lesen(self.db, f["id"])["freigabe"], 0)     # nicht der letzte Gang
+
+    def test_ls_nur_freigegeben(self):
+        erp.einstellungen_speichern(self.db, dict(ls_nur_freigegeben="1"))
+        ab_id = self.db.execute("SELECT beleg_id FROM beleg_position WHERE id=?", (self.ab_pos(),)).fetchone()["beleg_id"]
+        offen = erp.offene_auftragspositionen(self.db, self.kunde["id"])
+        self.assertEqual(offen[0]["im_haus"], 0)                          # noch nichts freigegeben
+        with self.assertRaises(erp.Fehler):
+            erp.beleg_weiterverarbeiten(self.db, ab_id, "LS")
+        f = produktion.starten(self.db, dict(charge_id=self.charge, arbeitsgang="Bohren"))
+        produktion.beenden(self.db, f["id"], dict(menge_gut=1000))
+        g = produktion.starten(self.db, dict(charge_id=self.charge, palette="1", arbeitsgang="Gewinde schneiden"))
+        produktion.beenden(self.db, g["id"], dict(menge_gut=600))           # letzter Gang → automatisch frei
+        self.assertEqual(erp.offene_auftragspositionen(self.db, self.kunde["id"])[0]["im_haus"], 600)
+        ls = erp.beleg_weiterverarbeiten(self.db, ab_id, "LS")
+        self.assertEqual(sum(p["menge"] for p in ls["positionen"]), 600)
+        ls["positionen"][0]["menge"] = 700                                 # von Hand erhöht → Verarbeiten blockt
+        ls = erp.beleg_speichern(self.db, ls)
+        with self.assertRaises(erp.Fehler) as e:
+            erp.beleg_verarbeiten(self.db, ls["id"])
+        self.assertIn("freigegeben", str(e.exception))
+        ls["positionen"][0]["menge"] = 600
+        erp.beleg_verarbeiten(self.db, erp.beleg_speichern(self.db, ls)["id"])
+        with self.assertRaises(erp.Fehler):                                 # geliefert → Freigabe bleibt
+            produktion.freigeben(self.db, g["id"], False)
+        # nachträglich freigeben
+        h = produktion.starten(self.db, dict(charge_id=self.charge, palette="2", arbeitsgang="Gewinde schneiden"))
+        produktion.beenden(self.db, h["id"], dict(menge_gut=400, freigabe=False))
+        self.assertEqual(erp.charge_lieferbar(self.db, self.charge), 0)
+        produktion.freigeben(self.db, h["id"])
+        self.assertEqual(erp.charge_lieferbar(self.db, self.charge), 400)
+
+    def test_freier_ls_wird_geblockt(self):
+        ls = erp.beleg_speichern(self.db, dict(belegart="LS", adresse_id=self.kunde["id"],
+                                               positionen=[dict(artikel_id=self.art["id"], text="LD", menge=1000, einzelpreis=0.6)]))
+        with self.assertRaises(erp.Fehler) as e:
+            erp.beleg_verarbeiten(self.db, ls["id"])
+        self.assertIn("nicht mit Auftrag und Charge verknüpft", str(e.exception))
+
+    def test_wk_im_einkauf(self):
+        self.assertTrue(any(b["belegart"] == "WK" for b in erp.belege_liste(self.db, "EK")))
+        self.assertFalse(any(b["belegart"] == "WK" for b in erp.belege_liste(self.db, "VK")))
