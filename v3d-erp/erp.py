@@ -36,7 +36,8 @@ def schema_anlegen(db):
                          ("beleg_position", "charge_nr", "TEXT"), ("beleg_position", "charge_id", "INTEGER"),
                          ("offener_posten", "mahnstufe", "INTEGER NOT NULL DEFAULT 0"), ("offener_posten", "letzte_mahnung", "TEXT"),
                          ("offener_posten", "mahnsperre", "INTEGER NOT NULL DEFAULT 0"),
-                         ("artikel", "arbeitsplan", "TEXT"), ("fertigung", "freigabe", "INTEGER NOT NULL DEFAULT 0")]:
+                         ("artikel", "arbeitsplan", "TEXT"), ("fertigung", "freigabe", "INTEGER NOT NULL DEFAULT 0"),
+                         ("beleg", "verpackung", "TEXT")]:
         if sp not in [r["name"] for r in db.execute(f"PRAGMA table_info({tab})")]:
             db.execute(f"ALTER TABLE {tab} ADD COLUMN {sp} {typ}")
     if not db.execute("SELECT 1 FROM mahnstufe LIMIT 1").fetchone():
@@ -127,13 +128,15 @@ def grundlagen_anlegen(db):
 EINSTELLUNGEN = ["firma_name", "firma_zusatz", "strasse", "plz", "ort", "telefon", "email", "web", "ust_id", "steuernr",
                  "handelsregister", "geschaeftsfuehrer", "bank_name", "iban", "bic", "logo",
                  "kopftext_vk", "fusstext_vk", "kopftext_ek", "fusstext_ek", "farbe_haupt", "farbe_akzent", "betriebsstaette",
-                 "arbeitsgaenge", "maschinen", "ls_nur_freigegeben"]
+                 "arbeitsgaenge", "maschinen", "ls_nur_freigegeben",
+                 "verpackungen", "formular"]
 STANDARD_EINSTELLUNGEN = dict(
     firma_name="Muster Fertigung GmbH", firma_zusatz="Sondermaschinen · Vorrichtungen · Serienteile",
     strasse="Beispielstraße 1", plz="58089", ort="Hagen", telefon="02331 000000", email="info@muster-fertigung.example",
     web="www.muster-fertigung.example", ust_id="DE000000000", steuernr="", handelsregister="Amtsgericht Hagen HRB 0000",
     geschaeftsfuehrer="Max Mustermann", bank_name="Musterbank Hagen", iban="DE00 0000 0000 0000 0000 00", bic="MUSTDEXXX",
     arbeitsgaenge="Bohren; Gewinde schneiden; Entgraten; Prüfen; Verpacken", maschinen="", ls_nur_freigegeben="",
+    verpackungen="Europalette; Einwegpalette; Gitterbox; Lochkiste SMB; Schäferkiste; Karton", formular="",
     logo="", kopftext_vk="Vielen Dank für Ihre Anfrage. Gerne bieten wir Ihnen an:",
     fusstext_vk="Für Rückfragen stehen wir Ihnen gern zur Verfügung.", kopftext_ek="Wir bestellen zu den vereinbarten Bedingungen:",
     fusstext_ek="Bitte bestätigen Sie uns Liefertermin und Preis.",
@@ -143,6 +146,21 @@ STANDARD_EINSTELLUNGEN = dict(
 def einstellungen(db):
     werte = {r["schluessel"]: r["wert"] for r in db.execute("SELECT schluessel, wert FROM einstellung")}
     return {k: werte.get(k, STANDARD_EINSTELLUNGEN.get(k, "")) or "" for k in EINSTELLUNGEN}
+
+
+FORMULAR_STANDARD = {"preise": True, "charge": True, "verpackung": False}
+FORMULAR_JE_ART = {"LS": {"preise": False, "verpackung": True}, "WK": {"preise": False}}
+
+
+def formular(db, belegart):
+    """Druckoptionen je Belegart (Einstellungen → Formulare); Lieferschein standardmäßig ohne Preise, mit Verpackung."""
+    o = dict(FORMULAR_STANDARD, **FORMULAR_JE_ART.get(belegart, {}))
+    r = db.execute("SELECT wert FROM einstellung WHERE schluessel='formular'").fetchone()
+    try:
+        o.update({k: bool(v) for k, v in (json.loads(r["wert"]) if r and r["wert"] else {}).get(belegart, {}).items() if k in o})
+    except (ValueError, AttributeError):
+        pass
+    return o
 
 
 def einstellungen_speichern(db, d, benutzer=None):
@@ -430,7 +448,8 @@ def beleg_speichern(db, d, benutzer=None):
     felder = dict(belegart=art["code"], datum=d.get("datum") or heute(), adresse_id=d["adresse_id"],
                   projekt_id=d.get("projekt_id") or None, betreff=d.get("betreff"), ihre_referenz=d.get("ihre_referenz"),
                   kopftext=d.get("kopftext"), fusstext=d.get("fusstext"), zahlungsbed_id=d.get("zahlungsbed_id") or None,
-                  lager_id=d.get("lager_id") or 1, netto=netto, steuer=steuer, brutto=brutto, memo=d.get("memo"))
+                  lager_id=d.get("lager_id") or 1, netto=netto, steuer=steuer, brutto=brutto, memo=d.get("memo"),
+                  verpackung=json.dumps(_verpackung_pruefen(d.get("verpackung")), ensure_ascii=False) if d.get("verpackung") else None)
     with transaktion(db):
         bid = d.get("id")
         if bid:
@@ -454,6 +473,29 @@ def beleg_speichern(db, d, benutzer=None):
     return beleg_lesen(db, bid)
 
 
+def _verpackung_pruefen(liste):
+    out = []
+    for v in liste or []:
+        art = (v.get("art") or "").strip()[:60]
+        try:
+            anzahl = float(str(v.get("anzahl") or 0).replace(",", "."))
+        except ValueError:
+            raise Fehler("Verpackung: Anzahl muss eine Zahl sein.")
+        if art and anzahl > 0:
+            out.append({"art": art, "anzahl": anzahl})
+    return out
+
+
+def verpackung_speichern(db, bid, liste, benutzer=None):
+    """Verpackung/Ladungsträger am Lieferschein – auch nach dem Verarbeiten änderbar (keine Buchung)."""
+    v = _verpackung_pruefen(liste)
+    with transaktion(db):
+        if not db.execute("UPDATE beleg SET verpackung=? WHERE id=?", (json.dumps(v, ensure_ascii=False) if v else None, bid)).rowcount:
+            raise Fehler("Beleg nicht gefunden.")
+        protokoll(db, benutzer, "beleg", bid, "Verpackung", v)
+    return v
+
+
 def beleg_memo(db, bid, memo, benutzer=None):
     with transaktion(db):
         if not db.execute("UPDATE beleg SET memo=? WHERE id=?", (memo, bid)).rowcount:
@@ -472,6 +514,11 @@ def beleg_lesen(db, bid):
     if not b:
         raise Fehler("Beleg nicht gefunden.")
     b["positionen"] = zeilen(db.execute("SELECT * FROM beleg_position WHERE beleg_id=? ORDER BY pos", (bid,)))
+    try:
+        b["verpackung"] = json.loads(b.get("verpackung") or "[]")
+    except ValueError:
+        b["verpackung"] = []
+    b["formular"] = formular(db, b["belegart"])
     b["folgearten"] = [dict(r) for r in db.execute(
         "SELECT f.nach code, ba.name FROM belegart_folge f JOIN belegart ba ON ba.code=f.nach WHERE f.von=? ORDER BY ba.reihenfolge", (b["belegart"],))]
     b["kette"] = belegkette(db, bid)
@@ -536,6 +583,8 @@ def beleg_verarbeiten(db, bid, benutzer=None):
         if art["lager"]:
             gebucht = 0
             for p in pos:
+                if p["charge_id"] or art["code"] == "WK":      # Kundenmaterial gehört dem Kunden – läuft über die Charge, nicht übers eigene Lager
+                    continue
                 a = db.execute("SELECT lagerfuehrung FROM artikel WHERE id=?", (p["artikel_id"],)).fetchone() if p["artikel_id"] else None
                 if a and a["lagerfuehrung"]:
                     db.execute("INSERT INTO lagerbewegung(datum,artikel_id,lager_id,menge,beleg_id,text) VALUES(?,?,?,?,?,?)",
@@ -545,7 +594,7 @@ def beleg_verarbeiten(db, bid, benutzer=None):
                 meldungen.append("Lager gebucht")
             if art["lager"] < 0:
                 for p in pos:
-                    if p["artikel_id"]:
+                    if p["artikel_id"] and not p["charge_id"]:
                         rest = bestand(db, p["artikel_id"])
                         if rest < 0:
                             meldungen.append(f"Achtung: Bestand „{p['text'][:30]}“ jetzt {rest:g}")
@@ -782,6 +831,66 @@ def sammel_lieferschein(db, adresse_id, auswahl, benutzer=None):
     with transaktion(db):
         for ab_id in gruppen:
             db.execute("INSERT OR IGNORE INTO beleg_verknuepfung(vorgaenger_id,nachfolger_id) VALUES(?,?)", (ab_id, neu["id"]))
+    return beleg_lesen(db, neu["id"])
+
+
+
+# ---------------------------------------------------------------- Sammelrechnung aus offenen Lieferscheinen
+def offene_lieferscheine(db, adresse_id=None):
+    """Verarbeitete Lieferscheine mit noch nicht berechneten Positionen. Ohne Kunde: Kunden mit Anzahl."""
+    l = []
+    for b in zeilen(db.execute("""SELECT b.id, b.nummer, b.datum, b.adresse_id, b.ihre_referenz, a.kurz, k.kundennr FROM beleg b
+                                  JOIN adresse a ON a.id=b.adresse_id LEFT JOIN kunde k ON k.adresse_id=a.id
+                                  WHERE b.belegart='LS' AND b.status='verarbeitet'""" + (" AND b.adresse_id=?" if adresse_id else "") + " ORDER BY b.datum, b.id",
+                               (adresse_id,) if adresse_id else ())):
+        pos = [p for p in zeilen(db.execute("SELECT * FROM beleg_position WHERE beleg_id=? ORDER BY pos", (b["id"],))) if not ist_textzeile(p)]
+        offen = [dict(p, offen=offene_menge(db, p["id"], "RE")) for p in pos]
+        offen = [p for p in offen if p["offen"] > 1e-9]
+        if offen:
+            b["positionen"] = offen
+            b["netto"] = round(sum(round(p["offen"] * p["einzelpreis"] * (1 - (p["rabatt_pct"] or 0) / 100), 2) for p in offen), 2)
+            l.append(b)
+    if adresse_id:
+        return l
+    k = {}
+    for b in l:
+        x = k.setdefault(b["adresse_id"], dict(adresse_id=b["adresse_id"], kurz=b["kurz"], kundennr=b["kundennr"], anzahl=0, netto=0.0))
+        x["anzahl"] += 1
+        x["netto"] = round(x["netto"] + b["netto"], 2)
+    return sorted(k.values(), key=lambda x: x["kurz"])
+
+
+def sammel_rechnung(db, adresse_id, ls_ids, benutzer=None):
+    """Eine Rechnung über mehrere Lieferscheine eines Kunden (nur noch nicht berechnete Mengen)."""
+    offen = {b["id"]: b for b in offene_lieferscheine(db, adresse_id)}
+    ls_ids = [int(x) for x in ls_ids or []]
+    if not ls_ids:
+        raise Fehler("Bitte mindestens einen Lieferschein auswählen.")
+    if any(i not in offen for i in ls_ids):
+        raise Fehler("Ein gewählter Lieferschein ist nicht mehr offen – bitte Liste neu laden.")
+    ls_ids.sort(key=lambda i: (offen[i]["datum"], i))
+    pos, projekte, refs = [], set(), set()
+    for i in ls_ids:
+        ls = zeile(db.execute("SELECT * FROM beleg WHERE id=?", (i,)))
+        projekte.add(ls["projekt_id"])
+        refs.add(ls["ihre_referenz"])
+        if len(ls_ids) > 1:
+            pos.append(dict(text=f"Lieferschein {ls['nummer']} vom {_dt.date.fromisoformat(ls['datum']).strftime('%d.%m.%Y')}"
+                                 + (f" (Ihre Bestellung {ls['ihre_referenz']})" if ls["ihre_referenz"] else "") + ":", menge=0, einzelpreis=0))
+        for p in offen[i]["positionen"]:
+            pos.append(dict(artikel_id=p["artikel_id"], text=p["text"], menge=p["offen"], me=p["me"], einzelpreis=p["einzelpreis"],
+                            rabatt_pct=p["rabatt_pct"], steuer_pct=p["steuer_pct"], vorgaenger_pos_id=p["id"],
+                            charge_nr=p["charge_nr"], charge_id=p["charge_id"]))
+    erste = zeile(db.execute("SELECT * FROM beleg WHERE id=?", (ls_ids[0],)))
+    zb = db.execute("SELECT zahlungsbed_id FROM kunde WHERE adresse_id=?", (adresse_id,)).fetchone()
+    neu = beleg_speichern(db, dict(belegart="RE", adresse_id=adresse_id,
+                                   projekt_id=projekte.pop() if len(projekte) == 1 else None,
+                                   ihre_referenz=refs.pop() if len(refs) == 1 else None,
+                                   betreff=erste["betreff"] if len(ls_ids) == 1 else f"Rechnung zu {len(ls_ids)} Lieferscheinen",
+                                   zahlungsbed_id=(zb["zahlungsbed_id"] if zb else None) or erste["zahlungsbed_id"], positionen=pos), benutzer)
+    with transaktion(db):
+        for i in ls_ids:
+            db.execute("INSERT OR IGNORE INTO beleg_verknuepfung(vorgaenger_id,nachfolger_id) VALUES(?,?)", (i, neu["id"]))
     return beleg_lesen(db, neu["id"])
 
 

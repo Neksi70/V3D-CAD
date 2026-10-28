@@ -25,7 +25,7 @@ await S('#bVa').click(); await pg.waitForTimeout(1500);
 out.toastLS = await pg.locator('#toast').innerText();
 out.lsDok = await S('#bDok').innerText();
 await S('#bDok').click(); out.dokListe = (await pg.locator('#dBody').innerText()).split('\n').slice(0,3).join(' | '); await pg.locator('#dFuss .btn').click();
-await pg.keyboard.press('Alt+a'); await pg.waitForSelector('#dlg[open] .druck-vorschau'); out.druckCharge = (await pg.locator('#dlg .druck-vorschau').innerText()).match(/Charge: [^\n]+/g); await pg.locator('#dFuss .btn', {hasText:'Schließen'}).click();
+await pg.keyboard.press('Alt+a'); await pg.waitForSelector('#dlg[open] iframe.pdf-vorschau'); out.druckCharge = await pg.locator('#dlg iframe.pdf-vorschau').getAttribute('src'); await pg.locator('#dFuss .btn', {hasText:'Schließen'}).click();
 await pg.screenshot({path:'/tmp/ch_ls.png', fullPage:true});
 // Chargen-Seite
 await pg.goto(B+'#/chargen'); await pg.waitForSelector('.seite.on #chL tr');

@@ -45,7 +45,7 @@ await S('#bVa').click(); await pg.waitForTimeout(1500);
 out.verarbeitet = await pg.locator('#tabs .rt.on').innerText();
 out.memoMarker = await S('#bMemo').innerText();
 // Druckansicht
-await pg.keyboard.press('Alt+a'); await pg.waitForSelector('#dlg[open] .druck-vorschau'); out.druckansicht = (await pg.locator('#dlg .druck-vorschau').innerText()).slice(0,60).replace(/\n/g,' '); await pg.locator('#dFuss .btn', {hasText:'Schließen'}).click();
+await pg.keyboard.press('Alt+a'); await pg.waitForSelector('#dlg[open] iframe.pdf-vorschau'); out.druckansicht = await pg.locator('#dlg iframe.pdf-vorschau').getAttribute('src'); await pg.locator('#dFuss .btn', {hasText:'Schließen'}).click();
 // Zurück zum Kunden-Reiter: Auswahl bleibt erhalten
 await pg.locator('#tabs .rt', {hasText:'Kunden'}).click(); await pg.waitForTimeout(300);
 out.kundeNochGewaehlt = await S('#al tr.sel').count();

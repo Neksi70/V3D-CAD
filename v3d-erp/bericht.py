@@ -566,10 +566,11 @@ def beleg_pdf(db, bid, pdfa=False):
         c.setFont(F, 8.5)
         c.drawString(r + 4, y, "Pos")
         c.drawString(r + 30, y, "Bezeichnung")
-        c.drawRightString(r + 330, y, "Menge")
-        c.drawString(r + 336, y, "ME")
-        c.drawRightString(r + 420, y, "Einzelpreis €")
-        c.drawRightString(bw - r - 4, y, "Gesamt €")
+        c.drawRightString(MX, y, "Menge")
+        c.drawString(MX + 6, y, "ME")
+        if fo["preise"]:
+            c.drawRightString(r + 420, y, "Einzelpreis €")
+            c.drawRightString(bw - r - 4, y, "Gesamt €")
         return y - 17
 
     def neue_seite():
@@ -578,6 +579,9 @@ def beleg_pdf(db, bid, pdfa=False):
         seite[0] += 1
         return tabellenkopf(kopf_folgeseite())
 
+    fo = b.get("formular") or erp.formular(db, b["belegart"])
+    MX = r + 330 if fo["preise"] else bw - r - 40          # ohne Preise: Menge rechtsbündig ans Ende
+    TB = 230 if fo["preise"] else bw - 2 * r - 130          # Textbreite Bezeichnung
     seite[0] = 1
     if logo:
         iw, ih = logo.getSize()
@@ -660,13 +664,13 @@ def beleg_pdf(db, bid, pdfa=False):
         zeilen_ = []
         z = ""
         for w in text.split():
-            if c.stringWidth(z + " " + w, N, 9) > 230:
+            if c.stringWidth(z + " " + w, N, 9) > TB:
                 zeilen_.append(z)
                 z = w
             else:
                 z = (z + " " + w).strip()
         zeilen_.append(z)
-        if p.get("charge_nr"):
+        if p.get("charge_nr") and fo["charge"]:
             zeilen_.append(f"Charge: {p['charge_nr']}")
         hoehe = 12 * len(zeilen_) + 6
         if y - hoehe < 110:
@@ -679,32 +683,53 @@ def beleg_pdf(db, bid, pdfa=False):
             c.setFillColor(MUTE if t.startswith("Charge:") else TEXT)
             c.drawString(r + 30, y - i * 12, t)
         c.setFillColor(TEXT)
-        c.drawRightString(r + 330, y, menge(p["menge"]))
-        c.drawString(r + 336, y, p["me"] or "")
-        c.drawRightString(r + 420, y, preis4(p["einzelpreis"]))
-        c.drawRightString(bw - r - 4, y, eur(p["gesamt"]))
+        c.drawRightString(MX, y, menge(p["menge"]))
+        c.drawString(MX + 6, y, p["me"] or "")
+        if fo["preise"]:
+            c.drawRightString(r + 420, y, preis4(p["einzelpreis"]))
+            c.drawRightString(bw - r - 4, y, eur(p["gesamt"]))
         y -= hoehe
         c.setStrokeColor(LINIE)
         c.line(r, y + 8, bw - r, y + 8)
-    if y < 190:
-        y = neue_seite()
-    # Summen je Steuersatz
-    saetze = {}
-    for p in b["positionen"]:
-        saetze[p["steuer_pct"]] = saetze.get(p["steuer_pct"], 0) + p["gesamt"]
-    y -= 6
-    c.setFont(N, 9.5)
-    c.drawString(bw - r - 220, y, "Summe netto")
-    c.drawRightString(bw - r - 4, y, eur(b["netto"]) + " €")
-    for s, basis in sorted(saetze.items(), reverse=True):
+    if fo["preise"]:
+        if y < 190:
+            y = neue_seite()
+        # Summen je Steuersatz
+        saetze = {}
+        for p in b["positionen"]:
+            saetze[p["steuer_pct"]] = saetze.get(p["steuer_pct"], 0) + p["gesamt"]
+        y -= 6
+        c.setFont(N, 9.5)
+        c.drawString(bw - r - 220, y, "Summe netto")
+        c.drawRightString(bw - r - 4, y, eur(b["netto"]) + " €")
+        for s, basis in sorted(saetze.items(), reverse=True):
+            y -= 14
+            c.drawString(bw - r - 220, y, f"zzgl. {s:g} % USt. auf {eur(basis)} €")
+            c.drawRightString(bw - r - 4, y, eur(round(basis * s / 100 + 1e-9, 2)) + " €")
+        y -= 18
+        c.setFont(F, 11)
+        c.drawString(bw - r - 220, y, "Gesamtbetrag")
+        c.drawRightString(bw - r - 4, y, eur(b["brutto"]) + " €")
+        y -= 26
+    else:
         y -= 14
-        c.drawString(bw - r - 220, y, f"zzgl. {s:g} % USt. auf {eur(basis)} €")
-        c.drawRightString(bw - r - 4, y, eur(round(basis * s / 100 + 1e-9, 2)) + " €")
-    y -= 18
-    c.setFont(F, 11)
-    c.drawString(bw - r - 220, y, "Gesamtbetrag")
-    c.drawRightString(bw - r - 4, y, eur(b["brutto"]) + " €")
-    y -= 26
+    if fo["verpackung"] and b.get("verpackung"):
+        if y < 150:
+            y = neue_seite()
+        c.setFont(F, 9.5)
+        c.setFillColor(TEXT)
+        lab = "Verpackung / Ladungsträger:"
+        c.drawString(r, y, lab)
+        lx = c.stringWidth(lab, F, 9.5) + 8
+        c.setFont(N, 9.5)
+        c.drawString(r + lx, y, _kuerzen(c, "  ·  ".join(f"{menge(v['anzahl'])} × {v['art']}" for v in b["verpackung"]), bw - 2 * r - lx, N, 9.5))
+        y -= 22
+    if b["belegart"] == "LS":
+        c.setFont(N, 9)
+        c.setFillColor(MUTE)
+        c.drawString(r, y, "Ware erhalten: ________________________   Datum / Unterschrift / Stempel")
+        c.setFillColor(TEXT)
+        y -= 24
     op = erp.zeile(db.execute("SELECT faellig FROM offener_posten WHERE beleg_id=?", (bid,))) if b["status"] == "verarbeitet" else None
     if b.get("zahlungsbed") and b["belegart"] in ("RE", "AN", "AB"):
         y = absatz(f"Zahlungsbedingung: {b['zahlungsbed']}" + (f" – fällig am {_de(op['faellig'])}" if op else ""), y)

@@ -42,7 +42,7 @@ await pg.locator('#dFuss .btn.pri').click(); await pg.waitForSelector('.seite.on
 const lsId = +(await pg.evaluate(() => location.hash)).split('/').pop();
 const ls = await api('belege/' + lsId);
 out.ls = ls.positionen.map(p => `${p.text.slice(0,40)} | ${p.menge} | ${p.charge_nr||''}`);
-await S('#bDa').click(); await pg.waitForSelector('#dlg[open] .druck-vorschau');
+await S('#bDa').click(); await pg.waitForSelector('#dlg[open] iframe.pdf-vorschau');
 await pg.screenshot({path:'/tmp/sl_druck.png'});
 await pg.locator('#dFuss .btn').first().click();
 console.log(JSON.stringify(out, null, 1)); console.log('Fehler:', errs);

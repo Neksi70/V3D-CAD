@@ -112,3 +112,62 @@ class TestSammelLieferschein(Basis):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTommi28(Basis):
+    """Rückmeldung 28.10.: LS ohne Preise, Verpackung, Sammelrechnung, kein Lager-Minus durch Kundenmaterial."""
+
+    def ls_aus(self, ab, menge=None):
+        ls = erp.beleg_weiterverarbeiten(self.db, ab["id"], "LS")
+        if menge:
+            ls["positionen"][0]["menge"] = menge
+            ls = erp.beleg_speichern(self.db, ls)
+        return erp.beleg_verarbeiten(self.db, ls["id"])["beleg"]
+
+    def test_kundenmaterial_kein_lagerminus(self):
+        art = erp.artikel_speichern(self.db, dict(bezeichnung="Komfortventilkörper", vk_preis=0.092, lagerfuehrung=1))
+        ab = self.ab([dict(artikel_id=art["id"], text="KVK", menge=11800, einzelpreis=0.092)])
+        self.wk(ab, [11800], "100075790/60")
+        r = erp.beleg_weiterverarbeiten(self.db, ab["id"], "LS")
+        r = erp.beleg_verarbeiten(self.db, r["id"])
+        self.assertFalse([m for m in r["meldungen"] if "Bestand" in m or "Lager" in m], r["meldungen"])
+        self.assertEqual(erp.bestand(self.db, art["id"]), 0)
+
+    def test_formular_und_verpackung(self):
+        self.assertEqual(erp.formular(self.db, "LS"), {"preise": False, "charge": True, "verpackung": True})
+        self.assertTrue(erp.formular(self.db, "RE")["preise"])
+        erp.einstellungen_speichern(self.db, dict(formular='{"LS": {"preise": true}}'))
+        self.assertTrue(erp.formular(self.db, "LS")["preise"])
+        ab = self.ab([dict(artikel_id=self.a1["id"], text="V", menge=100, einzelpreis=1)])
+        ls = self.ls_aus(ab)
+        v = erp.verpackung_speichern(self.db, ls["id"], [dict(art="Europalette", anzahl="2"), dict(art="Lochkiste SMB", anzahl=40), dict(art="", anzahl=3)])
+        self.assertEqual(v, [{"art": "Europalette", "anzahl": 2.0}, {"art": "Lochkiste SMB", "anzahl": 40.0}])
+        self.assertEqual(erp.beleg_lesen(self.db, ls["id"])["verpackung"][1]["anzahl"], 40)
+        import bericht
+        pdf, _ = bericht.beleg_pdf(self.db, ls["id"])
+        self.assertTrue(pdf.startswith(b"%PDF"))
+
+    def test_sammelrechnung(self):
+        ab1 = self.ab([dict(artikel_id=self.a1["id"], text="Ventilgehäuse", menge=3750, einzelpreis=0.6325)], ref="400003572")
+        ab2 = self.ab([dict(artikel_id=self.a2["id"], text="Ritzel", menge=5000, einzelpreis=0.0742)])
+        ls1 = self.ls_aus(ab1, 2000)
+        ls2 = self.ls_aus(ab1)                                  # Rest 1750
+        ls3 = self.ls_aus(ab2)
+        kunden = erp.offene_lieferscheine(self.db)
+        self.assertEqual(kunden[0]["anzahl"], 3)
+        l = erp.offene_lieferscheine(self.db, self.kunde["id"])
+        self.assertEqual([b["nummer"] for b in l], [ls1["nummer"], ls2["nummer"], ls3["nummer"]])
+        re_ = erp.sammel_rechnung(self.db, self.kunde["id"], [ls3["id"], ls1["id"]], "test")
+        ware = [p for p in re_["positionen"] if not erp.ist_textzeile(p)]
+        self.assertEqual([p["menge"] for p in ware], [2000, 5000])            # nach LS-Datum/Nummer sortiert
+        self.assertTrue(re_["positionen"][0]["text"].startswith(f"Lieferschein {ls1['nummer']}"))
+        self.assertAlmostEqual(re_["netto"], round(2000 * 0.6325, 2) + 5000 * 0.0742, places=2)
+        # Entwurf zählt schon als berechnet? Nein – erst verarbeitete/angelegte RE-Positionen; offene_menge zählt alle nicht stornierten
+        rest = erp.offene_lieferscheine(self.db, self.kunde["id"])
+        self.assertEqual([b["nummer"] for b in rest], [ls2["nummer"]])
+        with self.assertRaises(erp.Fehler):
+            erp.sammel_rechnung(self.db, self.kunde["id"], [ls1["id"]])
+        r = erp.beleg_verarbeiten(self.db, re_["id"])
+        self.assertTrue(r["beleg"]["nummer"].startswith("RE"))
+        kette = {b["nummer"] for b in erp.beleg_lesen(self.db, re_["id"])["kette"]}
+        self.assertTrue({ls1["nummer"], ls3["nummer"]} <= kette)

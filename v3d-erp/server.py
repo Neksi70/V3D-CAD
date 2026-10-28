@@ -510,6 +510,21 @@ def r_sammel_ls(body, benutzer, **_):
     return erp.sammel_lieferschein(DB, int(body.get("adresse_id") or 0), body.get("auswahl") or [], benutzer)
 
 
+@route("POST", "/api/belege/(?P<bid>\\d+)/verpackung")
+def r_verpackung(bid, body, benutzer, **_):
+    return erp.verpackung_speichern(DB, bid, body.get("verpackung") or [], benutzer)
+
+
+@route("GET", "/api/offene_lieferscheine")
+def r_offene_ls(q, **_):
+    return erp.offene_lieferscheine(DB, int(q["adresse"]) if q.get("adresse") else None)
+
+
+@route("POST", "/api/rechnung/sammel")
+def r_sammel_re(body, benutzer, **_):
+    return erp.sammel_rechnung(DB, int(body.get("adresse_id") or 0), body.get("lieferscheine") or [], benutzer)
+
+
 # ---------------------------------------------------------------- Produktion (Rückmeldung je Palette/Charge)
 @route("GET", "/api/produktion")
 def r_produktion(q, **_):
