@@ -127,8 +127,9 @@ class Projekt:
             for sch in ("flaeche", "von"):
                 if e.get(sch) is not None:
                     dazu("koerper", e[sch])
-            for nr in e.get("aus") or []:
-                dazu("koerper", nr)
+            if isinstance(e.get("aus"), list):          # "aus" ist sonst der Schalter „Schritt aus“
+                for nr in e["aus"]:
+                    dazu("koerper", nr)
         return aus
 
     def _koerper_stand(self):
