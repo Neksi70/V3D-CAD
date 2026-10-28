@@ -30,10 +30,10 @@ await pg.evaluate(() => {
 await pg.evaluate(async () => { await _mfInit(); });
 
 const varianten = [
-  { name: 'Standard (Vasenmodus)', p: {} },
-  { name: 'Fertige Wand',          p: { druck: 'wand' } },
+  { name: 'Standard', p: {} },
+  { name: 'Dünne Wand 0,8',        p: { wand: 0.8 } },
   { name: 'Ø 31, groß, 7 Zungen',  p: { licht: 31, hoehe: 150, breite: 100, zungen: 7, scheite: 10, dicke: 20 } },
-  { name: 'Schmal, viel Drall',    p: { breite: 48, drall: -80, zTief: 40, neig: 40, druck: 'wand', wand: 2 } },
+  { name: 'Schmal, viel Drall',    p: { breite: 48, drall: -80, zTief: 40, neig: 40, wand: 2 } },
   { name: 'Glatt, kurze Scheite',  p: { zTief: 0, rinde: 0, laenge: 10, scheite: 4, seed: 99 } },
 ];
 
@@ -85,7 +85,7 @@ for (const v of varianten) {
     const res = { ms: Math.round(ms), fParts: F.parts, bParts: B.parts, fVol: Math.round(F.vol), bVol: Math.round(B.vol),
       fYmin: +F.yMin.toFixed(3), bYmin: +B.yMin.toFixed(3), fH: +F.yMax.toFixed(1), Hf: +d.Hf.toFixed(1),
       muldeHit, kollision: +kollision.toFixed(3), kragenMin: +kragenMin.toFixed(2), Rci: +d.Rci.toFixed(2), Rc: +d.Rc.toFixed(2),
-      ueberhangAnteil: +(schlecht / gesamt * 100).toFixed(3), worst: +worst.toFixed(1), fTris: F.tris, bTris: B.tris, vase: d.vase };
+      ueberhangAnteil: +(schlecht / gesamt * 100).toFixed(3), worst: +worst.toFixed(1), fTris: F.tris, bTris: B.tris };
     F.mf.delete(); B.mf.delete();
     return res;
   }, v.p);
@@ -96,21 +96,22 @@ for (const v of varianten) {
   ok(v.name + ': Flammenhöhe', Math.abs(r.fH - r.Hf) < 0.6, [r.fH, r.Hf]);
   ok(v.name + ': Mulde frei', r.muldeHit === 0, r.muldeHit);
   ok(v.name + ': Flamme berührt Sockel nicht', r.kollision < 0.01, r.kollision);
-  ok(v.name + ': Kragen passt', r.vase ? Math.abs(r.kragenMin - r.Rc) < 0.1 : r.kragenMin >= r.Rci - 0.05, [r.kragenMin, r.Rci]);
+  ok(v.name + ': Kragen passt', r.kragenMin >= r.Rci - 0.05, [r.kragenMin, r.Rci]);
   ok(v.name + ': Überhang ≤ 57° (Fläche < 0,5 %)', r.ueberhangAnteil < 0.5, [r.ueberhangAnteil, r.worst]);
 }
 
-// 8. Standard-Flamme ist hohl: in der Mitte vom Boden bis 30 mm kein Material, Hohlraum ≥ Teelicht-Ø
-{
-  const r = await pg.evaluate(() => {
-    Object.assign(_lgfP, _LGF_DEF);
+// 8. Flamme ist IMMER hohl: im Teelicht-Raum (Ø wie eingestellt, 30 mm hoch) kein Material —
+//    auch mit alten gespeicherten Werten (druck: 'vase' gab es bis v1.18.276)
+for (const v of [{ name: 'Standard', p: {} }, { name: 'Ø 31, Wand 0,8', p: { licht: 31, wand: 0.8 } }, { name: 'alter Wert druck=vase', p: { druck: 'vase' } }]) {
+  const r = await pg.evaluate(p => {
+    Object.assign(_lgfP, _LGF_DEF, p);
     const w = _mfWasm, d = _lgfDims(_lgfP), fl = _lgfFlameBuild(w, _lgfP, d, 'fein');
     const mf = _mfFromSoup(w, fl.geo.toNonIndexed().attributes.position.array);
-    const D = _lgfP.licht, probe = w.Manifold.cylinder(30, D / 2, D / 2, 64, false).rotate([-90, 0, 0]);
+    const D = Math.min(37, Math.max(31, _lgfP.licht)), probe = w.Manifold.cylinder(30, D / 2, D / 2, 64, false).rotate([-90, 0, 0]);
     const hit = mf.intersect(probe), v = hit.volume(); hit.delete(); probe.delete(); mf.delete();
-    return { druck: _LGF_DEF.druck, materialImTeelichtRaum: +v.toFixed(3) };
-  });
-  ok('Standard-Flamme hohl, Teelicht passt hinein', r.druck === 'wand' && r.materialImTeelichtRaum < 0.01, r);
+    return { materialImTeelichtRaum: +v.toFixed(3) };
+  }, v.p);
+  ok('Flamme hohl, Teelicht passt (' + v.name + ')', r.materialImTeelichtRaum < 0.01, r);
 }
 
 // 7. Geist: Teile einzeln dicht, unten eben; zusammengesteckt nichts überschneidet sich
