@@ -41,8 +41,8 @@ const reId = +(await pg.evaluate(() => location.hash)).split('/').pop();
 const re = await api('belege/' + reId);
 out.re = [re.belegart, re.netto, re.positionen.map(p => `${p.text.slice(0,30)}|${p.menge}`)];
 // Formular-Einstellung: Preise auf LS wieder an
-await pg.goto(B + '#/einstellungen'); await pg.waitForSelector('.seite.on .foC');
-await S('.foC[data-a="LS"][data-o="preise"]').check(); await S('#eSp').click(); await pg.waitForTimeout(600);
+await pg.goto(B + '#/formulare/LS'); await pg.waitForSelector('.seite.on #foPr');
+await S('#foPr').check(); await S('#foSp').click(); await pg.waitForTimeout(600);
 out.formular = (await api('einstellungen')).formular;
 console.log(JSON.stringify(out, null, 1)); console.log('Fehler:', errs);
 await b.close();

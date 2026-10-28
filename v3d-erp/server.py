@@ -515,6 +515,21 @@ def r_verpackung(bid, body, benutzer, **_):
     return erp.verpackung_speichern(DB, bid, body.get("verpackung") or [], benutzer)
 
 
+@route("POST", "/api/formular/vorschau")
+def r_formular_vorschau(body, **_):
+    art = body.get("belegart") or "LS"
+    r = DB.execute("""SELECT id FROM beleg WHERE belegart=? ORDER BY status='verarbeitet' DESC, id DESC LIMIT 1""", (art,)).fetchone()
+    if not r:
+        raise erp.Fehler("Für die Vorschau gibt es noch keinen Beleg dieser Art – bitte erst einen anlegen.")
+    pdf, name = bericht.beleg_pdf(DB, r["id"], fo=erp.formular(DB, art, body.get("formular") or {}))
+    return {"__datei": pdf, "typ": "application/pdf", "name": "Vorschau_" + name}
+
+
+@route("GET", "/api/formular/(?P<art>[A-Z]{2})")
+def r_formular(art, **_):
+    return {"formular": erp.formular(DB, art), "spalten": erp.SPALTEN, "bloecke": erp.BLOECKE}
+
+
 @route("GET", "/api/offene_lieferscheine")
 def r_offene_ls(q, **_):
     return erp.offene_lieferscheine(DB, int(q["adresse"]) if q.get("adresse") else None)

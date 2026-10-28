@@ -519,26 +519,59 @@ def _schriften():
     return _SCHRIFT
 
 
-def beleg_pdf(db, bid, pdfa=False):
+def beleg_pdf(db, bid, pdfa=False, fo=None):
+    """Beleg als A4-PDF nach dem Formular-Baukasten (erp.formular): Spalten, Blöcke, Titel, Zusatztext, Schriftgröße, Briefpapier."""
     from reportlab.lib.pagesizes import A4 as A4H
+    from reportlab.lib.units import mm
     N, F = _schriften()
     b = erp.beleg_lesen(db, bid)
+    fo = fo or b.get("formular") or erp.formular(db, b["belegart"])
+    bl = fo["bloecke"]
     e = erp.einstellungen(db)
     a = erp.adresse_lesen(db, b["adresse_id"])
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4H, pageCompression=1, initialFontName=N, initialFontSize=9)
     bw, bh = A4H
     r = 56
-    c.setTitle(f"{b['belegart_name']} {b['nummer'] or 'Entwurf'}")
+    gs = fo["schrift"]                                       # Grundschrift der Positionen
+    titel = fo.get("titel") or b["belegart_name"]
+    c.setTitle(f"{titel} {b['nummer'] or 'Entwurf'}")
     c.setAuthor(e.get("firma_name") or "")
     haupt = HexColor(e.get("farbe_haupt") or "#004aad")
     logo = Bericht({"projektnr": "", "titel": ""}, e).logo
     eur = lambda v: f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     preis4 = lambda v: eur(v) if round(v, 2) == round(v, 4) else f"{v:,.4f}".rstrip("0").replace(",", "X").replace(".", ",").replace("X", ".")
     menge = lambda v: f"{v:,.3f}".rstrip("0").rstrip(".").replace(",", "X").replace(".", ",").replace("X", ".") if v % 1 else f"{int(v):,}".replace(",", ".")
-    seite = [0]
+    oben = bh - fo["rand_oben"] * mm if fo["briefpapier"] else bh - 40
+    unten = fo["rand_unten"] * mm if fo["briefpapier"] else 110
+    seite = [1]
+    artnr = {x["id"]: x["artikelnr"] for x in db.execute("SELECT id, artikelnr FROM artikel")}
+
+    # ---- Spalten aus dem Baukasten: Breite, Ausrichtung, Inhalt
+    BREITE = {"pos": 24, "artikelnr": 62, "menge": 52, "me": 30, "einzelpreis": 66, "rabatt": 44, "gesamt": 70}
+    RECHTS = {"menge", "einzelpreis", "rabatt", "gesamt"}
+    sp = [x for x in fo["spalten"] if x["an"] and (fo["preise"] or x["key"] not in ("einzelpreis", "rabatt", "gesamt"))]
+    if not any(x["key"] == "text" for x in sp):
+        sp.insert(min(1, len(sp)), {"key": "text", "titel": "Bezeichnung", "an": True})
+    frei = bw - 2 * r - sum(BREITE.get(x["key"], 0) for x in sp)
+    xpos, x0 = {}, r
+    for x in sp:
+        w = BREITE.get(x["key"], frei)
+        xpos[x["key"]] = (x0, w)
+        x0 += w
+    TB = xpos["text"][1] - 8
+
+    def zelle(key, p, lfd):
+        return {"pos": str(lfd), "artikelnr": artnr.get(p["artikel_id"], ""), "menge": menge(p["menge"]), "me": p["me"] or "",
+                "einzelpreis": preis4(p["einzelpreis"]), "rabatt": f"{p['rabatt_pct']:g}" if p.get("rabatt_pct") else "",
+                "gesamt": eur(p["gesamt"])}.get(key, "")
 
     def fuss():
+        if fo["briefpapier"]:
+            c.setFont(N, 7)
+            c.setFillColor(MUTE)
+            c.drawRightString(bw - r, unten - 14, f"Seite {seite[0]}")
+            return
         c.setStrokeColor(LINIE)
         c.line(r, 62, bw - r, 62)
         spalten = [[e.get("firma_name"), e.get("strasse"), f"{e.get('plz', '')} {e.get('ort', '')}".strip()],
@@ -548,29 +581,28 @@ def beleg_pdf(db, bid, pdfa=False):
         c.setFont(N, 6.8)
         c.setFillColor(MUTE)
         breite = (bw - 2 * r) / 4
-        for i, sp in enumerate(spalten):
-            for j, t in enumerate([x for x in sp if x]):
+        for i, spx in enumerate(spalten):
+            for j, t in enumerate([x for x in spx if x]):
                 c.drawString(r + i * breite, 52 - j * 9, _kuerzen(c, t, breite - 6, N, 6.8))
         c.drawRightString(bw - r, 70, f"Seite {seite[0]}")
 
     def kopf_folgeseite():
         c.setFont(N, 8.5)
         c.setFillColor(MUTE)
-        c.drawString(r, bh - 50, f"{b['belegart_name']} {b['nummer'] or 'Entwurf'} vom {_de(b['datum'])} – Fortsetzung")
-        return bh - 80
+        c.drawString(r, oben - 10, f"{titel} {b['nummer'] or 'Entwurf'} vom {_de(b['datum'])} – Fortsetzung")
+        return oben - 40
 
     def tabellenkopf(y):
         c.setFillColor(HexColor("#eef1f6"))
         c.rect(r, y - 5, bw - 2 * r, 16, stroke=0, fill=1)
         c.setFillColor(TEXT)
         c.setFont(F, 8.5)
-        c.drawString(r + 4, y, "Pos")
-        c.drawString(r + 30, y, "Bezeichnung")
-        c.drawRightString(MX, y, "Menge")
-        c.drawString(MX + 6, y, "ME")
-        if fo["preise"]:
-            c.drawRightString(r + 420, y, "Einzelpreis €")
-            c.drawRightString(bw - r - 4, y, "Gesamt €")
+        for x in sp:
+            x0_, w = xpos[x["key"]]
+            if x["key"] in RECHTS:
+                c.drawRightString(x0_ + w - 4, y, _kuerzen(c, x["titel"], w - 4, F, 8.5))
+            else:
+                c.drawString(x0_ + 4, y, _kuerzen(c, x["titel"], w - 6, F, 8.5))
         return y - 17
 
     def neue_seite():
@@ -579,25 +611,24 @@ def beleg_pdf(db, bid, pdfa=False):
         seite[0] += 1
         return tabellenkopf(kopf_folgeseite())
 
-    fo = b.get("formular") or erp.formular(db, b["belegart"])
-    MX = r + 330 if fo["preise"] else bw - r - 40          # ohne Preise: Menge rechtsbündig ans Ende
-    TB = 230 if fo["preise"] else bw - 2 * r - 130          # Textbreite Bezeichnung
-    seite[0] = 1
-    if logo:
-        iw, ih = logo.getSize()
-        c.drawImage(logo, bw - r - iw * 46 / ih, bh - 40 - 46, iw * 46 / ih, 46, mask="auto")
-    else:
-        c.setFont(F, 15)
-        c.setFillColor(TEXT)
-        c.drawRightString(bw - r, bh - 60, e.get("firma_name") or "")
+    # ---- Briefkopf (entfällt bei Briefpapier)
+    if not fo["briefpapier"]:
+        if logo:
+            iw, ih = logo.getSize()
+            c.drawImage(logo, bw - r - iw * 46 / ih, bh - 40 - 46, iw * 46 / ih, 46, mask="auto")
+        else:
+            c.setFont(F, 15)
+            c.setFillColor(TEXT)
+            c.drawRightString(bw - r, bh - 60, e.get("firma_name") or "")
+    ay = (oben - 108) if fo["briefpapier"] else bh - 148
     c.setFont(N, 7.2)
     c.setFillColor(MUTE)
-    c.drawString(r, bh - 148, _kuerzen(c, " · ".join(x for x in [e.get("firma_name"), e.get("strasse"), f"{e.get('plz','')} {e.get('ort','')}".strip()] if x), 240, N, 7.2))
+    c.drawString(r, ay, _kuerzen(c, " · ".join(x for x in [e.get("firma_name"), e.get("strasse"), f"{e.get('plz','')} {e.get('ort','')}".strip()] if x), 240, N, 7.2))
     c.setStrokeColor(MUTE)
-    c.line(r, bh - 151, r + 240, bh - 151)
+    c.line(r, ay - 3, r + 240, ay - 3)
     c.setFillColor(TEXT)
     c.setFont(N, 10.5)
-    y = bh - 168
+    y = ay - 20
     for z in [a["name1"], a.get("name2"), a.get("strasse"), f"{a.get('plz') or ''} {a.get('ort') or ''}".strip(), a.get("land") if a.get("land") not in (None, "", "DE") else None]:
         if z:
             c.drawString(r, y, z)
@@ -607,13 +638,13 @@ def beleg_pdf(db, bid, pdfa=False):
         info.append(("Kundennr.", b["kundennr"]))
     if b.get("lieferantennr"):
         info.append(("Lieferantennr.", b["lieferantennr"]))
-    if b.get("ihre_referenz"):
+    if b.get("ihre_referenz") and bl["referenz"]:
         info.append(("Ihr Lieferschein" if b["belegart"] == "WK" else "Ihre Bestellung" if b["bereich"] == "VK" else "Unsere Referenz", b["ihre_referenz"]))
     if b.get("projektnr"):
         info.append(("Projekt", b["projektnr"]))
     if a.get("ust_id") and b["belegart"] in ("RE", "GS"):
         info.append(("Ihre USt-IdNr.", a["ust_id"]))
-    iy = bh - 160
+    iy = ay - 12
     c.setFont(N, 8.8)
     for k, v in info:
         c.setFillColor(MUTE)
@@ -624,77 +655,96 @@ def beleg_pdf(db, bid, pdfa=False):
     y = min(y, iy) - 30
     c.setFont(F, 14)
     c.setFillColor(haupt)
-    c.drawString(r, y, f"{b['belegart_name']} {b['nummer'] or ''}".strip())
+    c.drawString(r, y, f"{titel} {b['nummer'] or ''}".strip())
     c.setFillColor(TEXT)
     y -= 18
-    if b.get("betreff"):
+    if b.get("betreff") and bl["betreff"]:
         c.setFont(F, 10)
         c.drawString(r, y, _kuerzen(c, b["betreff"], bw - 2 * r, F, 10))
         y -= 16
 
-    def absatz(text, y, groesse=9.5):
-        c.setFont(N, groesse)
+    def absatz(text, y, groesse=9.5, font=None):
+        """Fließtext über die volle Breite, bricht bei Bedarf auf eine Folgeseite um."""
+        font = font or N
+        zeilen_ = []
         for ab in (text or "").split("\n"):
             z = ""
             for w in ab.split():
-                if c.stringWidth(z + " " + w, N, groesse) > bw - 2 * r:
-                    c.drawString(r, y, z)
-                    y -= groesse + 4
+                if c.stringWidth(z + " " + w, font, groesse) > bw - 2 * r:
+                    zeilen_.append(z)
                     z = w
                 else:
                     z = (z + " " + w).strip()
+            zeilen_.append(z)
+        for z in zeilen_:
+            if y < unten:
+                fuss()
+                c.showPage()
+                seite[0] += 1
+                y = kopf_folgeseite()
+            c.setFont(font, groesse)
+            c.setFillColor(TEXT)
             c.drawString(r, y, z)
             y -= groesse + 4
         return y
 
-    if b.get("kopftext"):
+    if b.get("kopftext") and bl["kopftext"]:
         y = absatz(b["kopftext"], y) - 6
     y = tabellenkopf(y)
     lfd = 0
     for p in b["positionen"]:
         if erp.ist_textzeile(p):
-            if y - 20 < 110:
+            if y - 20 < unten:
                 y = neue_seite()
-            c.setFont(F, 9)
+            c.setFont(F, gs)
             c.setFillColor(TEXT)
-            c.drawString(r + 30, y, _kuerzen(c, p["text"], bw - 2 * r - 40, F, 9))
-            y -= 18
+            c.drawString(xpos["text"][0] + 4, y, _kuerzen(c, p["text"], bw - r - xpos["text"][0] - 8, F, gs))
+            y -= gs + 9
             continue
-        text = p["text"] + (f"  (Rabatt {p['rabatt_pct']:g} %)" if p.get("rabatt_pct") else "")
+        text = p["text"] + (f"  (Rabatt {p['rabatt_pct']:g} %)" if p.get("rabatt_pct") and not any(x["key"] == "rabatt" for x in sp) and fo["preise"] else "")
         zeilen_ = []
         z = ""
         for w in text.split():
-            if c.stringWidth(z + " " + w, N, 9) > TB:
+            if c.stringWidth(z + " " + w, N, gs) > TB:
                 zeilen_.append(z)
                 z = w
             else:
                 z = (z + " " + w).strip()
         zeilen_.append(z)
-        if p.get("charge_nr") and fo["charge"]:
-            zeilen_.append(f"Charge: {p['charge_nr']}")
-        hoehe = 12 * len(zeilen_) + 6
-        if y - hoehe < 110:
+        nebenzeilen = []
+        if p.get("charge_nr") and bl["charge"]:
+            nebenzeilen.append(f"Charge: {p['charge_nr']}")
+        if bl["zusatzfelder"]:
+            nebenzeilen += [f"{k}: {v}" for k, v in (p.get("zusatz") or {}).items()]
+        hoehe = (gs + 3) * len(zeilen_) + (gs + 2) * len(nebenzeilen) + 6
+        if y - hoehe < unten:
             y = neue_seite()
-        c.setFont(N, 9)
-        c.setFillColor(TEXT)
         lfd += 1
-        c.drawString(r + 4, y, str(lfd))
-        for i, t in enumerate(zeilen_):
-            c.setFillColor(MUTE if t.startswith("Charge:") else TEXT)
-            c.drawString(r + 30, y - i * 12, t)
         c.setFillColor(TEXT)
-        c.drawRightString(MX, y, menge(p["menge"]))
-        c.drawString(MX + 6, y, p["me"] or "")
-        if fo["preise"]:
-            c.drawRightString(r + 420, y, preis4(p["einzelpreis"]))
-            c.drawRightString(bw - r - 4, y, eur(p["gesamt"]))
+        c.setFont(N, gs)
+        for x in sp:
+            if x["key"] == "text":
+                continue
+            x0_, w = xpos[x["key"]]
+            t = zelle(x["key"], p, lfd)
+            if x["key"] in RECHTS:
+                c.drawRightString(x0_ + w - 4, y, t)
+            else:
+                c.drawString(x0_ + 4, y, _kuerzen(c, t, w - 6, N, gs))
+        tx = xpos["text"][0] + 4
+        for i, t in enumerate(zeilen_):
+            c.drawString(tx, y - i * (gs + 3), t)
+        c.setFillColor(MUTE)
+        c.setFont(N, gs - 1)
+        for i, t in enumerate(nebenzeilen):
+            c.drawString(tx, y - len(zeilen_) * (gs + 3) - i * (gs + 2), _kuerzen(c, t, TB, N, gs - 1))
+        c.setFillColor(TEXT)
         y -= hoehe
         c.setStrokeColor(LINIE)
         c.line(r, y + 8, bw - r, y + 8)
     if fo["preise"]:
-        if y < 190:
+        if y < unten + 80:
             y = neue_seite()
-        # Summen je Steuersatz
         saetze = {}
         for p in b["positionen"]:
             saetze[p["steuer_pct"]] = saetze.get(p["steuer_pct"], 0) + p["gesamt"]
@@ -702,10 +752,10 @@ def beleg_pdf(db, bid, pdfa=False):
         c.setFont(N, 9.5)
         c.drawString(bw - r - 220, y, "Summe netto")
         c.drawRightString(bw - r - 4, y, eur(b["netto"]) + " €")
-        for s, basis in sorted(saetze.items(), reverse=True):
+        for st, basis in sorted(saetze.items(), reverse=True):
             y -= 14
-            c.drawString(bw - r - 220, y, f"zzgl. {s:g} % USt. auf {eur(basis)} €")
-            c.drawRightString(bw - r - 4, y, eur(round(basis * s / 100 + 1e-9, 2)) + " €")
+            c.drawString(bw - r - 220, y, f"zzgl. {st:g} % USt. auf {eur(basis)} €")
+            c.drawRightString(bw - r - 4, y, eur(round(basis * st / 100 + 1e-9, 2)) + " €")
         y -= 18
         c.setFont(F, 11)
         c.drawString(bw - r - 220, y, "Gesamtbetrag")
@@ -713,8 +763,8 @@ def beleg_pdf(db, bid, pdfa=False):
         y -= 26
     else:
         y -= 14
-    if fo["verpackung"] and b.get("verpackung"):
-        if y < 150:
+    if bl["verpackung"] and b.get("verpackung"):
+        if y < unten + 40:
             y = neue_seite()
         c.setFont(F, 9.5)
         c.setFillColor(TEXT)
@@ -724,21 +774,25 @@ def beleg_pdf(db, bid, pdfa=False):
         c.setFont(N, 9.5)
         c.drawString(r + lx, y, _kuerzen(c, "  ·  ".join(f"{menge(v['anzahl'])} × {v['art']}" for v in b["verpackung"]), bw - 2 * r - lx, N, 9.5))
         y -= 22
-    if b["belegart"] == "LS":
+    if fo.get("zusatztext"):
+        y = absatz(fo["zusatztext"], y) - 4
+    op = erp.zeile(db.execute("SELECT faellig FROM offener_posten WHERE beleg_id=?", (bid,))) if b["status"] == "verarbeitet" else None
+    if b.get("zahlungsbed") and b["belegart"] in ("RE", "AN", "AB") and bl["zahlungsbed"]:
+        y = absatz(f"Zahlungsbedingung: {b['zahlungsbed']}" + (f" – fällig am {_de(op['faellig'])}" if op else ""), y)
+    if b["belegart"] == "RE" and e.get("iban") and bl["bank"]:
+        y = absatz(f"Bitte überweisen Sie unter Angabe der Rechnungsnummer {b['nummer']} auf: IBAN {e['iban']}" + (f", BIC {e['bic']}" if e.get("bic") else ""), y)
+    if b["belegart"] in ("RE", "GS") and b.get("datum"):
+        y = absatz("Leistungsdatum entspricht dem Rechnungsdatum, soweit nicht anders angegeben.", y, 8.5)
+    if b.get("fusstext") and bl["fusstext"]:
+        y = absatz(b["fusstext"], y - 4)
+    if bl["quittung"]:
+        if y < unten + 30:
+            y = neue_seite()
+        y -= 10
         c.setFont(N, 9)
         c.setFillColor(MUTE)
         c.drawString(r, y, "Ware erhalten: ________________________   Datum / Unterschrift / Stempel")
         c.setFillColor(TEXT)
-        y -= 24
-    op = erp.zeile(db.execute("SELECT faellig FROM offener_posten WHERE beleg_id=?", (bid,))) if b["status"] == "verarbeitet" else None
-    if b.get("zahlungsbed") and b["belegart"] in ("RE", "AN", "AB"):
-        y = absatz(f"Zahlungsbedingung: {b['zahlungsbed']}" + (f" – fällig am {_de(op['faellig'])}" if op else ""), y)
-    if b["belegart"] == "RE" and e.get("iban"):
-        y = absatz(f"Bitte überweisen Sie unter Angabe der Rechnungsnummer {b['nummer']} auf: IBAN {e['iban']}" + (f", BIC {e['bic']}" if e.get("bic") else ""), y)
-    if b["belegart"] in ("RE", "GS") and b.get("datum"):
-        y = absatz("Leistungsdatum entspricht dem Rechnungsdatum, soweit nicht anders angegeben.", y, 8.5)
-    if b.get("fusstext"):
-        y = absatz(b["fusstext"], y - 4)
     fuss()
     c.save()
-    return buf.getvalue(), f"{b['belegart_name'].split(' ')[0]}_{b['nummer'] or 'Entwurf'}.pdf".replace(" ", "_").replace("/", "-")
+    return buf.getvalue(), f"{titel.split(' ')[0]}_{b['nummer'] or 'Entwurf'}.pdf".replace(" ", "_").replace("/", "-")

@@ -37,7 +37,7 @@ def schema_anlegen(db):
                          ("offener_posten", "mahnstufe", "INTEGER NOT NULL DEFAULT 0"), ("offener_posten", "letzte_mahnung", "TEXT"),
                          ("offener_posten", "mahnsperre", "INTEGER NOT NULL DEFAULT 0"),
                          ("artikel", "arbeitsplan", "TEXT"), ("fertigung", "freigabe", "INTEGER NOT NULL DEFAULT 0"),
-                         ("beleg", "verpackung", "TEXT")]:
+                         ("beleg", "verpackung", "TEXT"), ("beleg_position", "zusatz", "TEXT")]:
         if sp not in [r["name"] for r in db.execute(f"PRAGMA table_info({tab})")]:
             db.execute(f"ALTER TABLE {tab} ADD COLUMN {sp} {typ}")
     if not db.execute("SELECT 1 FROM mahnstufe LIMIT 1").fetchone():
@@ -129,7 +129,7 @@ EINSTELLUNGEN = ["firma_name", "firma_zusatz", "strasse", "plz", "ort", "telefon
                  "handelsregister", "geschaeftsfuehrer", "bank_name", "iban", "bic", "logo",
                  "kopftext_vk", "fusstext_vk", "kopftext_ek", "fusstext_ek", "farbe_haupt", "farbe_akzent", "betriebsstaette",
                  "arbeitsgaenge", "maschinen", "ls_nur_freigegeben",
-                 "verpackungen", "formular"]
+                 "verpackungen", "formular", "positionsfelder"]
 STANDARD_EINSTELLUNGEN = dict(
     firma_name="Muster Fertigung GmbH", firma_zusatz="Sondermaschinen · Vorrichtungen · Serienteile",
     strasse="Beispielstraße 1", plz="58089", ort="Hagen", telefon="02331 000000", email="info@muster-fertigung.example",
@@ -148,19 +148,63 @@ def einstellungen(db):
     return {k: werte.get(k, STANDARD_EINSTELLUNGEN.get(k, "")) or "" for k in EINSTELLUNGEN}
 
 
-FORMULAR_STANDARD = {"preise": True, "charge": True, "verpackung": False}
-FORMULAR_JE_ART = {"LS": {"preise": False, "verpackung": True}, "WK": {"preise": False}}
+SPALTEN = [("pos", "Pos"), ("artikelnr", "Artikel"), ("text", "Bezeichnung"), ("menge", "Menge"), ("me", "ME"),
+           ("einzelpreis", "Einzelpreis €"), ("rabatt", "Rabatt %"), ("gesamt", "Gesamt €")]
+BLOECKE = ["betreff", "referenz", "kopftext", "fusstext", "zahlungsbed", "bank", "quittung", "zusatzfelder", "charge", "verpackung"]
+FORMULAR_STANDARD = {
+    "preise": True, "titel": "", "zusatztext": "", "schrift": 9.0, "briefpapier": False, "rand_oben": 45, "rand_unten": 25,
+    "spalten": [{"key": k, "titel": t, "an": k not in ("artikelnr", "rabatt")} for k, t in SPALTEN],
+    "bloecke": {k: k not in ("quittung", "verpackung") for k in BLOECKE},
+}
+FORMULAR_JE_ART = {"LS": {"preise": False, "bloecke": {"verpackung": True, "quittung": True}}, "WK": {"preise": False}}
 
 
-def formular(db, belegart):
-    """Druckoptionen je Belegart (Einstellungen → Formulare); Lieferschein standardmäßig ohne Preise, mit Verpackung."""
-    o = dict(FORMULAR_STANDARD, **FORMULAR_JE_ART.get(belegart, {}))
+def formular(db, belegart, aenderung=None):
+    """Druck-Layout je Belegart (Formular-Baukasten): Spalten (Reihenfolge, Titel, an/aus), Blöcke, Titel, Zusatztext,
+    Schriftgröße, Briefpapier-Ränder. Gespeichert als JSON in der Einstellung `formular`; `aenderung` = Vorschau ohne Speichern."""
+    import copy
+    o = copy.deepcopy(FORMULAR_STANDARD)
+    gesp = {}
     r = db.execute("SELECT wert FROM einstellung WHERE schluessel='formular'").fetchone()
     try:
-        o.update({k: bool(v) for k, v in (json.loads(r["wert"]) if r and r["wert"] else {}).get(belegart, {}).items() if k in o})
+        gesp = (json.loads(r["wert"]) if r and r["wert"] else {}).get(belegart, {}) or {}
     except (ValueError, AttributeError):
-        pass
+        gesp = {}
+    for quelle in (FORMULAR_JE_ART.get(belegart, {}), gesp, aenderung or {}):
+        for k, v in quelle.items():
+            if k == "bloecke" and isinstance(v, dict):
+                o["bloecke"].update({b: bool(x) for b, x in v.items() if b in BLOECKE})
+            elif k == "spalten" and isinstance(v, list):
+                bekannt = dict(SPALTEN)
+                neu = [{"key": x["key"], "titel": (str(x.get("titel") or bekannt[x["key"]]))[:30], "an": bool(x.get("an"))}
+                       for x in v if isinstance(x, dict) and x.get("key") in bekannt]
+                neu += [dict(s_) for s_ in o["spalten"] if s_["key"] not in {x["key"] for x in neu}]
+                o["spalten"] = neu
+            elif k in ("charge", "verpackung"):            # ältere Speicherform (Schalter direkt)
+                o["bloecke"][k] = bool(v)
+            elif k in ("preise", "briefpapier"):
+                o[k] = bool(v)
+            elif k in ("titel", "zusatztext"):
+                o[k] = str(v or "")[:120 if k == "titel" else 1000]
+            elif k in ("schrift", "rand_oben", "rand_unten"):
+                try:
+                    o[k] = float(v)
+                except (TypeError, ValueError):
+                    pass
+    o["schrift"] = min(11.0, max(7.5, o["schrift"]))
+    o["rand_oben"] = min(120.0, max(10.0, o["rand_oben"]))
+    o["rand_unten"] = min(80.0, max(10.0, o["rand_unten"]))
+    if belegart in ("RE", "GS"):
+        o["preise"] = True                                   # Rechnung ohne Beträge gibt es nicht (E-Rechnung, UStG)
+    # Kompatibilität für bestehenden Code
+    o["charge"] = o["bloecke"]["charge"]
+    o["verpackung"] = o["bloecke"]["verpackung"]
     return o
+
+
+def positionsfelder(db):
+    r = db.execute("SELECT wert FROM einstellung WHERE schluessel='positionsfelder'").fetchone()
+    return [x.strip() for x in ((r["wert"] if r else "") or "").split(";") if x.strip()][:8]
 
 
 def einstellungen_speichern(db, d, benutzer=None):
@@ -464,13 +508,25 @@ def beleg_speichern(db, d, benutzer=None):
             felder.update(angelegt=jetzt(), angelegt_von=benutzer)
             bid = db.execute(f"INSERT INTO beleg({','.join(felder)}) VALUES({','.join('?' * len(felder))})", list(felder.values())).lastrowid
         for i, p in enumerate(pos, 1):
-            db.execute("""INSERT INTO beleg_position(beleg_id,pos,artikel_id,text,menge,me,einzelpreis,rabatt_pct,steuer_pct,gesamt,vorgaenger_pos_id,charge_nr,charge_id)
-                          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            z = _zusatz(p.get("zusatz"))
+            db.execute("""INSERT INTO beleg_position(beleg_id,pos,artikel_id,text,menge,me,einzelpreis,rabatt_pct,steuer_pct,gesamt,vorgaenger_pos_id,charge_nr,charge_id,zusatz)
+                          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                        (bid, i, p.get("artikel_id") or None, p["text"], float(p["menge"]), p["me"], float(p["einzelpreis"]),
                         float(p.get("rabatt_pct") or 0), float(p["steuer_pct"]), p["gesamt"], p.get("vorgaenger_pos_id"),
-                        (p.get("charge_nr") or "").strip() or None, p.get("charge_id") or None))
+                        (p.get("charge_nr") or "").strip() or None, p.get("charge_id") or None,
+                        json.dumps(z, ensure_ascii=False) if z else None))
         protokoll(db, benutzer, "beleg", bid, "gespeichert")
     return beleg_lesen(db, bid)
+
+
+def _zusatz(z):
+    """Eigene Positionsfelder (Einstellung `positionsfelder`) als dict; aus DB-Text oder Eingabe."""
+    if isinstance(z, str):
+        try:
+            z = json.loads(z or "{}")
+        except ValueError:
+            z = {}
+    return {str(k)[:40]: str(v)[:200] for k, v in (z or {}).items() if str(v or "").strip()} if isinstance(z, dict) else {}
 
 
 def _verpackung_pruefen(liste):
@@ -514,6 +570,8 @@ def beleg_lesen(db, bid):
     if not b:
         raise Fehler("Beleg nicht gefunden.")
     b["positionen"] = zeilen(db.execute("SELECT * FROM beleg_position WHERE beleg_id=? ORDER BY pos", (bid,)))
+    for p in b["positionen"]:
+        p["zusatz"] = _zusatz(p.get("zusatz"))
     try:
         b["verpackung"] = json.loads(b.get("verpackung") or "[]")
     except ValueError:
@@ -680,7 +738,7 @@ def beleg_weiterverarbeiten(db, bid, zielart, benutzer=None):
         if rest <= 0:
             continue
         neu_pos = dict(artikel_id=p["artikel_id"], text=p["text"], menge=rest, me=p["me"], einzelpreis=p["einzelpreis"],
-                       rabatt_pct=p["rabatt_pct"], steuer_pct=p["steuer_pct"], vorgaenger_pos_id=p["id"],
+                       rabatt_pct=p["rabatt_pct"], steuer_pct=p["steuer_pct"], vorgaenger_pos_id=p["id"], zusatz=p.get("zusatz"),
                        charge_nr=p.get("charge_nr") if zielart != "WK" else None, charge_id=p.get("charge_id") if zielart != "WK" else None)
         if zielart == "LS" and not p.get("charge_id"):
             pos.extend(_chargen_zuordnen(db, neu_pos, p["id"]))    # älteste Charge zuerst, ggf. aufteilen
@@ -820,7 +878,7 @@ def sammel_lieferschein(db, adresse_id, auswahl, benutzer=None):
             bp = zeile(db.execute("SELECT * FROM beleg_position WHERE id=?", (p["pos_id"],)))
             np = dict(artikel_id=bp["artikel_id"], text=bp["text"], menge=menge, me=bp["me"], einzelpreis=bp["einzelpreis"],
                       rabatt_pct=bp["rabatt_pct"], steuer_pct=bp["steuer_pct"], vorgaenger_pos_id=bp["id"],
-                      charge_nr=bp["charge_nr"], charge_id=bp["charge_id"])
+                      charge_nr=bp["charge_nr"], charge_id=bp["charge_id"], zusatz=bp.get("zusatz"))
             pos.extend(_chargen_zuordnen(db, np, bp["id"]) if not bp["charge_id"] else [np])
     erste = zeile(db.execute("SELECT * FROM beleg WHERE id=?", (next(iter(gruppen)),)))
     neu = beleg_speichern(db, dict(belegart="LS", adresse_id=adresse_id,
@@ -880,7 +938,7 @@ def sammel_rechnung(db, adresse_id, ls_ids, benutzer=None):
         for p in offen[i]["positionen"]:
             pos.append(dict(artikel_id=p["artikel_id"], text=p["text"], menge=p["offen"], me=p["me"], einzelpreis=p["einzelpreis"],
                             rabatt_pct=p["rabatt_pct"], steuer_pct=p["steuer_pct"], vorgaenger_pos_id=p["id"],
-                            charge_nr=p["charge_nr"], charge_id=p["charge_id"]))
+                            charge_nr=p["charge_nr"], charge_id=p["charge_id"], zusatz=p.get("zusatz")))
     erste = zeile(db.execute("SELECT * FROM beleg WHERE id=?", (ls_ids[0],)))
     zb = db.execute("SELECT zahlungsbed_id FROM kunde WHERE adresse_id=?", (adresse_id,)).fetchone()
     neu = beleg_speichern(db, dict(belegart="RE", adresse_id=adresse_id,

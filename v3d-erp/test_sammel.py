@@ -134,7 +134,8 @@ class TestTommi28(Basis):
         self.assertEqual(erp.bestand(self.db, art["id"]), 0)
 
     def test_formular_und_verpackung(self):
-        self.assertEqual(erp.formular(self.db, "LS"), {"preise": False, "charge": True, "verpackung": True})
+        fo = erp.formular(self.db, "LS")
+        self.assertEqual((fo["preise"], fo["charge"], fo["verpackung"], fo["bloecke"]["quittung"]), (False, True, True, True))
         self.assertTrue(erp.formular(self.db, "RE")["preise"])
         erp.einstellungen_speichern(self.db, dict(formular='{"LS": {"preise": true}}'))
         self.assertTrue(erp.formular(self.db, "LS")["preise"])

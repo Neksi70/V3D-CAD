@@ -238,6 +238,9 @@ main{padding:0!important;min-width:0;display:flex;flex-direction:column}
 .pd-frei{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;padding:10px 12px;border-radius:8px;background:#eef7f0;font-size:15px}.pd-frei input{width:22px;height:22px}
 .pdf-vorschau{width:100%;height:74vh;border:1px solid var(--line);border-radius:6px;background:#dfe3ea}
 .vp{margin:10px 0 4px;padding:10px 12px;border:1px dashed var(--line);border-radius:8px}.vp-z{display:flex;gap:8px;align-items:center;margin:4px 0}.vp-z select{width:220px}.vp-z input{width:90px}
+.fo-raster{display:grid;grid-template-columns:minmax(360px,460px) 1fr;gap:14px;align-items:start}@media (max-width:1000px){.fo-raster{grid-template-columns:1fr}}
+.fo-z{display:flex;gap:6px;align-items:center;margin:3px 0}.fo-z input.foT{flex:1}.fo-z input[type=checkbox]{width:auto}.fo-z .btn{padding:4px 8px}.fo-z.aus{opacity:.45}
+.fo-c{display:flex;gap:8px;align-items:center;margin:4px 0}.fo-c input{width:auto}.fo-bl{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
 .ws-gruende{display:flex;flex-wrap:wrap;gap:6px}.ws-gruende .btn{font-size:15px;padding:8px 12px}
 .charge-alle{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fff8e6;border:1px solid #f3d38a;border-radius:6px;padding:8px 10px;margin:6px 0 10px}
 .charge-alle input{max-width:220px}
@@ -324,7 +327,7 @@ const MENUE = [
   ['Produktion', [['#/produktion','Produktion (Paletten/Chargen)']]],
   ['Lager', [['#/chargen','Chargen (Kundenmaterial)']]],
   ['Stammdaten', [['#/adressen/kunde','Kunden'],['#/adressen/lieferant','Lieferanten'],['#/adressen/','Alle Adressen'],['#/artikel','Artikel & Lager']]],
-  ['System', [['#/einstellungen','Firmendaten & Briefkopf'],['#/kennzeichen','Kennzeichen (Zusatzfelder)']]],
+  ['System', [['#/einstellungen','Firmendaten & Briefkopf'],['#/formulare','Formulare (Druck)'],['#/kennzeichen','Kennzeichen (Zusatzfelder)']]],
 ];
 function thema(e){ const r = document.documentElement.style; r.setProperty('--blue', e.farbe_haupt || '#004aad'); r.setProperty('--akzent', e.farbe_akzent || '#f39200'); }
 function rahmen(){
@@ -473,7 +476,7 @@ async function navigiere(){
   document.body.classList.remove('kunde');
   const [, teil, a, b] = pfad.split('/');
   try{
-    if (['beleg','neu','projekt','start','einstellungen'].includes(teil) || neu){ E = await api('einstellungen'); thema(E); }   // Firmendaten immer aktuell
+    if (['beleg','neu','projekt','start','einstellungen','formulare'].includes(teil) || neu){ E = await api('einstellungen'); thema(E); }   // Firmendaten immer aktuell
     const nl = document.getElementById('navLogo'); if (nl) nl.innerHTML = E.logo ? `<img src="${E.logo}" alt="${esc(E.firma_name)}" style="display:block;max-width:150px;max-height:60px;margin:2px 18px 10px;border-radius:3px">` : '';
     if (teil==='start') await seiteStart();
     else if (teil==='belege') await seiteBelege(a||'VK', b ? +b : null);
@@ -490,6 +493,7 @@ async function navigiere(){
     else if (teil==='bank') await seiteBank();
     else if (teil==='kennzeichen') await seiteKennzeichen();
     else if (teil==='produktion') await seiteProduktion();
+    else if (teil==='formulare') await seiteFormulare(a);
     else if (teil==='werkstatt'){ M().innerHTML = '<div class="kopfzeile"><h1>Werkstatt-Ansicht</h1></div><div id="wsBox"></div>'; await werkstattZeichnen($('#wsBox')); }
     else { location.hash = '#/start'; return; }
     const h1 = t.body.querySelector('.kopfzeile h1');
@@ -806,7 +810,7 @@ async function belegMaske(b){
       <td><input class="pE" value="${esc(p.me||'Stk')}" ${dis}></td>
       <td><input class="pP zahl" value="${preis(p.einzelpreis??0)}" ${dis}></td>
       <td><input class="pR zahl" value="${zahl(p.rabatt_pct||0)}" ${dis}></td>
-      <td class="r pG"></td><td class="noprint" style="white-space:nowrap"><button class="btn posknopf pD" title="Details">…</button>${!gesperrt?`<button class="btn rot posknopf pX" title="Position löschen">×</button>`:''}</td></tr>`; }).join('');
+      <td class="r pG"></td><td class="noprint" style="white-space:nowrap"><button class="btn posknopf pD" title="Details, Langtext, eigene Felder">${Object.keys(p.zusatz||{}).length?'…●':'…'}</button>${!gesperrt?`<button class="btn rot posknopf pX" title="Position löschen">×</button>`:''}</td></tr>`; }).join('');
     rechne();
   };
   const rechne = () => {
@@ -865,8 +869,10 @@ async function belegMaske(b){
        ${a ? `<div class="zeile"><label>Listenpreis VK / EK</label><span>${eur(a.vk_preis)} € / ${eur(a.ek_preis)} €</span></div>
        ${vk ? `<div class="zeile"><label>Rohertrag je ${esc(a.me)}</label><b style="color:${re<0?'var(--red)':'inherit'}">${eur(re)} €${num(p.einzelpreis)?' ('+Math.round(re/num(p.einzelpreis)*100)+' %)':''}</b></div>` : ''}
        <div class="zeile"><label>Bestand / Verfügbar</label><span>${a.lagerfuehrung ? zahl(a.bestand) + ' ' + esc(a.me) : 'keine Lagerführung'}</span></div>` : ''}
-       ${p.vorgaenger_pos_id ? '<p class="hinweis">Übernommen aus einem Vorgängerbeleg.</p>' : ''}`,
-      gesperrt ? [['Schließen','']] : [['Abbrechen',''], ['Übernehmen','pri', () => { p.text = document.getElementById('ldT').value; zeichne(); }]]); };
+       ${(E.positionsfelder||'').split(';').map(x=>x.trim()).filter(Boolean).map((n,j) => `<div class="zeile"><label>${esc(n)}</label><input class="ldZ" data-n="${esc(n)}" value="${esc((p.zusatz||{})[n]||'')}" ${dis}></div>`).join('')}
+       ${p.vorgaenger_pos_id ? '<p class="hinweis">Übernommen aus einem Vorgängerbeleg – eigene Felder wandern mit (AB → LS → Rechnung).</p>' : ''}`,
+      gesperrt ? [['Schließen','']] : [['Abbrechen',''], ['Übernehmen','pri', () => { p.text = document.getElementById('ldT').value;
+        p.zusatz = {}; document.querySelectorAll('#dBody .ldZ').forEach(x => { if (x.value.trim()) p.zusatz[x.dataset.n] = x.value.trim(); }); zeichne(); }]]); };
   $('#pt').addEventListener('change', e => { if (e.target.classList.contains('pCs')){ const p = b.positionen[+e.target.closest('tr').dataset.i];
       p.charge_id = +e.target.value || null; p.charge_nr = p.charge_id ? e.target.selectedOptions[0].dataset.nr : null; return; }
     if(!e.target.classList.contains('pA')) return; const i=+e.target.closest('tr').dataset.i;
@@ -879,7 +885,7 @@ async function belegMaske(b){
   if ($('#pNeu')) $('#pNeu').onclick = () => { b.positionen.push({}); zeichne(); };
   const sammeln = () => ({id:b.id, belegart:b.belegart, adresse_id:adresseId, datum:$('#kDat').value, projekt_id:+$('#kPro').value||null,
     betreff:$('#kBet').value, ihre_referenz:$('#kRef').value, zahlungsbed_id:+$('#kZb').value||null, kopftext:$('#kKt').value, fusstext:$('#kFt').value, memo:b.memo||null,
-    positionen:b.positionen.filter(p=>p.text||p.artikel_id).map(p=>({artikel_id:p.artikel_id||null,text:p.text,menge:num(p.menge??1),me:p.me||'Stk',einzelpreis:num(p.einzelpreis??0),rabatt_pct:num(p.rabatt_pct||0),steuer_pct:p.steuer_pct??19,vorgaenger_pos_id:p.vorgaenger_pos_id||null,charge_nr:p.charge_nr||null,charge_id:p.charge_id||null}))});
+    positionen:b.positionen.filter(p=>p.text||p.artikel_id).map(p=>({artikel_id:p.artikel_id||null,text:p.text,menge:num(p.menge??1),me:p.me||'Stk',einzelpreis:num(p.einzelpreis??0),rabatt_pct:num(p.rabatt_pct||0),steuer_pct:p.steuer_pct??19,vorgaenger_pos_id:p.vorgaenger_pos_id||null,charge_nr:p.charge_nr||null,charge_id:p.charge_id||null,zusatz:p.zusatz||{}}))});
   const speichern = async () => { const n = await api('belege',{body:{...sammeln(), verpackung:b.verpackung||[]}}); b.id=n.id; return n; };
   if ($('#vpBox')){
     const arten = (E.verpackungen||'').split(';').map(x=>x.trim()).filter(Boolean);
@@ -1335,23 +1341,16 @@ async function seiteEinstellungen(){
     <div class="card"><b>Produktion</b><div style="display:grid;gap:8px;margin-top:8px">${f('arbeitsgaenge','Arbeitsgänge (mit ; getrennt)','Bohren; Gewinde schneiden; …')}${f('maschinen','Maschinen / Arbeitsplätze (mit ; getrennt, optional)','BZ 1; BZ 2; Gewindeautomat')}
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-k="ls_nur_freigegeben" ${e.ls_nur_freigegeben ? 'checked' : ''} style="width:auto"> Lieferschein nur mit von der Produktion freigegebener Menge (Häkchen „Für den Versand freigeben“ beim Fertigmelden)</label></div>
       <p class="hinweis">Erscheinen als Knöpfe am Werkstatt-Tablet. Ein eigener Arbeitsplan je Artikel geht unter Artikel → Grundlagen.</p></div>
-    <div class="card"><b>Formulare (Druck)</b> <span class="hinweis">was auf welchem Beleg gedruckt wird</span>
-      <input type="hidden" data-k="formular" id="eFo" value="${esc(e.formular||'')}">
-      <table style="margin-top:8px"><thead><tr><th>Beleg</th><th>Preise &amp; Summen</th><th>Charge</th><th>Verpackung</th></tr></thead><tbody>
-      ${(() => { let fo = {}; try { fo = JSON.parse(e.formular||'{}'); } catch(_){}
-        const std = {LS:{preise:false,verpackung:true}, WK:{preise:false}};
-        return [['AN','Angebot'],['AB','Auftragsbestätigung'],['LS','Lieferschein'],['RE','Rechnung'],['GS','Gutschrift'],['WK','Wareneingang Kundenmaterial'],['BE','Bestellung']].map(([c,n]) => {
-          const w = o => (fo[c]||{})[o] ?? (std[c]||{})[o] ?? (o !== 'verpackung');
-          return `<tr><td>${n}</td>${['preise','charge','verpackung'].map(o => `<td><input type="checkbox" class="foC" data-a="${c}" data-o="${o}" ${w(o)?'checked':''} style="width:auto"></td>`).join('')}</tr>`; }).join(''); })()}
-      </tbody></table>
-      <div style="margin-top:8px">${f('verpackungen','Verpackungen / Ladungsträger zur Auswahl (mit ; getrennt)','Europalette; Einwegpalette; Gitterbox; …')}</div>
-      <p class="hinweis">Rechnungen und Gutschriften brauchen Preise (E-Rechnung). Einen eigenen Formular-Designer gibt es noch nicht – Wünsche bitte melden.</p></div>
+    <div class="card"><b>Formulare (Druck)</b> <span class="hinweis">Spalten, Texte, Blöcke, Briefpapier je Beleg – mit Live-Vorschau</span>
+      <div style="margin:8px 0"><a class="btn pri" href="#/formulare">🖨 Formular-Baukasten öffnen</a></div>
+      <div style="display:grid;gap:8px">${f('verpackungen','Verpackungen / Ladungsträger zur Auswahl (mit ; getrennt)','Europalette; Einwegpalette; Gitterbox; …')}
+      ${f('positionsfelder','Eigene Positionsfelder (mit ; getrennt, max. 8)','z. B. Kundenbestell-Nr.; Zeichnungs-Nr.; Behälter')}</div>
+      <p class="hinweis">Eigene Positionsfelder füllt man in der Belegerfassung über „…“ an der Position; sie wandern mit (Auftrag → Lieferschein → Rechnung) und werden unter der Bezeichnung gedruckt.</p></div>
     <div class="card"><b>Standardtexte für neue Belege</b><div style="display:grid;gap:8px;margin-top:8px">${t('kopftext_vk','Kopftext Verkauf')}${t('fusstext_vk','Fußtext Verkauf')}${t('kopftext_ek','Kopftext Einkauf')}${t('fusstext_ek','Fußtext Einkauf')}</div></div>
   </div>
   <div class="card" style="position:sticky;top:12px"><b>Vorschau</b><div class="tisch" style="margin-top:8px;padding:12px"><div class="blatt" id="eVor" style="min-width:0;padding:24px 28px;font-size:12px"></div></div></div>
   </div>`;
   const vorschau = () => {
-    const fo = {}; $$('.foC').forEach(c => { (fo[c.dataset.a] ||= {})[c.dataset.o] = c.checked; }); if ($('#eFo')) $('#eFo').value = JSON.stringify(fo);
     $$('[data-k]').forEach(i => e[i.dataset.k] = i.type === 'checkbox' ? (i.checked ? '1' : '') : i.value);
     thema(e);
     $('#eLogoV').innerHTML = e.logo ? `<img src="${e.logo}" style="max-height:56px;max-width:220px">` : '<span class="hinweis">kein Logo</span>';
@@ -1370,7 +1369,7 @@ async function seiteEinstellungen(){
     if (e.logo.length > 700000){ toast('Logo zu groß – bitte kleineres Bild wählen.', true); e.logo=''; }
     vorschau(); };
   $('#eLogoX').onclick = () => { e.logo = ''; vorschau(); };
-  $('#eSp').onclick = async () => { vorschau(); E = await api('einstellungen', {body:e}); $('#navLogo').innerHTML = E.logo ? `<img src="${E.logo}" alt="" style="display:block;max-width:150px;max-height:60px;margin:2px 18px 10px;border-radius:3px">` : ''; thema(E); TABS.forEach(t => t.el.querySelector('.badge-bs').textContent = E.betriebsstaette || ''); toast('Firmendaten gespeichert – gelten ab sofort für Briefansicht und Ausdruck.'); };
+  $('#eSp').onclick = async () => { vorschau(); E = await api('einstellungen', {body:{...e, formular: undefined}}); $('#navLogo').innerHTML = E.logo ? `<img src="${E.logo}" alt="" style="display:block;max-width:150px;max-height:60px;margin:2px 18px 10px;border-radius:3px">` : ''; thema(E); TABS.forEach(t => t.el.querySelector('.badge-bs').textContent = E.betriebsstaette || ''); toast('Firmendaten gespeichert – gelten ab sofort für Briefansicht und Ausdruck.'); };
 }
 
 // ================================================================ Kundenpreise (Reiter in Kunde und Artikel)
@@ -1547,6 +1546,62 @@ function mengenAbgleich(wk, abw){
      <p>Soll die Auftragsbestätigung auf die <b>tatsächlich eingegangene Menge</b> angepasst werden? Dann stimmen offene Menge, Auftragsbestand und Lieferschein automatisch – nichts mehr von Hand nachtragen.</p>
      <p class="hinweis">Kommt noch eine Teillieferung vom Kunden, „Nein, Rest kommt noch“ wählen. Die Anpassung wird im Protokoll und im Projektverlauf vermerkt.${ok.length < abw.length ? ' Positionen, von denen schon mehr geliefert wurde, bleiben unverändert.' : ''}</p>`,
     [['Nein, Rest kommt noch',''], ...(ok.length ? [['Auftrag anpassen','pri', async () => { await api(`belege/${wk.id}/ab_angleichen`, {body:{}}); toast('Auftragsbestätigung an den Wareneingang angepasst.'); }]] : [])]);
+}
+
+// ================================================================ Formular-Baukasten (Druck je Belegart)
+const FO_ARTEN = [['LS','Lieferschein'],['RE','Rechnung'],['AB','Auftragsbestätigung'],['AN','Angebot'],['GS','Gutschrift'],['WK','Wareneingang Kundenmaterial'],['BE','Bestellung'],['PA','Preisanfrage']];
+const FO_BLOECKE = {betreff:'Betreff', referenz:'Ihre Bestellung / Referenz', kopftext:'Kopftext', fusstext:'Fußtext', zahlungsbed:'Zahlungsbedingung', bank:'Bankverbindung (Rechnung)',
+  charge:'Charge unter der Position', zusatzfelder:'Eigene Positionsfelder', verpackung:'Verpackung / Ladungsträger', quittung:'Empfangsquittung (Unterschrift)'};
+async function seiteFormulare(art){
+  art = FO_ARTEN.some(x => x[0] === art) ? art : 'LS';
+  const d = await api('formular/' + art); let fo = d.formular;
+  M().innerHTML = `<div class="kopfzeile"><h1>Formulare (Druck)</h1><span class="sp"></span>
+      <select id="foArt" style="width:auto;min-width:240px">${FO_ARTEN.map(([c,n]) => `<option value="${c}" ${c===art?'selected':''}>${n}</option>`).join('')}</select>
+      <button class="btn" id="foStd" title="Einstellungen dieser Belegart verwerfen">Standard</button><button class="btn pri" id="foSp">Speichern</button></div>
+    <div class="fo-raster"><div class="card fo-links" id="foL"></div>
+      <div class="card fo-rechts"><div class="hinweis" id="foInfo" style="margin-bottom:6px">Vorschau mit dem letzten ${esc(FO_ARTEN.find(x=>x[0]===art)[1])} – Änderungen erscheinen sofort, gespeichert wird erst mit „Speichern“.</div>
+        <iframe id="foVor" class="pdf-vorschau" style="height:78vh" title="Vorschau"></iframe></div></div>`;
+  const rech = art === 'RE' || art === 'GS';
+  let tv, url;
+  const vorschau = () => { clearTimeout(tv); tv = setTimeout(async () => {
+    const r = await fetch('api/formular/vorschau', {method:'POST', headers:{'Content-Type':'application/json','X-ERP':'1'}, body: JSON.stringify({belegart: art, formular: fo})});
+    if (!r.ok){ const j = await r.json().catch(()=>({})); $('#foInfo').textContent = j.fehler || 'Vorschau nicht möglich.'; return; }
+    if (url) URL.revokeObjectURL(url); url = URL.createObjectURL(await r.blob()); $('#foVor').src = url + '#view=FitH'; }, 450); };
+  const zeichne = () => {
+    $('#foL').innerHTML = `<b>Spalten</b> <span class="hinweis">Häkchen = gedruckt · Titel änderbar · Reihenfolge mit ▲▼</span>
+      <div class="fo-sp">${fo.spalten.map((x,i) => { const preis = ['einzelpreis','rabatt','gesamt'].includes(x.key);
+        return `<div class="fo-z ${preis && !fo.preise ? 'aus' : ''}"><input type="checkbox" class="foAn" data-i="${i}" ${x.an?'checked':''} ${x.key==='text'?'disabled':''}>
+          <input class="foT" data-i="${i}" value="${esc(x.titel)}" maxlength="30"><button class="btn foU" data-i="${i}" ${i?'':'disabled'}>▲</button><button class="btn foD" data-i="${i}" ${i<fo.spalten.length-1?'':'disabled'}>▼</button></div>`; }).join('')}</div>
+      <label class="fo-c"><input type="checkbox" id="foPr" ${fo.preise?'checked':''} ${rech?'disabled':''}> <b>Preise &amp; Summen drucken</b>${rech?' <span class="hinweis">(bei Rechnungen Pflicht)</span>':''}</label>
+      <b style="display:block;margin-top:12px">Blöcke</b>
+      <div class="fo-bl">${Object.entries(FO_BLOECKE).map(([k,n]) => `<label class="fo-c"><input type="checkbox" class="foB" data-k="${k}" ${fo.bloecke[k]?'checked':''}> ${n}</label>`).join('')}</div>
+      <div class="feld" style="margin-top:12px"><label>Titel auf dem Beleg</label><input id="foTi" value="${esc(fo.titel)}" placeholder="${esc(FO_ARTEN.find(x=>x[0]===art)[1])}"></div>
+      <div class="feld"><label>Zusatztext (unter den Positionen, auf jedem Beleg dieser Art)</label><textarea id="foZt" rows="2" placeholder="z. B. Prüfbericht liegt bei. / Bitte Europaletten tauschen.">${esc(fo.zusatztext)}</textarea></div>
+      <div class="feld"><label>Schriftgröße Positionen: <b id="foSgW">${fo.schrift}</b> pt</label><input type="range" id="foSg" min="7.5" max="11" step="0.5" value="${fo.schrift}"></div>
+      <label class="fo-c" style="margin-top:8px"><input type="checkbox" id="foBp" ${fo.briefpapier?'checked':''}> <b>Auf Briefpapier drucken</b> <span class="hinweis">(ohne eigenen Kopf/Fuß – Logo und Firmenangaben sind vorgedruckt)</span></label>
+      <div class="raster2" style="${fo.briefpapier?'':'display:none'}" id="foRa"><div class="zeile"><label>Rand oben (mm)</label><input id="foRo" class="zahl" value="${zahl(fo.rand_oben)}"></div><div class="zeile"><label>Rand unten (mm)</label><input id="foRu" class="zahl" value="${zahl(fo.rand_unten)}"></div></div>`;
+    const L = $('#foL'), q = s => L.querySelectorAll(s);
+    q('.foAn').forEach(x => x.onchange = () => { fo.spalten[+x.dataset.i].an = x.checked; vorschau(); });
+    q('.foT').forEach(x => x.oninput = () => { fo.spalten[+x.dataset.i].titel = x.value; vorschau(); });
+    const tausch = (i, j) => { [fo.spalten[i], fo.spalten[j]] = [fo.spalten[j], fo.spalten[i]]; zeichne(); vorschau(); };
+    q('.foU').forEach(x => x.onclick = () => tausch(+x.dataset.i, +x.dataset.i - 1));
+    q('.foD').forEach(x => x.onclick = () => tausch(+x.dataset.i, +x.dataset.i + 1));
+    L.querySelector('#foPr').onchange = e => { fo.preise = e.target.checked; zeichne(); vorschau(); };
+    q('.foB').forEach(x => x.onchange = () => { fo.bloecke[x.dataset.k] = x.checked; vorschau(); });
+    L.querySelector('#foTi').oninput = e => { fo.titel = e.target.value; vorschau(); };
+    L.querySelector('#foZt').oninput = e => { fo.zusatztext = e.target.value; vorschau(); };
+    L.querySelector('#foSg').oninput = e => { fo.schrift = +e.target.value; L.querySelector('#foSgW').textContent = e.target.value; vorschau(); };
+    L.querySelector('#foBp').onchange = e => { fo.briefpapier = e.target.checked; L.querySelector('#foRa').style.display = fo.briefpapier ? '' : 'none'; vorschau(); };
+    L.querySelector('#foRo').oninput = e => { fo.rand_oben = num(e.target.value); vorschau(); };
+    L.querySelector('#foRu').oninput = e => { fo.rand_unten = num(e.target.value); vorschau(); };
+  };
+  zeichne(); vorschau();
+  const alle = () => { try { return JSON.parse(E.formular || '{}'); } catch(_){ return {}; } };
+  $('#foArt').onchange = e => location.hash = '#/formulare/' + e.target.value;
+  $('#foSp').onclick = async () => { const a = alle(); const {charge, verpackung, ...rest} = fo; a[art] = rest;
+    E = await api('einstellungen', {body:{formular: JSON.stringify(a)}}); toast(`Formular „${FO_ARTEN.find(x=>x[0]===art)[1]}“ gespeichert – gilt ab sofort für Druck und PDF.`); };
+  $('#foStd').onclick = async () => { if (!confirm('Alle Anpassungen dieser Belegart verwerfen?')) return; const a = alle(); delete a[art];
+    E = await api('einstellungen', {body:{formular: JSON.stringify(a)}}); toast('Auf Standard zurückgesetzt.'); seiteFormulare(art); };
 }
 
 // ================================================================ Sammelrechnung aus offenen Lieferscheinen
