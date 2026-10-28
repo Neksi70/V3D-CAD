@@ -177,7 +177,7 @@ class TestDiagramme(Basis):
         ab = erp.beleg_speichern(self.db, dict(belegart="AB", adresse_id=self.kunde["id"], positionen=[dict(artikel_id=self.art["id"], menge=1000, einzelpreis=0.70)]))
         ab = erp.beleg_verarbeiten(self.db, ab["id"])["beleg"]
         ls = erp.beleg_weiterverarbeiten(self.db, ab["id"], "LS")
-        ls["positionen"][0]["menge"] = 400
+        ls["positionen"][1]["menge"] = 400
         erp.beleg_verarbeiten(self.db, erp.beleg_speichern(self.db, ls)["id"])
         dg = erp.diagrammdaten(self.db)
         self.assertEqual(len(dg["umsatz_monate"]), 12)

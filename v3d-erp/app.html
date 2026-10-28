@@ -869,7 +869,7 @@ async function belegMaske(b){
        ${a ? `<div class="zeile"><label>Listenpreis VK / EK</label><span>${eur(a.vk_preis)} € / ${eur(a.ek_preis)} €</span></div>
        ${vk ? `<div class="zeile"><label>Rohertrag je ${esc(a.me)}</label><b style="color:${re<0?'var(--red)':'inherit'}">${eur(re)} €${num(p.einzelpreis)?' ('+Math.round(re/num(p.einzelpreis)*100)+' %)':''}</b></div>` : ''}
        <div class="zeile"><label>Bestand / Verfügbar</label><span>${a.lagerfuehrung ? zahl(a.bestand) + ' ' + esc(a.me) : 'keine Lagerführung'}</span></div>` : ''}
-       ${(E.positionsfelder||'').split(';').map(x=>x.trim()).filter(Boolean).map((n,j) => `<div class="zeile"><label>${esc(n)}</label><input class="ldZ" data-n="${esc(n)}" value="${esc((p.zusatz||{})[n]||'')}" ${dis}></div>`).join('')}
+       ${[...(b.belegart==='LS' && p.charge_id ? ['Ausschuss'] : []), ...(E.positionsfelder||'').split(';').map(x=>x.trim()).filter(Boolean)].map((n,j) => `<div class="zeile"><label>${esc(n)}</label><input class="ldZ" data-n="${esc(n)}" value="${esc((p.zusatz||{})[n]||'')}" ${dis}></div>`).join('')}
        ${p.vorgaenger_pos_id ? '<p class="hinweis">Übernommen aus einem Vorgängerbeleg – eigene Felder wandern mit (AB → LS → Rechnung).</p>' : ''}`,
       gesperrt ? [['Schließen','']] : [['Abbrechen',''], ['Übernehmen','pri', () => { p.text = document.getElementById('ldT').value;
         p.zusatz = {}; document.querySelectorAll('#dBody .ldZ').forEach(x => { if (x.value.trim()) p.zusatz[x.dataset.n] = x.value.trim(); }); zeichne(); }]]); };
@@ -1168,6 +1168,7 @@ async function artikelDetail(id, neuLaden, gewaehlt, opt = {}){
     if (reiter==='grundlagen') R.innerHTML = `<div class="raster">${f('artikelnr','Artikelnummer')}${f('kurz','Kurzbezeichnung')}${f('bezeichnung','Bezeichnung')}${f('gruppe','Artikelgruppe')}${f('me','Basismengeneinheit')}
       <div class="feld"><label>Lagerführung</label><select id="r_lagerfuehrung"><option value="1" ${a.lagerfuehrung?'selected':''}>ja</option><option value="0" ${!a.lagerfuehrung?'selected':''}>nein (Dienstleistung)</option></select></div>
       <div class="feld"><label>Status</label><select id="r_inaktiv"><option value="0" ${!a.inaktiv?'selected':''}>aktiv</option><option value="1" ${a.inaktiv?'selected':''}>inaktiv</option></select></div></div>
+      <div class="feld" style="margin-top:10px;max-width:260px"><label>Gewicht je ${esc(a.me||'Stk')} in kg (für den Lieferschein)</label><input id="r_gewicht_kg" class="zahl" value="${a.gewicht_kg!=null?zahl(a.gewicht_kg):''}" placeholder="z. B. 0,02"></div>
       <div class="feld" style="margin-top:10px"><label>Arbeitsplan (Arbeitsgänge in Reihenfolge, mit ; getrennt)</label><input id="r_arbeitsplan" value="${esc(a.arbeitsplan||'')}" placeholder="leer = allgemeine Liste: ${esc(E.arbeitsgaenge||'')}"></div>
       <p class="hinweis">Die Werkstatt sieht beim Starten nur diese Arbeitsgänge; der Fortschritt je Charge rechnet damit.</p>`;
     if (reiter==='ekvk') R.innerHTML = `<div class="raster">${f('vk_preis','VK-Preis €','zahl')}${f('ek_preis','EK-Preis €','zahl')}${f('steuer_pct','MwSt. %','zahl')}
@@ -1197,6 +1198,7 @@ async function artikelDetail(id, neuLaden, gewaehlt, opt = {}){
   const merken = () => {
     ['artikelnr','kurz','bezeichnung','gruppe','me','arbeitsplan'].forEach(k => { const e = $('#r_'+k); if (e) a[k] = e.value || null; });
     ['vk_preis','ek_preis','steuer_pct','meldebestand'].forEach(k => { const e = $('#r_'+k); if (e) a[k] = num(e.value); });
+    if ($('#r_gewicht_kg')) a.gewicht_kg = $('#r_gewicht_kg').value.trim() ? num($('#r_gewicht_kg').value) : null;
     if ($('#r_lagerfuehrung')) a.lagerfuehrung = +$('#r_lagerfuehrung').value;
     if ($('#r_inaktiv')) a.inaktiv = +$('#r_inaktiv').value;
     if ($('#r_hauptlieferant_id')) a.hauptlieferant_id = +$('#r_hauptlieferant_id').value || null;
@@ -1551,7 +1553,7 @@ function mengenAbgleich(wk, abw){
 // ================================================================ Formular-Baukasten (Druck je Belegart)
 const FO_ARTEN = [['LS','Lieferschein'],['RE','Rechnung'],['AB','Auftragsbestätigung'],['AN','Angebot'],['GS','Gutschrift'],['WK','Wareneingang Kundenmaterial'],['BE','Bestellung'],['PA','Preisanfrage']];
 const FO_BLOECKE = {betreff:'Betreff', referenz:'Ihre Bestellung / Referenz', kopftext:'Kopftext', fusstext:'Fußtext', zahlungsbed:'Zahlungsbedingung', bank:'Bankverbindung (Rechnung)',
-  charge:'Charge unter der Position', zusatzfelder:'Eigene Positionsfelder', verpackung:'Verpackung / Ladungsträger', quittung:'Empfangsquittung (Unterschrift)'};
+  charge:'Charge unter der Position', zusatzfelder:'Eigene Positionsfelder', verpackung:'Verpackung / Ladungsträger', quittung:'Unterschriftszeilen', gewicht:'Gewicht unter der Menge'};
 async function seiteFormulare(art){
   art = FO_ARTEN.some(x => x[0] === art) ? art : 'LS';
   const d = await api('formular/' + art); let fo = d.formular;
@@ -1578,7 +1580,14 @@ async function seiteFormulare(art){
       <div class="feld" style="margin-top:12px"><label>Titel auf dem Beleg</label><input id="foTi" value="${esc(fo.titel)}" placeholder="${esc(FO_ARTEN.find(x=>x[0]===art)[1])}"></div>
       <div class="feld"><label>Zusatztext (unter den Positionen, auf jedem Beleg dieser Art)</label><textarea id="foZt" rows="2" placeholder="z. B. Prüfbericht liegt bei. / Bitte Europaletten tauschen.">${esc(fo.zusatztext)}</textarea></div>
       <div class="feld"><label>Schriftgröße Positionen: <b id="foSgW">${fo.schrift}</b> pt</label><input type="range" id="foSg" min="7.5" max="11" step="0.5" value="${fo.schrift}"></div>
-      <label class="fo-c" style="margin-top:8px"><input type="checkbox" id="foBp" ${fo.briefpapier?'checked':''}> <b>Auf Briefpapier drucken</b> <span class="hinweis">(ohne eigenen Kopf/Fuß – Logo und Firmenangaben sind vorgedruckt)</span></label>
+      <div class="feld"><label>Kopf</label><select id="foKo"><option value="rechts" ${fo.kopf!=='myfactory'?'selected':''}>Angaben rechts neben der Anschrift</option><option value="myfactory" ${fo.kopf==='myfactory'?'selected':''}>Titel + Datum, darunter Angaben zweispaltig (wie myfactory)</option></select></div>
+      <div class="feld"><label>Unterschriftszeilen (eine je Zeile: „Links | unter der Linie“, nur wenn Block „Empfangsquittung“ an)</label><textarea id="foUs" rows="2" placeholder="Ware erhalten | Datum, Unterschrift Fahrer">${esc(fo.unterschriften||'')}</textarea></div>
+      <label class="fo-c" style="margin-top:8px"><input type="checkbox" id="foBp" ${fo.briefpapier?'checked':''}> <b>Briefpapier</b> <span class="hinweis">(ohne eigenen Kopf/Fuß – Logo und Firmenangaben kommen vom Briefpapier)</span></label>
+      <div id="foBpBox" style="${fo.briefpapier?'':'display:none'};margin:4px 0 0 26px">
+        <label class="fo-c"><input type="checkbox" id="foHg" ${fo.hintergrund!==false?'checked':''}> Briefpapier-Bild im PDF mitdrucken <span class="hinweis">(aus = auf vorgedrucktes Papier drucken)</span></label>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:4px">${E.briefpapier_bild ? `<img src="${E.briefpapier_bild}" style="height:70px;border:1px solid var(--line)">` : '<span class="hinweis">Noch kein Briefpapier-Bild.</span>'}
+          <label class="btn">Briefpapier-Bild hochladen…<input type="file" id="foBpDatei" accept="image/png,image/jpeg" style="display:none"></label></div>
+        <p class="hinweis">Bild einer leeren A4-Seite (Logo, Anschrift, Fußzeile) – gilt für alle Belegarten.</p></div>
       <div class="raster2" style="${fo.briefpapier?'':'display:none'}" id="foRa"><div class="zeile"><label>Rand oben (mm)</label><input id="foRo" class="zahl" value="${zahl(fo.rand_oben)}"></div><div class="zeile"><label>Rand unten (mm)</label><input id="foRu" class="zahl" value="${zahl(fo.rand_unten)}"></div></div>`;
     const L = $('#foL'), q = s => L.querySelectorAll(s);
     q('.foAn').forEach(x => x.onchange = () => { fo.spalten[+x.dataset.i].an = x.checked; vorschau(); });
@@ -1591,7 +1600,15 @@ async function seiteFormulare(art){
     L.querySelector('#foTi').oninput = e => { fo.titel = e.target.value; vorschau(); };
     L.querySelector('#foZt').oninput = e => { fo.zusatztext = e.target.value; vorschau(); };
     L.querySelector('#foSg').oninput = e => { fo.schrift = +e.target.value; L.querySelector('#foSgW').textContent = e.target.value; vorschau(); };
-    L.querySelector('#foBp').onchange = e => { fo.briefpapier = e.target.checked; L.querySelector('#foRa').style.display = fo.briefpapier ? '' : 'none'; vorschau(); };
+    L.querySelector('#foBp').onchange = e => { fo.briefpapier = e.target.checked; L.querySelector('#foRa').style.display = L.querySelector('#foBpBox').style.display = fo.briefpapier ? '' : 'none'; vorschau(); };
+    L.querySelector('#foKo').onchange = e => { fo.kopf = e.target.value; vorschau(); };
+    L.querySelector('#foUs').oninput = e => { fo.unterschriften = e.target.value; vorschau(); };
+    L.querySelector('#foHg').onchange = e => { fo.hintergrund = e.target.checked; vorschau(); };
+    L.querySelector('#foBpDatei').onchange = async e => { const f = e.target.files[0]; if (!f) return;
+      const img = await new Promise((ok, nein) => { const i = new Image(); i.onload = () => ok(i); i.onerror = nein; i.src = URL.createObjectURL(f); });
+      const cv = document.createElement('canvas'); cv.width = 1240; cv.height = 1754;               // A4 mit 150 dpi reicht für den Druck
+      const cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height); cx.drawImage(img, 0, 0, cv.width, cv.height);
+      E = await api('einstellungen', {body:{briefpapier_bild: cv.toDataURL('image/jpeg', 0.82)}}); toast('Briefpapier-Bild gespeichert.'); zeichne(); vorschau(); };
     L.querySelector('#foRo').oninput = e => { fo.rand_oben = num(e.target.value); vorschau(); };
     L.querySelector('#foRu').oninput = e => { fo.rand_unten = num(e.target.value); vorschau(); };
   };

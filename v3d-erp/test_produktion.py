@@ -127,12 +127,12 @@ class TestTommi27(TestProduktion):
         self.assertEqual(erp.offene_auftragspositionen(self.db, self.kunde["id"])[0]["im_haus"], 600)
         ls = erp.beleg_weiterverarbeiten(self.db, ab_id, "LS")
         self.assertEqual(sum(p["menge"] for p in ls["positionen"]), 600)
-        ls["positionen"][0]["menge"] = 700                                 # von Hand erhöht → Verarbeiten blockt
+        ls["positionen"][1]["menge"] = 700                                 # von Hand erhöht → Verarbeiten blockt
         ls = erp.beleg_speichern(self.db, ls)
         with self.assertRaises(erp.Fehler) as e:
             erp.beleg_verarbeiten(self.db, ls["id"])
         self.assertIn("freigegeben", str(e.exception))
-        ls["positionen"][0]["menge"] = 600
+        ls["positionen"][1]["menge"] = 600
         erp.beleg_verarbeiten(self.db, erp.beleg_speichern(self.db, ls)["id"])
         with self.assertRaises(erp.Fehler):                                 # geliefert → Freigabe bleibt
             produktion.freigeben(self.db, g["id"], False)

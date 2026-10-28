@@ -62,12 +62,12 @@ class TestBelegkette(Basis):
         self.assertEqual(erp.artikel_lesen(self.db, self.art["id"])["reserviert"], 10)
         # Teillieferung 4 Stück
         ls1 = erp.beleg_weiterverarbeiten(self.db, ab["id"], "LS")
-        ls1["positionen"][0]["menge"] = 4
+        ls1["positionen"][1]["menge"] = 4              # [0] = Kopfzeile „aus Auftragsbestätigung …“
         ls1 = erp.beleg_speichern(self.db, ls1)
         erp.beleg_verarbeiten(self.db, ls1["id"])
         # Rest muss 6 sein
         ls2 = erp.beleg_weiterverarbeiten(self.db, ab["id"], "LS")
-        self.assertEqual(ls2["positionen"][0]["menge"], 6)
+        self.assertEqual(ls2["positionen"][1]["menge"], 6)
         erp.beleg_verarbeiten(self.db, ls2["id"])
         with self.assertRaises(erp.Fehler):
             erp.beleg_weiterverarbeiten(self.db, ab["id"], "LS")
@@ -270,14 +270,15 @@ class TestChargen(Basis):
         self.wareneingang(60, "S-0815")
         self.wareneingang(40, "S-0816", "KLS-2")
         ls = erp.beleg_weiterverarbeiten(self.db, self.ab["id"], "LS")
-        self.assertEqual([(p["charge_nr"], p["menge"]) for p in ls["positionen"]], [("S-0815", 60), ("S-0816", 40)])
-        ls["positionen"][1]["menge"] = 20                                    # nur 80 liefern
+        self.assertEqual([(p["charge_nr"], p["menge"]) for p in ls["positionen"] if not erp.ist_textzeile(p)], [("S-0815", 60), ("S-0816", 40)])
+        ls["positionen"][2]["menge"] = 20                                    # nur 80 liefern
         ls = erp.beleg_speichern(self.db, ls)
         erp.beleg_verarbeiten(self.db, ls["id"])
         rest = {c["chargennr"]: c["rest"] for c in erp.chargen_liste(self.db)}
         self.assertEqual(rest, {"S-0815": 0, "S-0816": 20})
         re_ = erp.beleg_weiterverarbeiten(self.db, ls["id"], "RE")
-        self.assertEqual([p["charge_nr"] for p in re_["positionen"]], ["S-0815", "S-0816"])
+        self.assertEqual([p["charge_nr"] for p in re_["positionen"] if not erp.ist_textzeile(p)], ["S-0815", "S-0816"])
+        self.assertTrue(re_["positionen"][0]["text"].startswith(f"aus Lieferschein {erp.beleg_lesen(self.db, ls['id'])['nummer']} vom"))   # GSB: LS-Nummer auf der Rechnung
         erp.beleg_verarbeiten(self.db, re_["id"])
         c = erp.charge_lesen(self.db, [x for x in erp.chargen_liste(self.db) if x["chargennr"] == "S-0815"][0]["id"])
         self.assertEqual([b["art"] for b in c["bewegungen"]], ["eingang", "lieferung"])
@@ -286,8 +287,8 @@ class TestChargen(Basis):
     def test_ueberlieferung_und_ausschuss(self):
         self.wareneingang(50, "S-1")
         ls = erp.beleg_weiterverarbeiten(self.db, self.ab["id"], "LS")
-        ls["positionen"][0]["menge"] = 60           # mehr als die Charge hergibt
-        ls["positionen"] = ls["positionen"][:1]
+        ls["positionen"][1]["menge"] = 60           # mehr als die Charge hergibt
+        ls["positionen"] = ls["positionen"][:2]
         ls = erp.beleg_speichern(self.db, ls)
         with self.assertRaises(erp.Fehler):
             erp.beleg_verarbeiten(self.db, ls["id"])

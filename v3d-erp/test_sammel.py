@@ -99,15 +99,15 @@ class TestSammelLieferschein(Basis):
         self.assertEqual([(p["offen"], p["im_haus"]) for p in offen3], [(26000, 0)])
         # Rechnung aus dem Sammel-LS: Textzeilen fallen weg, Mengen stimmen
         re_ = erp.beleg_weiterverarbeiten(self.db, ls["id"], "RE")
-        self.assertEqual(sorted(p["menge"] for p in re_["positionen"]), [3750, 36850])
+        self.assertEqual(sorted(p["menge"] for p in re_["positionen"] if not erp.ist_textzeile(p)), [3750, 36850])
 
     def test_ohne_kundenmaterial(self):
         ab = self.ab([dict(text="Konstruktion Vorrichtung", menge=2, einzelpreis=95)])
         offen = erp.offene_auftragspositionen(self.db, self.kunde["id"])
         self.assertFalse(offen[0]["kundenmaterial"])
         ls = erp.sammel_lieferschein(self.db, self.kunde["id"], [dict(pos_id=offen[0]["pos_id"], menge=2)])
-        self.assertEqual(len(ls["positionen"]), 1)            # nur ein Auftrag → keine Kopfzeile
-        self.assertEqual(ls["positionen"][0]["vorgaenger_pos_id"], ab["positionen"][0]["id"])
+        self.assertEqual(len(ls["positionen"]), 2)            # Kopfzeile „aus Auftragsbestätigung …“ + Ware
+        self.assertEqual(ls["positionen"][1]["vorgaenger_pos_id"], ab["positionen"][0]["id"])
 
 
 if __name__ == "__main__":
@@ -120,7 +120,7 @@ class TestTommi28(Basis):
     def ls_aus(self, ab, menge=None):
         ls = erp.beleg_weiterverarbeiten(self.db, ab["id"], "LS")
         if menge:
-            ls["positionen"][0]["menge"] = menge
+            ls["positionen"][1]["menge"] = menge
             ls = erp.beleg_speichern(self.db, ls)
         return erp.beleg_verarbeiten(self.db, ls["id"])["beleg"]
 
@@ -161,7 +161,7 @@ class TestTommi28(Basis):
         re_ = erp.sammel_rechnung(self.db, self.kunde["id"], [ls3["id"], ls1["id"]], "test")
         ware = [p for p in re_["positionen"] if not erp.ist_textzeile(p)]
         self.assertEqual([p["menge"] for p in ware], [2000, 5000])            # nach LS-Datum/Nummer sortiert
-        self.assertTrue(re_["positionen"][0]["text"].startswith(f"Lieferschein {ls1['nummer']}"))
+        self.assertTrue(re_["positionen"][0]["text"].startswith(f"aus Lieferschein {ls1['nummer']}"))
         self.assertAlmostEqual(re_["netto"], round(2000 * 0.6325, 2) + 5000 * 0.0742, places=2)
         # Entwurf zählt schon als berechnet? Nein – erst verarbeitete/angelegte RE-Positionen; offene_menge zählt alle nicht stornierten
         rest = erp.offene_lieferscheine(self.db, self.kunde["id"])
@@ -172,3 +172,43 @@ class TestTommi28(Basis):
         self.assertTrue(r["beleg"]["nummer"].startswith("RE"))
         kette = {b["nummer"] for b in erp.beleg_lesen(self.db, re_["id"])["kette"]}
         self.assertTrue({ls1["nummer"], ls3["nummer"]} <= kette)
+
+
+class TestGsbFormular(Basis):
+    """Tommis myfactory-Vorlagen 28.10.: Kopfzeilen mit AB/LS-Nummer, Ausschuss-Spalte am LS, Gewicht, Briefpapier."""
+
+    def test_kopfzeilen_ausschuss_gewicht_pdf(self):
+        import base64
+        import bericht
+        import produktion
+        art = erp.artikel_speichern(self.db, dict(bezeichnung="Komfortventilkörper", vk_preis=0.092, lagerfuehrung=0, gewicht_kg=0.02, arbeitsplan="Bohren"))
+        ab = self.ab([dict(artikel_id=art["id"], text="Komfortventilkörper", menge=11800, einzelpreis=0.092)], ref="4711")
+        self.wk(ab, [11800], "100075790/60/160022852/10/74660")
+        cid = self.db.execute("SELECT id FROM charge").fetchone()["id"]
+        f = produktion.starten(self.db, dict(charge_id=cid, arbeitsgang="Bohren"))
+        produktion.beenden(self.db, f["id"], dict(menge_gut=11700, menge_ausschuss=100))
+        ls = erp.beleg_weiterverarbeiten(self.db, ab["id"], "LS")
+        self.assertTrue(ls["positionen"][0]["text"].startswith(f"aus Auftragsbestätigung {ab['nummer']} vom"))
+        self.assertIn("Ihre Bestellung 4711", ls["positionen"][0]["text"])
+        self.assertEqual(ls["positionen"][1]["zusatz"].get("Ausschuss"), "100")
+        ls = erp.beleg_verarbeiten(self.db, ls["id"])["beleg"]
+        # zweiter LS meldet den schon gemeldeten Ausschuss nicht noch einmal
+        self.assertEqual(erp._ausschuss_offen(self.db, cid), 0)
+        re_ = erp.beleg_weiterverarbeiten(self.db, ls["id"], "RE")
+        self.assertIn(f"aus Lieferschein {ls['nummer']}", re_["positionen"][0]["text"])
+        self.assertIn(f"Auftrag {ab['nummer']}", re_["positionen"][0]["text"])
+        # GSB-Layout mit Briefpapier-Bild rendert, Lieferschein ohne Preise
+        from PIL import Image
+        import io
+        buf = io.BytesIO()
+        Image.new("RGB", (124, 175), "white").save(buf, "JPEG")
+        erp.einstellungen_speichern(self.db, dict(briefpapier_bild="data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode(),
+                                                  formular='{"LS": {"briefpapier": true, "kopf": "myfactory"}}'))
+        pdf, _ = bericht.beleg_pdf(self.db, ls["id"])
+        from pypdf import PdfReader
+        t = PdfReader(io.BytesIO(pdf)).pages[0].extract_text()
+        self.assertIn("234 kg", t)                         # 11.700 gelieferte Stück × 0,02 kg (100 Ausschuss)
+        self.assertIn("Ihre Bestellung 4711", t.replace("\n", " "))
+        self.assertIn("Ausschuss", t)
+        self.assertNotIn("Gesamtbetrag", t)
+        self.assertIn(ls["nummer"], t)

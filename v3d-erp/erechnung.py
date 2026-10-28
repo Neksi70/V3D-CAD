@@ -103,7 +103,9 @@ def cii_xml(db, bid, profil="xrechnung"):
         if erp.ist_textzeile(p):          # reine Textzeile (z. B. „aus Auftragsbestätigung …“) gehört nicht in die E-Rechnung
             continue
         netto_preis = round(p["einzelpreis"] * (1 - (p["rabatt_pct"] or 0) / 100), 4)
-        name = p["text"] + (f" – Charge {p['charge_nr']}" if p.get("charge_nr") else "")
+        ls = db.execute("""SELECT b.nummer FROM beleg_position v JOIN beleg b ON b.id=v.beleg_id
+                           WHERE v.id=? AND b.belegart='LS'""", (p["vorgaenger_pos_id"],)).fetchone() if p.get("vorgaenger_pos_id") else None
+        name = p["text"] + (f" – Lieferschein {ls['nummer']}" if ls else "") + (f" – Charge {p['charge_nr']}" if p.get("charge_nr") else "")
         zeilen_.append(f"""<ram:IncludedSupplyChainTradeLineItem>
 <ram:AssociatedDocumentLineDocument><ram:LineID>{p['pos']}</ram:LineID></ram:AssociatedDocumentLineDocument>
 <ram:SpecifiedTradeProduct>{f"<ram:SellerAssignedID>{_x(artnr[p['artikel_id']])}</ram:SellerAssignedID>" if p.get('artikel_id') in artnr else ''}<ram:Name>{_x(name[:500])}</ram:Name></ram:SpecifiedTradeProduct>
