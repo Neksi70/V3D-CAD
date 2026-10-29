@@ -297,6 +297,7 @@ class H(BaseHTTPRequestHandler):
         if n > 64 << 20:
             raise ValueError('zu gross')
         roh = self.rfile.read(n) if n else b'{}'
+        self._rest = 0
         if roh.startswith(b'\xef\xbb\xbf'):
             roh = roh[3:]
         try:
@@ -318,6 +319,7 @@ class H(BaseHTTPRequestHandler):
                 f.write(block)
                 rest -= len(block)
         tmp.replace(ziel)
+        self._rest = 0
         return n
 
     def pfad_q(self):
@@ -380,8 +382,12 @@ class H(BaseHTTPRequestHandler):
 
     # --- POST/PUT/DELETE ---
     def do_POST(self):
+        self._rest = int(self.headers.get('Content-Length') or 0)
         try:
             self._post()
+            if self._rest > 0:  # ungelesenen Rest verwerfen, sonst klebt er vor der naechsten Anfrage
+                self.rfile.read(self._rest)
+                self._rest = 0
         except ValueError as e:
             self.fehler(400, str(e))
         except Exception as e:
