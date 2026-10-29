@@ -19,7 +19,8 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from katalog import Katalog, UA, normname
+from choco import Choco
+from katalog import ALIAS, Katalog, UA, normname, woerter, zerlegt
 
 HIER = Path(__file__).resolve().parent
 DATEN = Path(os.environ.get('V3DSETUP_DATEN', HIER / 'daten'))
@@ -28,6 +29,8 @@ for d in ('inventare', 'profile', 'depot', 'treiber', 'katalog'):
     (DATEN / d).mkdir(parents=True, exist_ok=True)
 
 KATALOG = Katalog(DATEN / 'katalog')
+CHOCO = Choco(DATEN / 'katalog')
+VORSCHLAG_LAEUFT = set()
 LOCK = threading.Lock()
 JOB = {'laeuft': False, 'log': [], 'fertig': 0, 'gesamt': 0, 'profil': None}
 
@@ -35,7 +38,9 @@ WINDOWS_TEIL = re.compile(
     r'^(Microsoft Edge|Microsoft OneDrive|Microsoft Update Health Tools|Windows |Update for |'
     r'Microsoft \.NET (Host|Runtime|AppHost)|Microsoft Windows Desktop Runtime|Microsoft ASP\.NET Core|'
     r'Microsoft GameInput|Microsoft Teams Meeting Add-in|Teams Machine-Wide|Microsoft Intune|'
-    r'Realtek |Intel\(R\) |Intel® |AMD Software|NVIDIA (Grafiktreiber|Graphics Driver|HD-Audio|PhysX|FrameView|USBC))', re.I)
+    r'Realtek |Intel\(R\) |Intel® |AMD Software|NVIDIA (Grafiktreiber|Graphics Driver|HD-Audio|PhysX|FrameView|USBC)|'
+    r'Windows-Treiberpaket|Windows Driver Package|Mozilla Maintenance Service|Microsoft Windows Application Compatibility)'
+    r'|.*(Printer Uninstall|Drucker deinstallieren)$', re.I)
 
 
 def sicher(name):
@@ -94,7 +99,53 @@ def zuordnungen():
     return lies(DATEN / 'zuordnung.json', {})
 
 
+def vorschlaege_berechnen(datei):
+    """Fuer nicht erkannte Programme Kandidaten suchen: winget unscharf, dann Chocolatey.
+    Laeuft im Hintergrund (Chocolatey ist ein Web-Dienst), Ergebnis landet im Inventar."""
+    pfad = DATEN / 'inventare' / sicher(datei)
+    try:
+        inv = lies(pfad)
+        progs = inv.get('programme') or []
+        auto = KATALOG.zuordnen(progs)
+        manuell = zuordnungen()
+        erg = {}
+        for p, a in zip(progs, auto):
+            if a or normname(p.get('name')) in manuell or WINDOWS_TEIL.match(p.get('name') or ''):
+                continue
+            name = p.get('name') or ''
+            alias = next((ziel for muster, ziel in ALIAS if muster.search(name)), None)
+            if alias:
+                erg[name] = [{'id': alias, 'name': name, 'sicher': True, 'quelle': 'choco' if alias.startswith('choco:') else 'winget'}]
+                continue
+            kand = [dict(k, quelle='winget') for k in KATALOG.unscharf(p)]
+            if not any(k['sicher'] for k in kand):
+                toks = woerter(name)
+                teile = [w for w in zerlegt(name) if w not in toks]
+                treffer = CHOCO.kandidaten(toks) + (CHOCO.kandidaten(teile) if teile else [])
+                quellen = [{'id': 'choco:' + r['id'], 'name': r['name']} for r in treffer]
+                kand += [dict(k, quelle='choco') for k in KATALOG.unscharf(p, quellen=quellen)]
+                kand.sort(key=lambda k: (not k['sicher'], -k['punkte']))
+            if kand:
+                erg[name] = kand[:3]
+        with LOCK:
+            inv = lies(pfad)
+            inv['vorschlaege'] = erg
+            schreib(pfad, inv)
+    except Exception:
+        traceback.print_exc()
+    finally:
+        VORSCHLAG_LAEUFT.discard(datei)
+
+
+def vorschlaege_starten(datei):
+    if datei in VORSCHLAG_LAEUFT:
+        return
+    VORSCHLAG_LAEUFT.add(datei)
+    threading.Thread(target=vorschlaege_berechnen, args=(datei,), daemon=True).start()
+
+
 def inventar_ansicht(datei):
+    laeuft = sicher(datei) in VORSCHLAG_LAEUFT   # VOR dem Lesen, sonst Rennen mit dem Schreiben
     inv = lies(DATEN / 'inventare' / sicher(datei))
     if inv is None:
         return None
@@ -104,11 +155,21 @@ def inventar_ansicht(datei):
         auto = KATALOG.zuordnen(progs)
     except RuntimeError:
         auto = [None] * len(progs)
+    vorschl = inv.get('vorschlaege')
+    if vorschl is None:
+        vorschlaege_starten(sicher(datei))
     for p, a in zip(progs, auto):
         nn = normname(p.get('name'))
         p['id'] = manuell.get(nn, a)
         p['manuell'] = nn in manuell
         p['windows'] = bool(WINDOWS_TEIL.match(p.get('name') or ''))
+        kand = (vorschl or {}).get(p.get('name') or '') or []
+        if not p['id'] and not p['windows'] and kand:
+            if kand[0]['sicher']:
+                p['id'] = kand[0]['id']
+                p['auto'] = kand[0]['quelle']
+            else:
+                p['vorschlag'] = kand
     # winget export liefert IDs, die ueber den Namen nicht gefunden wurden
     bekannt = {p['id'] for p in progs if p.get('id')}
     extra = []
@@ -122,6 +183,8 @@ def inventar_ansicht(datei):
                 extra.append({'name': inf['name'], 'version': '', 'publisher': '', 'id': wid,
                               'quelle': 'winget export', 'windows': False})
     inv['programme'] = progs + extra
+    inv['vorschlaege_laeuft'] = laeuft or sicher(datei) in VORSCHLAG_LAEUFT and vorschl is None
+    inv.pop('vorschlaege', None)
     return inv
 
 
@@ -144,15 +207,15 @@ def jlog(t):
 def lade_paket(pid, eintrag):
     if eintrag.get('quelle') == 'eigen':
         return 'eigener Installer – liegt schon im Depot' if depot_info(pid) else 'eigener Installer fehlt!'
-    ins = KATALOG.installer(pid)
-    if not ins.get('url'):
+    ins = CHOCO.installer(pid.split(':', 1)[1]) if pid.startswith('choco:') else KATALOG.installer(pid)
+    if not ins.get('url') and not ins.get('eingebettet'):
         raise RuntimeError(ins.get('fehler') or 'keine Installer-URL')
     ziel = DATEN / 'depot' / sicher(pid)
     alt = lies(ziel / 'info.json')
     if alt and alt.get('version') == ins['version'] and (ziel / alt['datei']).exists():
         return f'aktuell ({ins["version"]})'
     ziel.mkdir(parents=True, exist_ok=True)
-    pfad_url = urllib.parse.urlparse(ins['url']).path
+    pfad_url = urllib.parse.urlparse(ins['url']).path if ins.get('url') else ins['eingebettet']
     dname = sicher(urllib.parse.unquote(os.path.basename(pfad_url))) or 'installer'
     ext = {'msi': '.msi', 'wix': '.msi', 'msix': '.msix', 'appx': '.appx', 'zip': '.zip'}
     if not os.path.splitext(dname)[1]:
@@ -161,24 +224,29 @@ def lade_paket(pid, eintrag):
         dname += '.zip'
     tmp = ziel / (dname + '.laden')
     h = hashlib.sha256()
-    req = urllib.request.Request(ins['url'], headers=UA)
-    with urllib.request.urlopen(req, timeout=120) as r, open(tmp, 'wb') as f:
-        while True:
-            block = r.read(1 << 20)
-            if not block:
-                break
-            h.update(block)
-            f.write(block)
+    if ins.get('eingebettet'):   # Installer steckt im Chocolatey-Paket selbst
+        daten = CHOCO.eingebettet_holen(pid, ins['eingebettet'])
+        h.update(daten)
+        tmp.write_bytes(daten)
+    else:
+        req = urllib.request.Request(ins['url'], headers=UA)
+        with urllib.request.urlopen(req, timeout=120) as r, open(tmp, 'wb') as f:
+            while True:
+                block = r.read(1 << 20)
+                if not block:
+                    break
+                h.update(block)
+                f.write(block)
     if ins.get('sha256') and h.hexdigest() != ins['sha256']:
         tmp.unlink(missing_ok=True)
-        raise RuntimeError('SHA-256 stimmt nicht mit dem winget-Manifest ueberein')
+        raise RuntimeError('SHA-256 stimmt nicht mit dem Paket-Manifest ueberein')
     for alte in ziel.iterdir():
         if alte.name not in ('info.json', tmp.name):
             alte.unlink()
     tmp.replace(ziel / dname)
     info = {k: ins.get(k) for k in ('id', 'name', 'version', 'typ', 'args', 'nested', 'codes', 'arch', 'scope', 'url', 'fehler')}
     info.update({'datei': dname, 'sha256': h.hexdigest(), 'groesse': (ziel / dname).stat().st_size,
-                 'quelle': 'winget', 'geladen': time.strftime('%Y-%m-%d %H:%M')})
+                 'quelle': 'choco' if pid.startswith('choco:') else 'winget', 'geladen': time.strftime('%Y-%m-%d %H:%M')})
     schreib(ziel / 'info.json', info)
     return f'geladen {ins["version"]} ({info["groesse"] // 1048576} MB, {ins["typ"]})' + (
         f' – {ins["fehler"]}' if ins.get('fehler') else '')
@@ -355,7 +423,12 @@ class H(BaseHTTPRequestHandler):
             return self.antwort(200, {'katalog': KATALOG.stand(), 'profile': profil_namen(),
                                       'basis': self.basis(), 'job': JOB['laeuft']})
         if pfad == '/api/suche':
-            return self.antwort(200, KATALOG.suche(q.get('q', '')))
+            erg = [dict(r, quelle='winget') for r in KATALOG.suche(q.get('q', ''))]
+            if q.get('choco'):
+                toks = woerter(q.get('q', '')) or [q.get('q', '').lower()]
+                erg += [{'id': 'choco:' + r['id'], 'name': r['name'], 'version': r['version'], 'quelle': 'choco'}
+                        for r in CHOCO.kandidaten(toks)]
+            return self.antwort(200, erg)
         if pfad == '/api/inventare':
             return self.antwort(200, inventare_liste())
         if pfad == '/api/inventar':
@@ -404,8 +477,19 @@ class H(BaseHTTPRequestHandler):
             inv['zeit'] = inv.get('zeit') or time.strftime('%Y-%m-%d %H:%M')
             datei = f'{host}_{time.strftime("%Y%m%d-%H%M%S")}.json'
             schreib(DATEN / 'inventare' / datei, inv)
+            vorschlaege_starten(datei)
             return self.antwort(200, {'ok': True, 'datei': datei,
                                       'link': f'{self.basis()}/#inv={urllib.parse.quote(datei)}'})
+        if pfad == '/api/vorschlaege':
+            d = sicher(q.get('datei', ''))
+            with LOCK:
+                inv = lies(DATEN / 'inventare' / d)
+                if inv is None:
+                    return self.fehler(404, 'Inventar nicht gefunden')
+                inv.pop('vorschlaege', None)
+                schreib(DATEN / 'inventare' / d, inv)
+            vorschlaege_starten(d)
+            return self.antwort(200, {'ok': True})
         if pfad == '/api/katalog/aktualisieren':
             KATALOG.aktualisieren()
             return self.antwort(200, {'ok': True, 'katalog': KATALOG.stand()})
@@ -420,7 +504,9 @@ class H(BaseHTTPRequestHandler):
                         if e.get('an', True):
                             alt = pr['pakete'].get(e['id'], {})
                             pr['pakete'][e['id']] = {**alt, 'name': e.get('name') or alt.get('name') or e['id'],
-                                                     'quelle': e.get('quelle', alt.get('quelle', 'winget')),
+                                                     'quelle': e.get('quelle') or alt.get('quelle') or (
+                                                         'choco' if e['id'].startswith('choco:') else
+                                                         'eigen' if e['id'].startswith('eigen.') else 'winget'),
                                                      'aus': e.get('aus') or alt.get('aus')}
                         else:
                             pr['pakete'].pop(e['id'], None)

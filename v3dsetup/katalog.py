@@ -49,6 +49,69 @@ _VER = re.compile(r'\bv?\d+(\.\d+)+[a-z0-9.-]*\b', re.I)
 _KLAMMER = re.compile(r'\([^)]*\)|\[[^\]]*\]')
 
 
+_STOPP = {'version', 'ver', 'free', 'machine', 'setup', 'installer', 'install', 'the', 'for', 'and', 'windows',
+          'win', 'bit', 'uninstall', 'remove', 'repair', 'or', 'of', 'inc', 'ltd', 'gmbh', 'corp', 'corporation',
+          'co', 'llc', 'sia', 'sas', 'ag', 'stable', 'release', 'edition', 'x64', 'x86', 'de', 'en', 'us'}
+_LOCALE = re.compile(r'\s-\s[a-z]{2}-[a-z]{2}\b', re.I)
+
+
+def woerter(text):
+    """Bedeutungstragende Woerter: ohne Version, Jahr, Sprache, Rechtsform."""
+    t = _LOCALE.sub(' ', text or '')
+    t = _KLAMMER.sub(' ', t)
+    t = _VER.sub(' ', t)
+    t = re.sub(r'\bv\d+[a-z]?\b', ' ', t, flags=re.I)        # V924a
+    t = re.sub(r'\b(19|20)\d\d\b', ' ', t)                    # Jahreszahlen
+    t = re.sub(r'(?<=[A-Za-z])[-!](?=[A-Za-z])', '', t)         # J-Link -> JLink, FRITZ!WLAN
+    teile = re.findall(r'[0-9a-z\u00c0-\uffff]+', t.lower())
+    return [w for w in teile if (len(w) >= 2 and w not in _STOPP and not w.isdigit()) or (w.isdigit() and len(w) == 3)]
+
+
+def passt(a, b):
+    """Gleich oder fast gleich (firefox ~ firefoxpwa nein, quicksurface ~ quicksurfaces ja)."""
+    if a == b:
+        return True
+    k, l = sorted((a, b), key=len)
+    return len(k) >= 4 and l.startswith(k) and len(k) / len(l) >= 0.75
+
+
+def deckung(toks, kand):
+    """Anteil (nach Buchstaben) der Programm-Woerter, die im Kandidaten vorkommen.
+    Ein zusammengeschriebenes Wort zaehlt, wenn es genau aus Kandidaten-Woertern besteht
+    (anycubicslicernext = anycubic+slicer+next), nicht wenn nur ein Teil passt."""
+    kl = list(kand)
+    gesamt = sum(len(t) for t in toks)
+    gedeckt = 0
+    for t in toks:
+        if any(passt(t, u) for u in kl):
+            gedeckt += len(t)
+            continue
+        for i in range(len(kl)):
+            s = ''
+            for u in kl[i:i + 4]:
+                s += u
+                if s == t:
+                    gedeckt += len(t)
+                    break
+                if not t.startswith(s):
+                    break
+            else:
+                continue
+            if s == t:
+                break
+    return gedeckt / gesamt if gesamt else 0
+
+
+def zerlegt(text):
+    """Woerter inkl. CamelCase-Teilen (fuer Kandidaten-Namen)."""
+    t = re.sub(r'([a-z])([A-Z])', r'\1 \2', text or '')
+    return woerter(text) + woerter(t)
+
+
+ALIAS = [(re.compile(r'^microsoft (365|office)', re.I), 'Microsoft.Office'),
+         (re.compile(r'^vmware workstation', re.I), 'choco:vmware-workstation')]
+
+
 def normname(name):
     """Name grob wie winget normieren: ohne Version, Architektur, Sprache, Satzzeichen."""
     n = _KLAMMER.sub(' ', name or '')
@@ -165,12 +228,56 @@ class Katalog:
                 will = 'x86' if re.search(r'x86|32[- ]?bit', name_l) else 'x64' if re.search(r'x64|64[- ]?bit', name_l) else ''
                 anders = {'x64': 'x86', 'x86': 'x64'}.get(will, '#')
                 # bei mehreren: ProductCode-Treffer, Hauptpaket (nicht Beta/Nightly), passende Architektur, kürzeste ID
-                treffer = sorted(set(treffer), key=lambda x: (
-                    x not in pc_treffer,
+                basis_ids = {t[:-4] for t in pc_treffer if t.endswith('.EXE')}
+                pc_treffer |= basis_ids & set(treffer)
+                treffer = sorted(set(treffer) | (basis_ids & set(self._existiert(c, basis_ids))), key=lambda x: (
+                    x not in pc_treffer, x.endswith('.EXE'),
                     any(w in x.lower() for w in ('beta', 'nightly', 'preview', 'dev', 'canary', 'insider')),
                     anders in x.lower(), len(x), x))
                 ergebnis.append(treffer[0] if treffer else None)
         return ergebnis
+
+    @staticmethod
+    def _existiert(c, ids):
+        return [r[0] for r in c.execute('select id from ids where id in (%s)' % ','.join('?' * len(ids)), list(ids))] if ids else []
+
+    # ---------- Unscharfe Zuordnung ----------
+    def unscharf(self, prog, quellen=None):
+        """Kandidaten fuer ein nicht erkanntes Programm: [{id, name, punkte, sicher}].
+        quellen: optionale Zusatzliste (z. B. Chocolatey) im selben Format {id, name}."""
+        toks = woerter(prog.get('name'))
+        if not toks:
+            return []
+        pub = woerter(prog.get('publisher'))
+        pub = pub[0] if pub and len(pub[0]) >= 3 else ''
+        kand = {}
+        if quellen is None:
+            such = max(toks, key=len)
+            with self._c() as c:
+                rows = c.execute(self._SQL + ' where i.id like ? or n.name like ? limit 4000',
+                                 (f'%{such}%', f'%{such}%')).fetchall()
+            for pid, name, ver, pp in rows:
+                kand[pid] = name
+        else:
+            for q in quellen:
+                kand[q['id']] = q['name']
+        out = []
+        for pid, name in kand.items():
+            namen_w = zerlegt(name)
+            ct = namen_w + [w for w in zerlegt(pid.replace('.', ' ').replace(':', ' ').replace('-', ' ')) if w not in namen_w]
+            anteil = deckung(toks, ct)
+            # Markenname (erstes Wort) muss passen, sonst ist es Zufall (nRF Connect ≠ Desktop Connector)
+            if anteil < 0.75 or deckung(toks[:1], ct) < 1:
+                continue
+            gross = woerter(name)
+            extra = len([u for u in gross if not any(passt(t, u) or u in t for t in toks)])
+            pub_ok = bool(pub) and pub in pid.lower().replace('-', '')
+            nebenpaket = any(w in pid.lower() for w in ('beta', 'nightly', 'preview', 'canary', 'insider', 'portable'))
+            punkte = anteil * 10 + (3 if pub_ok else 0) - extra * 0.7 - (2 if nebenpaket else 0)
+            sicher = anteil == 1 and (extra == 0 or (extra <= 1 and pub_ok)) and (pub_ok or (len(toks) >= 2 and sum(map(len, toks)) >= 8)) and not nebenpaket
+            out.append({'id': pid, 'name': name, 'punkte': round(punkte, 2), 'sicher': sicher, 'anteil': anteil})
+        out.sort(key=lambda x: -x['punkte'])
+        return out[:3]
 
     # ---------- Manifest + Installer ----------
     def _pfad(self, c, pp):
