@@ -287,9 +287,16 @@ def lade_paket(pid, eintrag):
                     break
                 h.update(block)
                 f.write(block)
+    hinweis_sha = ''
     if ins.get('sha256') and h.hexdigest() != ins['sha256']:
-        tmp.unlink(missing_ok=True)
-        raise RuntimeError('SHA-256 stimmt nicht mit dem Paket-Manifest ueberein')
+        # „latest“-Links ohne Version im Pfad (z. B. Chrome) liefern oft schon eine neuere Datei als das
+        # Manifest kennt – dann ist die Abweichung erwartbar. Bei Links mit fester Version bleibt es ein Fehler.
+        pfad_teil = urllib.parse.urlparse(ins.get('url') or '').path
+        if ins.get('url') and not re.search(r'\d+\.\d+', pfad_teil):
+            hinweis_sha = ' – neuere Datei als im Katalog (Hersteller-Link ohne Version), Prüfsumme neu berechnet'
+        else:
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError('SHA-256 stimmt nicht mit dem Paket-Manifest ueberein')
     for alte in ziel.iterdir():
         if alte.name not in ('info.json', tmp.name):
             alte.unlink()
@@ -298,8 +305,30 @@ def lade_paket(pid, eintrag):
     info.update({'datei': dname, 'sha256': h.hexdigest(), 'groesse': (ziel / dname).stat().st_size,
                  'quelle': 'choco' if pid.startswith('choco:') else 'winget', 'geladen': time.strftime('%Y-%m-%d %H:%M')})
     schreib(ziel / 'info.json', info)
-    return f'geladen {ins["version"]} ({info["groesse"] // 1048576} MB, {ins["typ"]})' + (
+    return f'geladen {ins["version"]} ({info["groesse"] // 1048576} MB, {ins["typ"]})' + hinweis_sha + (
         f' – {ins["fehler"]}' if ins.get('fehler') else '')
+
+
+def netz_ersatz(profilname, pid, e):
+    """Chocolatey-Link tot -> offiziellen Download im Netz suchen und das Paket in der Liste ersetzen."""
+    titel = e.get('name') or pid
+    jlog(f'{titel}: suche offiziellen Download im Netz …')
+    r = NETZ.suchen({'name': titel, 'publisher': '', 'version': ''})
+    if not r or not r.get('ok'):
+        jlog(f'{titel}: auch im Netz nichts – {(r or {}).get("hinweis") or "keine Antwort"}')
+        return
+    neu = netz_vorschlag(titel, r)
+    eintrag = {'name': titel, 'quelle': 'netz', 'aus': e.get('aus'), 'key': e.get('key'),
+               'url': r['url'], 'version': r.get('version'), 'seite': r.get('quelle')}
+    with LOCK:
+        pr = profil(profilname)
+        pr['pakete'].pop(pid, None)
+        pr['pakete'][neu['id']] = eintrag
+        schreib(profil_pfad(profilname), pr)
+    try:
+        jlog(f'{titel}: {lade_paket(neu["id"], eintrag)} (ersetzt Chocolatey)')
+    except Exception as ex:
+        jlog(f'{titel}: Netz-Download ging auch nicht: {ex}')
 
 
 def lade_job(name):
@@ -317,6 +346,8 @@ def lade_job(name):
                 jlog(f'{e.get("name") or pid}: {lade_paket(pid, e)}')
             except Exception as ex:
                 jlog(f'{e.get("name") or pid}: FEHLER {ex}')
+                if pid.startswith('choco:'):
+                    netz_ersatz(name, pid, e)
             with LOCK:
                 JOB['fertig'] += 1
         jlog('fertig.')
@@ -813,7 +844,14 @@ class H(BaseHTTPRequestHandler):
                            'neustart': b.get('neustart', True), 'zeit': time.time()}
                 r.setdefault('auftraege', []).append(auftrag)
                 rechner_speichern(r)
-            return self.antwort(200, {'ok': True})
+                # Programme im Auftrag, aber noch nicht alle im Depot -> gleich herunterladen
+                starte_laden = 'Installieren' in auftrag['schritte'] and not JOB['laeuft'] and any(
+                    not depot_info(pid) for pid in profil(auftrag['profil'] or 'standard')['pakete'])
+                if starte_laden:
+                    JOB.update(laeuft=True, log=[], fertig=0, gesamt=0, profil=auftrag['profil'] or 'standard')
+            if starte_laden:
+                threading.Thread(target=lade_job, args=(auftrag['profil'] or 'standard',), daemon=True).start()
+            return self.antwort(200, {'ok': True, 'laden': starte_laden})
         if pfad == '/api/vorschlaege':
             d = sicher(q.get('datei', ''))
             with LOCK:

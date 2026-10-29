@@ -172,6 +172,15 @@ function Hole-Programme {
     return , $liste
 }
 
+# pnputil schreibt in der DOS-Codepage (850) - sonst wird aus "hinzugefuegt" "hinzugef?gt"
+function Mit-Oem([scriptblock]$befehl) {
+    $alt = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
+        & $befehl
+    } finally { [Console]::OutputEncoding = $alt }
+}
+
 function Finde-Winget {
     $c = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($c) { return $c.Source }
@@ -387,12 +396,13 @@ function Do-TreiberZurueck {
     [IO.Compression.ZipFile]::ExtractToDirectory($zip, $ordner)
     Fortschritt 70 100 'spiele Treiber ein (dauert etwas)'
     Log 'Spiele Treiber ein (pnputil /add-driver /install) ...' 'Cyan'
-    $aus = & pnputil.exe /add-driver "$ordner\*.inf" /subdirs /install 2>&1
+    $aus = Mit-Oem { & pnputil.exe /add-driver "$ordner\*.inf" /subdirs /install 2>&1 }
     $code = $LASTEXITCODE
     $aus | Select-Object -Last 6 | ForEach-Object { Log "  $_" }
     if ($code -eq 3010) { $script:Neustart = $true }
     Fortschritt 100 100 'Treiber eingespielt'
-    Log "Treiber eingespielt (Code $code)" 'Green'
+    # 259 = einige Treiber ohne passendes Geraet - normal bei einer Sicherung von allem
+    Log "Treiber eingespielt (Code $code$(if ($code -eq 259) { ': einige ohne passendes Geraet, normal' }))" 'Green'
 }
 
 # ---------------------------------------------------------------- 4) Programme
