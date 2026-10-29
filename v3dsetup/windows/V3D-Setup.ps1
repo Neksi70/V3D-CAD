@@ -50,6 +50,7 @@ function Puls {
     $b = @{ host = $env:COMPUTERNAME; status = $script:Z.status; aufgabe = $script:Z.aufgabe
             schritte = @($script:Z.schritte); fortschritt = $script:Z.fortschritt; log = $neu }
     if ($null -ne $script:Z.ergebnisse) { $b.ergebnisse = @($script:Z.ergebnisse.ToArray()) }
+    if ($script:Z.installer) { $b.installer = $script:Z.installer }
     if (-not $script:Z.kennt) {
         $cs = Get-CimInstance Win32_ComputerSystem
         $os = Get-CimInstance Win32_OperatingSystem
@@ -63,6 +64,8 @@ function Puls {
             -Body ([Text.Encoding]::UTF8.GetBytes($json)) -ContentType 'application/json; charset=utf-8'
         $script:Puffer.RemoveRange(0, $neu.Count)
         $script:Z.kennt = $true
+        # Steuerbefehle merken, egal welcher Puls sie abholt (auch der aus Log)
+        if ($r.auftrag -and $r.auftrag.aktion -eq 'Ueberspringen') { $script:Steuer = $r.auftrag; return $null }
         return $r.auftrag
     } catch {
         return $null    # V3DA kurz weg - Zeilen bleiben im Puffer und gehen beim naechsten Mal mit
@@ -423,10 +426,25 @@ function Starte-Installer([string]$datei, [string]$typ, [string]$argumente) {
     $null = $p.Handle   # sonst liefert ExitCode bei -PassThru ohne -Wait oft nichts
     # manche Installer starten am Ende das Programm und kehren nie zurueck -> Zeitlimit
     $start = Get-Date
-    while (-not $p.WaitForExit(3000)) {
-        [void](Puls)
-        if (((Get-Date) - $start).TotalMinutes -gt 45) { Log '  Zeitlimit (45 min) - laeuft im Hintergrund weiter' 'Yellow'; return 0 }
-    }
+    $script:Steuer = $null
+    $script:Z.installer = @{ programm = $script:AktuellesProgramm; seit = $start.ToString('HH:mm:ss'); pid = $p.Id }
+    try {
+        while (-not $p.WaitForExit(3000)) {
+            [void](Puls)
+            if ($script:Steuer) {
+                $script:Steuer = $null
+                Log '  Uebersprungen auf Wunsch aus der Weboberflaeche - beende den Installer' 'Yellow'
+                & taskkill.exe /PID $p.Id /T /F 2>&1 | Out-Null
+                return -999
+            }
+            $min = [int]((Get-Date) - $start).TotalMinutes
+            if ($min -ge 5 -and $min % 5 -eq 0 -and $script:LetzteWarnung -ne $min) {
+                $script:LetzteWarnung = $min
+                Log "  laeuft seit $min min - wartet evtl. ein Fenster auf Eingabe? (in der Weboberflaeche: Ueberspringen)" 'Yellow'
+            }
+            if ($min -gt 45) { Log '  Zeitlimit (45 min) - laeuft im Hintergrund weiter' 'Yellow'; return -998 }
+        }
+    } finally { $script:Z.installer = $null }
     return $p.ExitCode
 }
 
@@ -491,8 +509,14 @@ function Do-Installieren {
                 $start = Join-Path $aus ($p.nested -replace '/', '\')
             }
             Fortschritt ($n - 0.5) $pakete.Count ("installiere " + $p.name)
+            $script:AktuellesProgramm = $p.name
             Log "$kopf - installiere ($typ $($p.args)) ..."
             $code = Starte-Installer $start $typ ([string]$p.args)
+            if ($code -eq -999 -or $code -eq -998) {
+                $txt = $(if ($code -eq -999) { 'uebersprungen (von Hand)' } else { 'Zeitlimit 45 min' })
+                [void]$ergebnis.Add([pscustomobject]@{ Programm = $p.name; Ergebnis = $txt })
+                Ergebnis $p.name $txt 'skip'; continue
+            }
             $ok = @($p.codes) -contains $code
             if ($code -eq 3010 -or $code -eq 1641) { $script:Neustart = $true }
             if ($ok) { Log "$kopf - OK" 'Green' } else { Log "$kopf - Fehlercode $code" 'Red' }

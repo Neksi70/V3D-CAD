@@ -524,7 +524,7 @@ def agent_puls(b):
     host = sicher(b.get('host') or 'unbekannt')
     with LOCK:
         r = RECHNER.setdefault(host, {'host': host, 'log': [], 'auftraege': []})
-        for k in ('modell', 'os', 'benutzer', 'status', 'aufgabe', 'schritte', 'fortschritt', 'ip'):
+        for k in ('modell', 'os', 'benutzer', 'status', 'aufgabe', 'schritte', 'fortschritt', 'ip', 'installer'):
             if k in b:
                 r[k] = b[k]
         if 'ergebnisse' in b:
@@ -533,6 +533,15 @@ def agent_puls(b):
         if neu:
             r['log'] = (r.get('log', []) + neu)[-600:]
         r['zuletzt'] = time.time()
+        if 'installer' not in b:
+            r['installer'] = None
+        # Steuerbefehle (z. B. Ueberspringen) gehen auch waehrend der Arbeit raus - nur solange ein Installer laeuft
+        steuer = r.get('steuer') if b.get('installer') else None
+        if steuer:
+            r['steuer'] = None
+            rechner_speichern(r)
+            return {'auftrag': steuer}
+        r['steuer'] = None
         auftrag = r['auftraege'].pop(0) if r.get('auftraege') and b.get('status') == 'bereit' else None
         if auftrag:
             r['status'] = 'arbeitet'
@@ -831,12 +840,18 @@ class H(BaseHTTPRequestHandler):
         if pfad == '/api/rechner/auftrag':
             b = self.koerper_json()
             host = sicher(q.get('host', ''))
-            if b.get('aktion') not in AKTIONEN:
+            if b.get('aktion') not in AKTIONEN and b.get('aktion') != 'Ueberspringen':
                 raise ValueError('unbekannte Aktion')
             with LOCK:
                 r = RECHNER.get(host)
                 if not r:
                     return self.fehler(404, 'Rechner unbekannt')
+                if b['aktion'] == 'Ueberspringen':
+                    if not r.get('installer'):
+                        return self.fehler(409, 'Gerade laeuft kein Installer')
+                    r['steuer'] = {'aktion': 'Ueberspringen', 'programm': r['installer'].get('programm')}
+                    rechner_speichern(r)
+                    return self.antwort(200, {'ok': True})
                 if b['aktion'] != 'Beenden' and (r.get('status') == 'arbeitet' or r.get('auftraege')):
                     return self.fehler(409, 'Der Rechner ist noch beschaeftigt')
                 auftrag = {'aktion': b['aktion'], 'schritte': AKTIONEN[b['aktion']], 'titel': TITEL[b['aktion']],

@@ -100,6 +100,9 @@
   .erg b { width:18px; text-align:center; }
   .erg.ok b { color:var(--ok); } .erg.fehler b { color:var(--err); } .erg.da b { color:var(--mid); } .erg.skip b { color:var(--warn); }
   .erg span.r { margin-left:auto; color:var(--mid); font-size:12px; text-align:right; }
+  .installer { display:flex; gap:10px; align-items:center; justify-content:space-between; font-size:13px;
+               border:1px solid var(--line2); border-radius:8px; padding:8px 10px; margin-bottom:10px; }
+  .installer.lang { border-color:var(--warn); background:rgba(255,176,32,.07); }
   .zaehler { display:flex; gap:12px; font-size:12px; color:var(--mid); margin-bottom:6px; }
   details.prot summary { cursor:pointer; color:var(--mid); font-size:12px; }
   .prot pre { max-height:260px; overflow:auto; font-size:11.5px; line-height:1.45; margin:6px 0 0; }
@@ -599,6 +602,7 @@ function liveHtml(r) {
       <div class="balken ${fertig ? 'ok' : ''}"><div style="width:${fertig ? 100 : proz}%"></div></div>
       <div class="btext"><span>${schritte.length > 1 ? `Schritt ${Math.min(erledigt + 1, schritte.length)} von ${schritte.length}` : ''}</span>
         <span>${!fertig && f && f.gesamt > 3 && f.gesamt !== 100 ? Math.floor(f.n) + ' / ' + f.gesamt + ' Programme' : ''}</span></div>` : ''}
+    ${r.installer && r.status === 'arbeitet' ? installerZeile(r) : ''}
     ${erg.length ? `<div class="zaehler"><span style="color:var(--ok)">✓ ${z('ok')} installiert</span><span>↷ ${z('da')} schon da</span>
         <span style="color:var(--warn)">⚠ ${z('skip')} übersprungen</span><span style="color:var(--err)">✗ ${z('fehler')} Fehler</span></div>
       <div class="ergebnisse">${erg.map(e => `<div class="erg ${e.art}"><b>${ERGZ[e.art] || '·'}</b><span>${esc(e.programm)}</span><span class="r">${esc(e.ergebnis)}</span></div>`).join('')}</div>` : ''}
@@ -659,6 +663,23 @@ async function zeigeRechner() {
   }
   for (const k of [...box.querySelectorAll('.karte')]) if (!liste.find(r => 'k_' + r.host === k.id)) k.remove();
   return liste.some(r => r.online && r.status !== 'bereit');
+}
+
+function installerZeile(r) {
+  const [h, m, s2] = (r.installer.seit || '0:0:0').split(':').map(Number);
+  const jetzt = new Date(), seit = new Date(); seit.setHours(h, m, s2, 0);
+  const min = Math.max(0, Math.floor((jetzt - seit) / 60000));
+  const lang = min >= 5;
+  return `<div class="installer ${lang ? 'lang' : ''}">
+    <span>⏳ <b>${esc(r.installer.programm || 'Installer')}</b> läuft seit ${min} min
+      ${lang ? '<br><span class="klein">Normal sind 1–3 min. Vielleicht wartet ein Fenster auf dem PC auf eine Eingabe.</span>' : ''}</span>
+    <button class="klein ${lang ? 'haupt' : ''}" onclick="ueberspringen('${esc(r.host)}', '${esc(r.installer.programm || '')}')"
+      title="Installer auf dem PC beenden und mit dem nächsten Programm weitermachen">⏭ Überspringen</button></div>`;
+}
+async function ueberspringen(host, programm) {
+  if (!confirm(`„${programm}“ auf ${host} abbrechen und mit dem nächsten Programm weitermachen?`)) return;
+  try { await post('/api/rechner/auftrag?host=' + encodeURIComponent(host), {aktion: 'Ueberspringen'}); }
+  catch (e) { alert(e.message); }
 }
 
 async function auftrag(host, aktion) {
