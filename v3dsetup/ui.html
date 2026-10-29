@@ -84,7 +84,14 @@
   .pfeil { color:var(--dim); }
   .dreh { width:10px; height:10px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; display:inline-block; animation:dreh .8s linear infinite; }
   @keyframes dreh { to { transform:rotate(360deg); } }
-  .balken { height:8px; background:var(--line); border-radius:6px; overflow:hidden; }
+  .prozent { display:flex; align-items:baseline; gap:10px; margin-bottom:4px; }
+  .prozent b { font-size:26px; font-weight:700; color:var(--acc); font-variant-numeric:tabular-nums; min-width:70px; }
+  .prozent b.ok { color:var(--ok); }
+  .prozent span { color:var(--mid); font-size:13px; }
+  .balken { height:10px; background:var(--line); border-radius:6px; overflow:hidden; }
+  .balken.ok div { background:var(--ok); }
+  .gesichert { display:flex; flex-direction:column; gap:3px; font-size:12px; margin-bottom:8px; }
+  .gesichert .ja { color:var(--ok); } .gesichert .nein { color:var(--warn); }
   .balken div { height:100%; background:linear-gradient(90deg, var(--acc), var(--ahov)); transition:width .4s; }
   .btext { display:flex; justify-content:space-between; font-size:12px; color:var(--mid); margin:4px 0 10px; }
   .ergebnisse { display:grid; grid-template-columns: 1fr; gap:2px; max-height:240px; overflow:auto; margin-bottom:8px; }
@@ -518,6 +525,24 @@ function pill(r) {
 }
 function seit(s) { return s < 90 ? `vor ${s} s` : s < 5400 ? `vor ${Math.round(s/60)} min` : `vor ${Math.round(s/3600)} h`; }
 
+function kurzZeit(z) { return (z || '').replace(/^(\d{4})-(\d\d)-(\d\d)/, (m, j, mo, t) => `${+t}.${+mo}.`); }
+function sicherHtml(r) {
+  const h = esc(r.host), g = r.gesichert || {}, inv = g.inventar, tr = g.treiber;
+  const zeile = (ok, icon, was, text) => `<span class="${ok ? 'ja' : 'nein'}">${ok ? '✓' : '○'} ${icon} ${was}: ${text}</span>`;
+  const status = `<div class="gesichert">
+    ${zeile(inv, '📋', 'Inventar', inv ? `${kurzZeit(inv.zeit)} · ${inv.anzahl} Programme` : 'fehlt noch')}
+    ${zeile(tr, '🔧', 'Treiber', tr ? `${kurzZeit(tr.zeit)} · ${tr.anzahl || '?'} Treiber · ${mb(tr.groesse)}` : 'fehlt noch')}</div>`;
+  // Hauptknopf sichert nur, was fehlt
+  let haupt;
+  if (!inv && !tr) haupt = `<button class="haupt" onclick="auftrag('${h}','AlterRechner')">Inventar + Treiber sichern</button>`;
+  else if (!tr) haupt = `<button class="haupt" onclick="auftrag('${h}','TreiberSichern')" title="Inventar liegt schon vor">Treiber sichern</button>`;
+  else if (!inv) haupt = `<button class="haupt" onclick="auftrag('${h}','Inventar')" title="Treiber liegen schon vor">Inventar senden</button>`;
+  else haupt = '<span class="muted klein">beides gesichert ✓</span>';
+  const neu = [inv && `<button class="klein" onclick="auftrag('${h}','Inventar')">Inventar neu</button>`,
+               tr && `<button class="klein" onclick="auftrag('${h}','TreiberSichern')">Treiber neu</button>`].filter(Boolean).join('');
+  return status + `<div class="knoepfe">${haupt}${neu}</div>`;
+}
+
 function steuerHtml(r) {
   const h = esc(r.host), aus = !r.online || r.status !== 'bereit' ? 'disabled' : '';
   if (r.online && r.status !== 'bereit')
@@ -530,9 +555,7 @@ function steuerHtml(r) {
   const gleich = TREIBER.filter(t => t.modell && t.modell === r.modell);
   const profile = [...$('profwahl').options].map(o => o.value);
   return `<div class="gruppen">
-    <div class="gruppe"><h4>Alter Rechner</h4><div class="knoepfe">
-      <button ${aus} onclick="auftrag('${h}','AlterRechner')" title="Programmliste senden und alle Treiber auf V3DA sichern">Inventar + Treiber sichern</button>
-      <button class="klein" ${aus} onclick="auftrag('${h}','Inventar')">nur Inventar</button></div></div>
+    <div class="gruppe"><h4>Alter Rechner – sichern</h4>${sicherHtml(r)}</div>
     <div class="gruppe"><h4>Pflege</h4><div class="knoepfe">
       <button ${aus} onclick="auftrag('${h}','Updates')" title="winget + Windows Update inkl. Treiber, mit Neustarts">⟳ Alle Updates</button></div></div>
     <div class="gruppe breit"><h4>Neuer Rechner</h4>
@@ -558,15 +581,23 @@ function liveHtml(r) {
   const chips = schritte.map((s, i) => (i ? '<span class="pfeil">→</span>' : '') +
     `<span class="chip ${s.zustand}">${s.zustand === 'laeuft' ? '<span class="dreh"></span>' : s.zustand === 'fertig' ? '✓' : s.zustand === 'fehler' ? '✗' : '○'} ${SCHRITT[s.name] || esc(s.name)}</span>`).join('');
   const f = r.fortschritt;
-  const proz = f && f.gesamt ? Math.round(100 * f.n / f.gesamt) : null;
+  // Gesamt-%: erledigte Schritte + Anteil des laufenden Schritts
+  const erledigt = schritte.filter(s => s.zustand === 'fertig' || s.zustand === 'fehler').length;
+  const laeuft = schritte.some(s => s.zustand === 'laeuft');
+  const anteil = laeuft && f && f.gesamt ? Math.min(1, f.n / f.gesamt) : 0;
+  const proz = schritte.length ? Math.floor(100 * (erledigt + anteil) / schritte.length) : null;
   const erg = r.ergebnisse || [];
   const z = k => erg.filter(e => e.art === k).length;
   const fertig = r.status === 'bereit' && schritte.length && schritte.every(s => s.zustand !== 'offen' && s.zustand !== 'laeuft');
   return `<div class="live">
     <h3>${r.status === 'arbeitet' ? '<span class="dreh" style="color:var(--acc)"></span>' : fertig ? (schritte.some(s => s.zustand === 'fehler') || erg.some(e => e.art === 'fehler') ? '⚠️' : '✅') : ''} ${esc(r.aufgabe || 'Letzter Auftrag')}</h3>
     ${chips ? `<div class="chips">${chips}</div>` : ''}
-    ${f && r.status !== 'bereit' ? `<div class="balken"><div style="width:${proz ?? 0}%"></div></div>
-      <div class="btext"><span>${esc(f.text || '')}</span><span>${f.gesamt ? f.n + ' / ' + f.gesamt : ''}</span></div>` : ''}
+    ${proz != null && (r.status !== 'bereit' || fertig) ? `
+      <div class="prozent"><b class="${fertig ? 'ok' : ''}">${fertig ? 100 : proz} %</b>
+        <span>${fertig ? 'fertig' : esc(f?.text || (laeuft ? 'läuft …' : 'startet …'))}</span></div>
+      <div class="balken ${fertig ? 'ok' : ''}"><div style="width:${fertig ? 100 : proz}%"></div></div>
+      <div class="btext"><span>${schritte.length > 1 ? `Schritt ${Math.min(erledigt + 1, schritte.length)} von ${schritte.length}` : ''}</span>
+        <span>${!fertig && f && f.gesamt > 3 && f.gesamt !== 100 ? Math.floor(f.n) + ' / ' + f.gesamt + ' Programme' : ''}</span></div>` : ''}
     ${erg.length ? `<div class="zaehler"><span style="color:var(--ok)">✓ ${z('ok')} installiert</span><span>↷ ${z('da')} schon da</span>
         <span style="color:var(--warn)">⚠ ${z('skip')} übersprungen</span><span style="color:var(--err)">✗ ${z('fehler')} Fehler</span></div>
       <div class="ergebnisse">${erg.map(e => `<div class="erg ${e.art}"><b>${ERGZ[e.art] || '·'}</b><span>${esc(e.programm)}</span><span class="r">${esc(e.ergebnis)}</span></div>`).join('')}</div>` : ''}
@@ -577,9 +608,19 @@ function liveHtml(r) {
 }
 
 async function ladeRechner() {
+  let aktiv = false;
+  try { aktiv = await zeigeRechner(); }
+  catch (e) { console.error(e); }
+  finally { setTimeout(ladeRechner, aktiv ? 1500 : 4000); }   // Anzeige läuft weiter, auch wenn mal etwas schiefgeht
+}
+
+async function zeigeRechner() {
   let liste;
-  try { liste = await api('/api/rechner'); } catch (e) { return setTimeout(ladeRechner, 5000); }
+  try { liste = await api('/api/rechner'); } catch (e) { return false; }
   RECH = liste;
+  // neue Treiber-Sicherung eines PCs -> Auswahlliste und Tabelle auffrischen
+  const bekannt = new Set(TREIBER.map(t => t.host + '|' + t.zeit));
+  if (liste.some(r => r.gesichert?.treiber && !bekannt.has(r.host + '|' + r.gesichert.treiber.zeit))) await ladeTreiber();
   const box = $('karten');
   if (!liste.length) {
     box.innerHTML = `<div class="leer" style="grid-column:1/-1"><div class="gross">🖥</div>
@@ -588,7 +629,9 @@ async function ladeRechner() {
   for (const r of liste) {
     let k = document.getElementById('k_' + r.host);
     const st = kartenStand[r.host] ||= {};
-    const steuerSchl = [r.online, r.status, TREIBER.length, $('profwahl').options.length].join('|');
+    const g = r.gesichert || {};
+    const steuerSchl = [r.online, r.status, TREIBER.length, $('profwahl').options.length,
+                        g.inventar?.datei, g.treiber?.zeit].join('|');
     if (!k) {
       box.querySelector('.leer')?.remove();
       k = document.createElement('div'); k.className = 'karte'; k.id = 'k_' + r.host;
@@ -602,8 +645,9 @@ async function ladeRechner() {
     if (st.steuer !== steuerSchl) {   // Bedienteile nur neu bauen, wenn sich etwas ändert (sonst springen Auswahllisten)
       const alt = {pr: document.getElementById('pr_' + r.host)?.value, tr: document.getElementById('tr_' + r.host)?.value};
       k.querySelector('.steuer').innerHTML = steuerHtml(r);
-      if (alt.pr) document.getElementById('pr_' + r.host).value = alt.pr;
-      if (alt.tr != null) document.getElementById('tr_' + r.host).value = alt.tr;
+      const pr = document.getElementById('pr_' + r.host), trw = document.getElementById('tr_' + r.host);
+      if (pr && alt.pr) pr.value = alt.pr;
+      if (trw && alt.tr != null) trw.value = alt.tr;
       st.steuer = steuerSchl;
     }
     const pre = k.querySelector('.prot pre');
@@ -613,8 +657,7 @@ async function ladeRechner() {
     if (pre2 && unten) pre2.scrollTop = pre2.scrollHeight;
   }
   for (const k of [...box.querySelectorAll('.karte')]) if (!liste.find(r => 'k_' + r.host === k.id)) k.remove();
-  const aktiv = liste.some(r => r.online && r.status !== 'bereit');
-  setTimeout(ladeRechner, aktiv ? 1500 : 4000);
+  return liste.some(r => r.online && r.status !== 'bereit');
 }
 
 async function auftrag(host, aktion) {

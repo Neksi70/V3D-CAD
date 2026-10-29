@@ -473,12 +473,20 @@ def rechner_speichern(r):
     schreib(DATEN / 'rechner' / (sicher(r['host']) + '.json'), r)
 
 
-def rechner_ansicht(r):
+def gesichert(host):
+    """Was von diesem PC schon auf V3DA liegt: neuestes Inventar + neueste Treiber-Sicherung."""
+    inv = next((i for i in inventare_liste() if i.get('host') == host), None)
+    tr = next((t for t in treiber_liste() if t['host'] == host), None)
+    return {'inventar': {'zeit': inv['zeit'], 'anzahl': inv['anzahl'], 'datei': inv['datei']} if inv else None,
+            'treiber': {'zeit': tr['zeit'], 'anzahl': tr.get('anzahl'), 'groesse': tr['groesse']} if tr else None}
+
+
+def rechner_ansicht(r, mit_gesichert=None):
     alter = time.time() - r.get('zuletzt', 0)
     # lange Windows-Update-/Installer-Laeufe blockieren den Puls -> beim Arbeiten grosszuegiger
     grenze = 1800 if r.get('status') == 'arbeitet' else 600 if r.get('status') == 'neustart' else 20
     return {**{k: v for k, v in r.items() if k != 'log'}, 'log': r.get('log', [])[-250:],
-            'online': alter < grenze, 'alter': int(alter)}
+            'online': alter < grenze, 'alter': int(alter), 'gesichert': mit_gesichert or gesichert(r['host'])}
 
 
 def agent_puls(b):

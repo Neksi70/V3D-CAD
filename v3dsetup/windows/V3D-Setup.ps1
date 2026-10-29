@@ -69,9 +69,32 @@ function Puls {
     }
 }
 
-function Fortschritt([int]$n, [int]$gesamt, [string]$text) {
-    $script:Z.fortschritt = @{ n = $n; gesamt = $gesamt; text = $text }
+function Fortschritt([double]$n, [double]$gesamt, [string]$text) {
+    $script:Z.fortschritt = @{ n = [math]::Round($n, 3); gesamt = $gesamt; text = $text }
     if ($script:Agent) { [void](Puls) }
+}
+
+# Teilfortschritt fuer Uebertragungen: Anteil 0..1 wird auf [basis, basis+spanne] von gesamt abgebildet
+$script:Teil = $null
+function Teil-Fortschritt([double]$anteil, [string]$zusatz) {
+    $t = $script:Teil
+    if (-not $t) { return }
+    if (((Get-Date) - $script:LetzterPuls).TotalSeconds -lt 1.5) { return }
+    Fortschritt ($t.basis + $t.spanne * $anteil) $t.gesamt ($t.text + $zusatz)
+}
+
+function Kopiere-Strom($von, $nach, [long]$laenge) {
+    $puffer = New-Object byte[] 1048576
+    [long]$fertig = 0
+    while (($n = $von.Read($puffer, 0, $puffer.Length)) -gt 0) {
+        $nach.Write($puffer, 0, $n)
+        $fertig += $n
+        if ($laenge -gt 0) {
+            Teil-Fortschritt ($fertig / $laenge) (' ({0} / {1} MB)' -f [math]::Round($fertig / 1MB), [math]::Round($laenge / 1MB))
+        } else {
+            Teil-Fortschritt 0 (' ({0} MB)' -f [math]::Round($fertig / 1MB))
+        }
+    }
 }
 
 function Schritt-Zustand([string]$name, [string]$zustand) {
@@ -164,8 +187,13 @@ function Finde-Winget {
 }
 
 function Lade-Herunter([string]$url, [string]$ziel) {
-    $wc = New-Object Net.WebClient
-    try { $wc.DownloadFile($url, $ziel) } finally { $wc.Dispose() }
+    $req = [Net.HttpWebRequest]::Create($url)
+    $req.Timeout = 120000
+    $req.ReadWriteTimeout = 600000
+    $resp = $req.GetResponse()
+    $ein = $resp.GetResponseStream()
+    $aus = [IO.File]::Create($ziel)
+    try { Kopiere-Strom $ein $aus $resp.ContentLength } finally { $aus.Close(); $ein.Close(); $resp.Close() }
 }
 
 function Lade-Hoch([string]$datei, [string]$url) {
@@ -178,7 +206,7 @@ function Lade-Hoch([string]$datei, [string]$url) {
     $req.ReadWriteTimeout = 3600000
     $s = $req.GetRequestStream()
     $f = [IO.File]::OpenRead($datei)
-    try { $f.CopyTo($s, 1048576) } finally { $f.Close(); $s.Close() }
+    try { Kopiere-Strom $f $s $f.Length } finally { $f.Close(); $s.Close() }
     $resp = $req.GetResponse()
     $sr = New-Object IO.StreamReader($resp.GetResponseStream())
     $text = $sr.ReadToEnd()
@@ -226,12 +254,14 @@ function Neustart-Mit-Fortsetzung($restSchritte) {
 
 # ---------------------------------------------------------------- 1) Inventar
 function Do-Inventar {
+    Fortschritt 0 3 'lese installierte Programme'
     Log 'Lese installierte Programme ...' 'Cyan'
     $progs = Hole-Programme
     Log ("{0} Programme gefunden" -f $progs.Count)
     $ids = @()
     $wg = Finde-Winget
     if ($wg) {
+        Fortschritt 1 3 'frage winget nach Paket-IDs'
         Log 'Frage winget nach Paket-IDs ...'
         $tmp = Join-Path $Arbeit 'winget-export.json'
         try {
@@ -254,10 +284,12 @@ function Do-Inventar {
         programme  = @($progs)
         winget_ids = @($ids)
     }
+    Fortschritt 2 3 'sende Programmliste an V3DA'
     $json = $inv | ConvertTo-Json -Depth 5
     Set-Content -Path (Join-Path $Arbeit "inventar_$env:COMPUTERNAME.json") -Value $json -Encoding UTF8
     $r = Invoke-RestMethod -UseBasicParsing -Uri "$Server/api/inventar" -Method Post `
         -Body ([Text.Encoding]::UTF8.GetBytes($json)) -ContentType 'application/json; charset=utf-8'
+    Fortschritt 3 3 ("{0} Programme gesendet" -f $progs.Count)
     Log "Inventar auf V3DA gespeichert: $($r.datei)" 'Green'
     Log "Zum Abhaken oeffnen: $($r.link)" 'Green'
     if (-not $script:Agent) { try { Start-Process $r.link } catch {} }
@@ -268,6 +300,7 @@ function Do-TreiberSichern {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $stempel = Get-Date -Format 'yyyyMMdd-HHmmss'
     $ordner = Join-Path $Arbeit "treiber_$stempel"
+    Fortschritt 2 100 'exportiere Treiber (pnputil)'
     Log 'Exportiere Drittanbieter-Treiber (pnputil) ...' 'Cyan'
     New-Item -ItemType Directory -Force -Path $ordner | Out-Null
     & pnputil.exe /export-driver * $ordner | Out-Null
@@ -277,13 +310,18 @@ function Do-TreiberSichern {
         Select-Object OriginalFileName, ProviderName, ClassName, Version, Date |
         Export-Csv -Path (Join-Path $ordner 'inventar.csv') -NoTypeInformation -Encoding UTF8
     $zip = "$ordner.zip"
+    Fortschritt 12 100 "$anzahl Treiber - packe ZIP"
     Log "$anzahl Treiber - packe ZIP ..."
     [IO.Compression.ZipFile]::CreateFromDirectory($ordner, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
     $mb = [math]::Round((Get-Item $zip).Length / 1MB)
     $cs = Get-CimInstance Win32_ComputerSystem
     $modell = [uri]::EscapeDataString("$($cs.Manufacturer) $($cs.Model)")
     Log "Lade $mb MB auf V3DA hoch ..."
+    $script:Teil = @{ basis = 30; spanne = 70; gesamt = 100; text = 'lade Treiber hoch' }
+    Fortschritt 30 100 'lade Treiber hoch'
     $r = Lade-Hoch $zip "$Server/api/treiber?host=$env:COMPUTERNAME&name=$stempel&anzahl=$anzahl&modell=$modell"
+    $script:Teil = $null
+    Fortschritt 100 100 "$anzahl Treiber gesichert"
     Log "Treiber gesichert: $($r.datei)" 'Green'
     Log "Lokale Kopie (z.B. fuer USB-Stick): $zip"
     Remove-Item -Recurse -Force $ordner
@@ -304,6 +342,7 @@ function Do-TreiberZurueck {
         }
         $zip = Join-Path $Arbeit $w.datei
         Log "Lade Treiber $($w.host)/$($w.datei) ..." 'Cyan'
+        $script:Teil = @{ basis = 0; spanne = 60; gesamt = 100; text = 'lade Treiber' }
         Lade-Herunter ("$Server/treiber/{0}/{1}" -f [uri]::EscapeDataString($w.host), [uri]::EscapeDataString($w.datei)) $zip
     }
     if (-not $zip) {
@@ -326,13 +365,17 @@ function Do-TreiberZurueck {
         Log "Lade Treiber $($e.host)/$($e.datei) ..." 'Cyan'
         Lade-Herunter ("$Server/treiber/{0}/{1}" -f [uri]::EscapeDataString($e.host), [uri]::EscapeDataString($e.datei)) $zip
     }
+    $script:Teil = $null
+    Fortschritt 60 100 'entpacke Treiber'
     $ordner = Join-Path $Arbeit ('treiber_ein_' + (Get-Date -Format 'HHmmss'))
     [IO.Compression.ZipFile]::ExtractToDirectory($zip, $ordner)
+    Fortschritt 70 100 'spiele Treiber ein (dauert etwas)'
     Log 'Spiele Treiber ein (pnputil /add-driver /install) ...' 'Cyan'
     $aus = & pnputil.exe /add-driver "$ordner\*.inf" /subdirs /install 2>&1
     $code = $LASTEXITCODE
     $aus | Select-Object -Last 6 | ForEach-Object { Log "  $_" }
     if ($code -eq 3010) { $script:Neustart = $true }
+    Fortschritt 100 100 'Treiber eingespielt'
     Log "Treiber eingespielt (Code $code)" 'Green'
 }
 
@@ -403,7 +446,13 @@ function Do-Installieren {
             $lokal = $null
             if ($Quelle) { $lokal = Join-Path $Quelle ($p.datei -replace '/', '\') }
             if ($lokal -and (Test-Path $lokal)) { Copy-Item $lokal $ziel -Force }
-            else { Fortschritt ($n - 1) $pakete.Count ("lade " + $p.name); Lade-Herunter $p.url $ziel }
+            else {
+                # Laden = erste Haelfte des Pakets, Installieren = zweite
+                $script:Teil = @{ basis = $n - 1; spanne = 0.5; gesamt = $pakete.Count; text = 'lade ' + $p.name }
+                Fortschritt ($n - 1) $pakete.Count ("lade " + $p.name)
+                Lade-Herunter $p.url $ziel
+                $script:Teil = $null
+            }
             if ($p.sha256) {
                 $h = (Get-FileHash -Path $ziel -Algorithm SHA256).Hash.ToLower()
                 if ($h -ne $p.sha256) { throw 'Pruefsumme falsch' }
@@ -415,7 +464,7 @@ function Do-Installieren {
                 Expand-Archive -Path $ziel -DestinationPath $aus -Force
                 $start = Join-Path $aus ($p.nested -replace '/', '\')
             }
-            Fortschritt ($n - 1) $pakete.Count ("installiere " + $p.name)
+            Fortschritt ($n - 0.5) $pakete.Count ("installiere " + $p.name)
             Log "$kopf - installiere ($typ $($p.args)) ..."
             $code = Starte-Installer $start $typ ([string]$p.args)
             $ok = @($p.codes) -contains $code
@@ -449,6 +498,7 @@ function Do-Updates {
         Log 'winget nicht verfuegbar (frisches Windows? erst Store-Update von App Installer abwarten)' 'Yellow'
     }
 
+    Fortschritt 1 2 'Windows Update: suche Updates'
     Log 'Windows Update (inkl. Treiber und Microsoft-Produkte) ...' 'Cyan'
     $sitzung = New-Object -ComObject Microsoft.Update.Session
     $sitzung.ClientApplicationID = 'V3D Setup'
@@ -466,15 +516,15 @@ function Do-Updates {
             if (-not $u.EulaAccepted) { $u.AcceptEula() }
             [void]$sammlung.Add($u)
         }
-        if ($sammlung.Count -eq 0) { Log 'Windows Update: nichts mehr offen.' 'Green'; break }
+        if ($sammlung.Count -eq 0) { Fortschritt 2 2 'Windows Update: alles aktuell'; Log 'Windows Update: nichts mehr offen.' 'Green'; break }
         foreach ($u in $sammlung) { Log "  - $($u.Title)" }
-        Fortschritt 0 2 ("Windows Update Runde $runde - lade $($sammlung.Count) Updates")
+        Fortschritt 1 2 ("Windows Update Runde $runde - lade $($sammlung.Count) Updates")
         Log "Lade $($sammlung.Count) Updates ..."
         $lader = $sitzung.CreateUpdateDownloader()
         $lader.Updates = $sammlung
         [void]$lader.Download()
         Log 'Installiere ...'
-        Fortschritt 1 2 ("Windows Update Runde $runde - installiere $($sammlung.Count) Updates")
+        Fortschritt 1.5 2 ("Windows Update Runde $runde - installiere $($sammlung.Count) Updates")
         $inst = $sitzung.CreateUpdateInstaller()
         $inst.Updates = $sammlung
         $res = $inst.Install()
