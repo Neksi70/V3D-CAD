@@ -21,6 +21,15 @@ Paket → Manifest-YAML → Installer (x64 > neutral > x86, machine-Scope, de-Lo
 Zuordnung Inventar → Paket: ProductCode/ARP-Schlüssel zuerst, dann normierter Name, dann `winget export`.
 Programme ohne winget-Paket: „Eigener Installer“ hochladen + Parameter eintragen.
 
+## Rechner-Karten (Steuerung im Browser)
+Der Starter läuft standardmäßig im **Agent-Modus**: Der PC meldet sich per `POST /api/agent/puls` (alle ~3 s,
+bei Arbeit mit jeder Protokollzeile) und holt dabei Aufträge ab. Im Puls stecken Status, Schritte, Fortschritt,
+Ergebnis je Programm und neue Protokollzeilen → Karte in der Weboberfläche. Aufträge: `POST /api/rechner/auftrag`
+(Inventar, TreiberSichern, AlterRechner, Alles, Installieren, TreiberZurueck, Updates, Beenden).
+Nach einem Neustart setzt die geplante Aufgabe fort und geht danach wieder in den Agent-Modus.
+Lange Windows-Update-Aufrufe blockieren den Puls – „online“ gilt beim Arbeiten bis 30 min ohne Puls.
+Das alte Konsolenmenü gibt es noch mit `-Modus Menue`.
+
 ## Windows-Skript
 `windows/V3D-Setup.ps1` – PowerShell 5.1, reines ASCII (+BOM beim Ausliefern), `__SERVER__` wird beim
 Ausliefern durch die aufgerufene Adresse ersetzt. Parameter: `-Modus`, `-Profil`, `-Quelle` (Ordner/UNC mit

@@ -2,8 +2,9 @@
 # Server: V3DA (V3D Setup). Datei bewusst reines ASCII (Umlaute als ae/oe/ue),
 # damit Windows PowerShell 5.1 sie nicht falsch dekodiert.
 param(
-    [ValidateSet('Menue', 'Inventar', 'TreiberSichern', 'TreiberZurueck', 'Installieren', 'Updates', 'Neuinstallation', 'Weiter')]
-    [string]$Modus = 'Menue',
+    # Agent = Rechner meldet sich bei V3DA an und wird ueber die Weboberflaeche gesteuert
+    [ValidateSet('Agent', 'Menue', 'Inventar', 'TreiberSichern', 'TreiberZurueck', 'Installieren', 'Updates', 'Neuinstallation', 'Weiter')]
+    [string]$Modus = 'Agent',
     [string]$Server = '__SERVER__',
     [string]$Profil = '',
     # optional: Ordner/Netzwerkpfad mit einer Kopie des Depots (z.B. USB-Stick oder \\nas\setup)
@@ -24,11 +25,63 @@ $ZustandDatei = Join-Path $Arbeit 'zustand.json'
 $SkriptKopie = Join-Path $Arbeit 'V3D-Setup.ps1'
 $AufgabeName = 'V3D-Setup-Weiter'
 $script:Neustart = $false
+$script:Agent = $false
+$script:TreiberWahl = $null
+$script:Puffer = New-Object System.Collections.ArrayList
+$script:LetzterPuls = [datetime]::MinValue
+$script:Z = @{ status = 'bereit'; aufgabe = ''; schritte = @(); fortschritt = $null; ergebnisse = $null }
 
 function Log([string]$t, [string]$farbe = 'Gray') {
     $z = '{0:HH:mm:ss} {1}' -f (Get-Date), $t
     Write-Host $z -ForegroundColor $farbe
     try { Add-Content -Path $LogDatei -Value $z -Encoding UTF8 } catch {}
+    if ($script:Agent) {
+        [void]$script:Puffer.Add(@{ z = (Get-Date -Format 'HH:mm:ss'); t = $t; f = $farbe })
+        if (((Get-Date) - $script:LetzterPuls).TotalSeconds -ge 2) { [void](Puls) }
+    }
+}
+
+# ---------------------------------------------------------------- Verbindung zur Weboberflaeche
+function Puls {
+    # meldet Zustand + neue Protokollzeilen, holt einen Auftrag ab (oder $null)
+    if (-not $script:Agent) { return $null }
+    $script:LetzterPuls = Get-Date
+    $neu = @($script:Puffer.ToArray())
+    $b = @{ host = $env:COMPUTERNAME; status = $script:Z.status; aufgabe = $script:Z.aufgabe
+            schritte = @($script:Z.schritte); fortschritt = $script:Z.fortschritt; log = $neu }
+    if ($null -ne $script:Z.ergebnisse) { $b.ergebnisse = @($script:Z.ergebnisse.ToArray()) }
+    if (-not $script:Z.kennt) {
+        $cs = Get-CimInstance Win32_ComputerSystem
+        $os = Get-CimInstance Win32_OperatingSystem
+        $b.modell = "$($cs.Manufacturer) $($cs.Model)"
+        $b.os = "$($os.Caption) $($os.Version)"
+        $b.benutzer = $env:USERNAME
+    }
+    try {
+        $json = $b | ConvertTo-Json -Depth 6 -Compress
+        $r = Invoke-RestMethod -UseBasicParsing -Uri "$Server/api/agent/puls" -Method Post -TimeoutSec 8 `
+            -Body ([Text.Encoding]::UTF8.GetBytes($json)) -ContentType 'application/json; charset=utf-8'
+        $script:Puffer.RemoveRange(0, $neu.Count)
+        $script:Z.kennt = $true
+        return $r.auftrag
+    } catch {
+        return $null    # V3DA kurz weg - Zeilen bleiben im Puffer und gehen beim naechsten Mal mit
+    }
+}
+
+function Fortschritt([int]$n, [int]$gesamt, [string]$text) {
+    $script:Z.fortschritt = @{ n = $n; gesamt = $gesamt; text = $text }
+    if ($script:Agent) { [void](Puls) }
+}
+
+function Schritt-Zustand([string]$name, [string]$zustand) {
+    foreach ($s in $script:Z.schritte) { if ($s.name -eq $name) { $s.zustand = $zustand } }
+    if ($script:Agent) { [void](Puls) }
+}
+
+function Ergebnis([string]$programm, [string]$text, [string]$art) {
+    if ($null -eq $script:Z.ergebnisse) { $script:Z.ergebnisse = New-Object System.Collections.ArrayList }
+    [void]$script:Z.ergebnisse.Add(@{ programm = $programm; ergebnis = $text; art = $art })
 }
 
 # ---------------------------------------------------------------- Admin
@@ -164,6 +217,8 @@ function Neustart-Mit-Fortsetzung($restSchritte) {
     Log ('Neustart noetig - es geht nach der Anmeldung automatisch weiter mit: ' + ($restSchritte -join ', ')) 'Yellow'
     if ($OhneNeustart) { Log 'Bitte selbst neu starten (-OhneNeustart).' 'Yellow'; return }
     Log 'Neustart in 30 Sekunden (Strg+C bricht ab) ...' 'Yellow'
+    $script:Z.status = 'neustart'
+    [void](Puls)
     Start-Sleep -Seconds 30
     Restart-Computer -Force
     exit
@@ -205,7 +260,7 @@ function Do-Inventar {
         -Body ([Text.Encoding]::UTF8.GetBytes($json)) -ContentType 'application/json; charset=utf-8'
     Log "Inventar auf V3DA gespeichert: $($r.datei)" 'Green'
     Log "Zum Abhaken oeffnen: $($r.link)" 'Green'
-    try { Start-Process $r.link } catch {}
+    if (-not $script:Agent) { try { Start-Process $r.link } catch {} }
 }
 
 # ---------------------------------------------------------------- 2) Treiber sichern
@@ -238,6 +293,19 @@ function Do-TreiberSichern {
 function Do-TreiberZurueck {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = $TreiberZip
+    if (-not $zip -and $script:Agent) {
+        $w = $script:TreiberWahl
+        if (-not $w) {
+            # nichts gewaehlt: neueste Sicherung vom gleichen Modell nehmen
+            $cs = Get-CimInstance Win32_ComputerSystem
+            $meinModell = "$($cs.Manufacturer) $($cs.Model)"
+            $w = @(Api '/api/treiber') | Where-Object { $_.modell -eq $meinModell } | Select-Object -First 1
+            if (-not $w) { Log 'Keine Treiber-Sicherung gewaehlt und keine vom gleichen Modell - uebersprungen.' 'Yellow'; return }
+        }
+        $zip = Join-Path $Arbeit $w.datei
+        Log "Lade Treiber $($w.host)/$($w.datei) ..." 'Cyan'
+        Lade-Herunter ("$Server/treiber/{0}/{1}" -f [uri]::EscapeDataString($w.host), [uri]::EscapeDataString($w.datei)) $zip
+    }
     if (-not $zip) {
         $liste = @(Api '/api/treiber')
         if ($liste.Count -eq 0) { Log 'Auf V3DA liegen keine Treiber-Sicherungen.' 'Yellow'; return }
@@ -285,7 +353,11 @@ function Starte-Installer([string]$datei, [string]$typ, [string]$argumente) {
     }
     $null = $p.Handle   # sonst liefert ExitCode bei -PassThru ohne -Wait oft nichts
     # manche Installer starten am Ende das Programm und kehren nie zurueck -> Zeitlimit
-    if (-not $p.WaitForExit(45 * 60 * 1000)) { Log '  Zeitlimit (45 min) - laeuft im Hintergrund weiter' 'Yellow'; return 0 }
+    $start = Get-Date
+    while (-not $p.WaitForExit(3000)) {
+        [void](Puls)
+        if (((Get-Date) - $start).TotalMinutes -gt 45) { Log '  Zeitlimit (45 min) - laeuft im Hintergrund weiter' 'Yellow'; return 0 }
+    }
     return $p.ExitCode
 }
 
@@ -300,14 +372,17 @@ function Do-Installieren {
     $ordner = Join-Path $Arbeit 'pakete'
     New-Item -ItemType Directory -Force -Path $ordner | Out-Null
     $ergebnis = New-Object System.Collections.ArrayList
+    $script:Z.ergebnisse = New-Object System.Collections.ArrayList
     $n = 0
     foreach ($p in $pakete) {
         $n++
         $kopf = '[{0}/{1}] {2}' -f $n, $pakete.Count, $p.name
+        Fortschritt ($n - 1) $pakete.Count $p.name
         $nn = Normname $p.name
         if ($nn -and $vorhanden.ContainsKey($nn)) {
             Log "$kopf - schon installiert ($($vorhanden[$nn]))" 'DarkGray'
-            [void]$ergebnis.Add([pscustomobject]@{ Programm = $p.name; Ergebnis = 'schon da' }); continue
+            [void]$ergebnis.Add([pscustomobject]@{ Programm = $p.name; Ergebnis = 'schon da' })
+            Ergebnis $p.name ('schon installiert ' + $vorhanden[$nn]) 'da'; continue
         }
         if ($p.problem -or -not $p.url) {
             if (-not $wg) { $wg = Finde-Winget }
@@ -320,14 +395,15 @@ function Do-Installieren {
                 Log "$kopf - uebersprungen: $($p.problem)" 'Yellow'
                 $txt = 'uebersprungen'
             }
-            [void]$ergebnis.Add([pscustomobject]@{ Programm = $p.name; Ergebnis = $txt }); continue
+            [void]$ergebnis.Add([pscustomobject]@{ Programm = $p.name; Ergebnis = $txt })
+            Ergebnis $p.name $txt $(if ($txt -eq 'winget, Code 0') { 'ok' } else { 'skip' }); continue
         }
         try {
             $ziel = Join-Path $ordner ($p.datei -replace '/', '_')
             $lokal = $null
             if ($Quelle) { $lokal = Join-Path $Quelle ($p.datei -replace '/', '\') }
             if ($lokal -and (Test-Path $lokal)) { Copy-Item $lokal $ziel -Force }
-            else { Lade-Herunter $p.url $ziel }
+            else { Fortschritt ($n - 1) $pakete.Count ("lade " + $p.name); Lade-Herunter $p.url $ziel }
             if ($p.sha256) {
                 $h = (Get-FileHash -Path $ziel -Algorithm SHA256).Hash.ToLower()
                 if ($h -ne $p.sha256) { throw 'Pruefsumme falsch' }
@@ -339,17 +415,21 @@ function Do-Installieren {
                 Expand-Archive -Path $ziel -DestinationPath $aus -Force
                 $start = Join-Path $aus ($p.nested -replace '/', '\')
             }
+            Fortschritt ($n - 1) $pakete.Count ("installiere " + $p.name)
             Log "$kopf - installiere ($typ $($p.args)) ..."
             $code = Starte-Installer $start $typ ([string]$p.args)
             $ok = @($p.codes) -contains $code
             if ($code -eq 3010 -or $code -eq 1641) { $script:Neustart = $true }
             if ($ok) { Log "$kopf - OK" 'Green' } else { Log "$kopf - Fehlercode $code" 'Red' }
             [void]$ergebnis.Add([pscustomobject]@{ Programm = $p.name; Ergebnis = $(if ($ok) { 'installiert' } else { "Fehler $code" }) })
+            if ($ok) { Ergebnis $p.name ('installiert ' + $p.version) 'ok' } else { Ergebnis $p.name "Fehlercode $code" 'fehler' }
         } catch {
             Log "$kopf - FEHLER: $($_.Exception.Message)" 'Red'
             [void]$ergebnis.Add([pscustomobject]@{ Programm = $p.name; Ergebnis = 'Fehler' })
+            Ergebnis $p.name $_.Exception.Message 'fehler'
         }
     }
+    Fortschritt $pakete.Count $pakete.Count 'fertig'
     Write-Host ''
     $ergebnis | Format-Table -AutoSize | Out-String | ForEach-Object { Log $_ }
     try { Remove-Item -Recurse -Force $ordner } catch {}
@@ -359,6 +439,7 @@ function Do-Installieren {
 function Do-Updates {
     $wg = Finde-Winget
     if ($wg) {
+        Fortschritt 0 2 'winget: Programme aktualisieren'
         Log 'winget: alle Programme aktualisieren ...' 'Cyan'
         & $wg source update --disable-interactivity 2>&1 | Out-Null
         & $wg upgrade --all --silent --include-unknown --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 |
@@ -387,11 +468,13 @@ function Do-Updates {
         }
         if ($sammlung.Count -eq 0) { Log 'Windows Update: nichts mehr offen.' 'Green'; break }
         foreach ($u in $sammlung) { Log "  - $($u.Title)" }
+        Fortschritt 0 2 ("Windows Update Runde $runde - lade $($sammlung.Count) Updates")
         Log "Lade $($sammlung.Count) Updates ..."
         $lader = $sitzung.CreateUpdateDownloader()
         $lader.Updates = $sammlung
         [void]$lader.Download()
         Log 'Installiere ...'
+        Fortschritt 1 2 ("Windows Update Runde $runde - installiere $($sammlung.Count) Updates")
         $inst = $sitzung.CreateUpdateInstaller()
         $inst.Updates = $sammlung
         $res = $inst.Install()
@@ -403,15 +486,25 @@ function Do-Updates {
 # ---------------------------------------------------------------- Ablauf
 function Fuehre-Aus($schritte) {
     $liste = @($schritte)
+    $script:Z.schritte = @($liste | ForEach-Object { @{ name = $_; zustand = 'offen' } })
     for ($i = 0; $i -lt $liste.Count; $i++) {
         $s = $liste[$i]
         Log "===== $s =====" 'Cyan'
+        $script:Z.fortschritt = $null
+        Schritt-Zustand $s 'laeuft'
+        try {
         switch ($s) {
             'Inventar' { Do-Inventar }
             'TreiberSichern' { Do-TreiberSichern }
             'TreiberZurueck' { Do-TreiberZurueck }
             'Installieren' { Do-Installieren }
             'Updates' { Do-Updates }
+        }
+        Schritt-Zustand $s 'fertig'
+        } catch {
+            Log "FEHLER in $($s): $($_.Exception.Message)" 'Red'
+            Schritt-Zustand $s 'fehler'
+            if (-not $script:Agent) { throw }
         }
         if ($script:Neustart) {
             $rest = @()
@@ -460,8 +553,40 @@ function Menue {
     }
 }
 
+function Agent {
+    $script:Agent = $true
+    $script:Z.status = 'bereit'
+    Write-Host ''
+    Write-Host '  V3D Setup ist mit V3DA verbunden.' -ForegroundColor DarkYellow
+    Write-Host "  Steuerung im Browser: $Server" -ForegroundColor DarkYellow
+    Write-Host '  Dieses Fenster offen lassen. Schliessen = Verbindung beenden.'
+    Write-Host ''
+    while ($true) {
+        $a = Puls
+        if ($a) {
+            if ($a.aktion -eq 'Beenden') { Log 'Verbindung beendet.' 'Yellow'; $script:Z.status = 'getrennt'; [void](Puls); return }
+            $script:Neustart = $false
+            $script:Profil = [string]$a.profil
+            $script:TreiberWahl = $a.treiber
+            if ($a.neustart -eq $false) { $script:OhneNeustart = $true }
+            $script:Z.status = 'arbeitet'
+            $script:Z.aufgabe = [string]$a.titel
+            $script:Z.ergebnisse = $null
+            Log "Auftrag aus der Weboberflaeche: $($a.titel)" 'Cyan'
+            try { Fuehre-Aus @($a.schritte) } catch { Log "FEHLER: $($_.Exception.Message)" 'Red' }
+            $script:Z.status = 'bereit'
+            [void](Puls)
+        }
+        Start-Sleep -Seconds 3
+    }
+}
+
 Log "V3D Setup gestartet (Modus $Modus)"
 switch ($Modus) {
+    'Agent' {
+        if ($Server -notmatch '^https?://') { Write-Host 'Server unbekannt - bitte ueber den Starter von V3DA aufrufen.' -ForegroundColor Red; break }
+        Agent
+    }
     'Menue' { Menue }
     'Neuinstallation' { Fuehre-Aus @('TreiberZurueck', 'Installieren', 'Updates') }
     'Weiter' {
@@ -471,9 +596,12 @@ switch ($Modus) {
         if ([int]$z.runde -gt 8) { Log 'Zu viele Neustarts - Abbruch. Bitte Log ansehen.' 'Red'; Remove-Item $ZustandDatei; break }
         if ($z.profil) { $script:Profil = [string]$z.profil }
         if ($z.quelle) { $Quelle = [string]$z.quelle }
+        $script:Agent = $true
+        $script:Z.status = 'arbeitet'
+        $script:Z.aufgabe = 'Fortsetzung nach Neustart'
         Log "Fortsetzung nach Neustart (Runde $($z.runde)): $($z.schritte -join ', ')" 'Cyan'
         Fuehre-Aus @($z.schritte)
-        Read-Host 'Enter zum Schliessen'
+        Agent   # danach weiter fuer die Weboberflaeche erreichbar
     }
     default { Fuehre-Aus @($Modus) }
 }

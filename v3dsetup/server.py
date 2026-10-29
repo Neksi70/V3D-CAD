@@ -26,7 +26,7 @@ from katalog import ALIAS, Katalog, UA, normname, woerter, zerlegt
 HIER = Path(__file__).resolve().parent
 DATEN = Path(os.environ.get('V3DSETUP_DATEN', HIER / 'daten'))
 PORT = int(os.environ.get('V3DSETUP_PORT', '8819'))
-for d in ('inventare', 'profile', 'depot', 'treiber', 'katalog'):
+for d in ('inventare', 'profile', 'depot', 'treiber', 'katalog', 'rechner'):
     (DATEN / d).mkdir(parents=True, exist_ok=True)
 
 KATALOG = Katalog(DATEN / 'katalog')
@@ -449,6 +449,66 @@ def treiber_liste():
     return out
 
 
+# ---------------- Rechner (Agent auf dem Windows-PC) ----------------
+# Der Starter meldet den PC an und fragt alle paar Sekunden nach Auftraegen ("Puls").
+# Dabei schickt er neue Protokollzeilen, Schritte, Fortschritt und Ergebnisse mit.
+RECHNER = {}
+for _p in (DATEN / 'rechner').glob('*.json'):
+    _r = lies(_p)
+    if _r:
+        RECHNER[_r['host']] = _r
+AKTIONEN = {
+    'Inventar': ['Inventar'],
+    'TreiberSichern': ['TreiberSichern'],
+    'AlterRechner': ['Inventar', 'TreiberSichern'],
+    'Alles': ['TreiberZurueck', 'Installieren', 'Updates'],
+    'Installieren': ['Installieren'],
+    'TreiberZurueck': ['TreiberZurueck'],
+    'Updates': ['Updates'],
+    'Beenden': [],
+}
+
+
+def rechner_speichern(r):
+    schreib(DATEN / 'rechner' / (sicher(r['host']) + '.json'), r)
+
+
+def rechner_ansicht(r):
+    alter = time.time() - r.get('zuletzt', 0)
+    # lange Windows-Update-/Installer-Laeufe blockieren den Puls -> beim Arbeiten grosszuegiger
+    grenze = 1800 if r.get('status') == 'arbeitet' else 600 if r.get('status') == 'neustart' else 20
+    return {**{k: v for k, v in r.items() if k != 'log'}, 'log': r.get('log', [])[-250:],
+            'online': alter < grenze, 'alter': int(alter)}
+
+
+def agent_puls(b):
+    host = sicher(b.get('host') or 'unbekannt')
+    with LOCK:
+        r = RECHNER.setdefault(host, {'host': host, 'log': [], 'auftraege': []})
+        for k in ('modell', 'os', 'benutzer', 'status', 'aufgabe', 'schritte', 'fortschritt', 'ip'):
+            if k in b:
+                r[k] = b[k]
+        if 'ergebnisse' in b:
+            r['ergebnisse'] = b['ergebnisse']
+        neu = b.get('log') or []
+        if neu:
+            r['log'] = (r.get('log', []) + neu)[-600:]
+        r['zuletzt'] = time.time()
+        auftrag = r['auftraege'].pop(0) if r.get('auftraege') and b.get('status') == 'bereit' else None
+        if auftrag:
+            r['status'] = 'arbeitet'
+            r['aufgabe'] = auftrag['titel']
+            r['ergebnisse'] = []
+            r['fortschritt'] = None
+        rechner_speichern(r)
+    return {'auftrag': auftrag}
+
+
+TITEL = {'Inventar': 'Inventar senden', 'TreiberSichern': 'Treiber sichern', 'AlterRechner': 'Inventar + Treiber sichern',
+         'Alles': 'Neu einrichten', 'Installieren': 'Programme installieren', 'TreiberZurueck': 'Treiber zurückspielen',
+         'Updates': 'Updates', 'Beenden': 'Verbindung beenden'}
+
+
 # ---------------- Windows-Skripte ----------------
 def skript(name, basis):
     roh = (HIER / 'windows' / name).read_text(encoding='utf-8')
@@ -580,6 +640,11 @@ class H(BaseHTTPRequestHandler):
             return self.antwort(200, {**r, 'vorschlag': netz_vorschlag(prog['name'], r) if r.get('ok') else None})
         if pfad == '/api/inventare':
             return self.antwort(200, inventare_liste())
+        if pfad == '/api/rechner':
+            with LOCK:
+                liste = [rechner_ansicht(r) for r in RECHNER.values()]
+            liste.sort(key=lambda r: (not r['online'], -r.get('zuletzt', 0)))
+            return self.antwort(200, liste)
         if pfad == '/api/inventar':
             inv = inventar_ansicht(q.get('datei', ''))
             return self.antwort(200, inv) if inv else self.fehler(404, 'Inventar nicht gefunden')
@@ -633,6 +698,25 @@ class H(BaseHTTPRequestHandler):
             vorschlaege_starten(datei)
             return self.antwort(200, {'ok': True, 'datei': datei,
                                       'link': f'{self.basis()}/#inv={urllib.parse.quote(datei)}'})
+        if pfad == '/api/agent/puls':
+            return self.antwort(200, agent_puls(self.koerper_json()))
+        if pfad == '/api/rechner/auftrag':
+            b = self.koerper_json()
+            host = sicher(q.get('host', ''))
+            if b.get('aktion') not in AKTIONEN:
+                raise ValueError('unbekannte Aktion')
+            with LOCK:
+                r = RECHNER.get(host)
+                if not r:
+                    return self.fehler(404, 'Rechner unbekannt')
+                if b['aktion'] != 'Beenden' and (r.get('status') == 'arbeitet' or r.get('auftraege')):
+                    return self.fehler(409, 'Der Rechner ist noch beschaeftigt')
+                auftrag = {'aktion': b['aktion'], 'schritte': AKTIONEN[b['aktion']], 'titel': TITEL[b['aktion']],
+                           'profil': b.get('profil') or '', 'treiber': b.get('treiber') or None,
+                           'neustart': b.get('neustart', True), 'zeit': time.time()}
+                r.setdefault('auftraege', []).append(auftrag)
+                rechner_speichern(r)
+            return self.antwort(200, {'ok': True})
         if pfad == '/api/vorschlaege':
             d = sicher(q.get('datei', ''))
             with LOCK:
@@ -746,6 +830,11 @@ class H(BaseHTTPRequestHandler):
             z = DATEN / 'treiber' / sicher(q.get('host', '')) / sicher(q.get('datei', ''))
             z.unlink(missing_ok=True)
             z.with_suffix('.json').unlink(missing_ok=True)
+            return self.antwort(200, {'ok': True})
+        if pfad == '/api/rechner':
+            with LOCK:
+                RECHNER.pop(sicher(q.get('host', '')), None)
+                (DATEN / 'rechner' / (sicher(q.get('host', '')) + '.json')).unlink(missing_ok=True)
             return self.antwort(200, {'ok': True})
         if pfad == '/api/depot':
             pid = q.get('id', '')
