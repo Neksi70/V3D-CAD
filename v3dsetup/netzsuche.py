@@ -76,9 +76,13 @@ class Netzsuche:
         if not re.match(r'^https?://', url or ''):
             return False, 0, None, 'keine Web-Adresse'
         letzter = 'nicht erreichbar'
-        for ua in UA_LISTE:
+        versuche = [(ua, rng) for ua in UA_LISTE for rng in (True, False)]   # manche CDNs verbieten Teil-Anfragen (403)
+        for ua, rng in versuche:
             try:
-                req = urllib.request.Request(url, headers={'User-Agent': ua, 'Range': 'bytes=0-1023'})
+                kopf = {'User-Agent': ua}
+                if rng:
+                    kopf['Range'] = 'bytes=0-1023'
+                req = urllib.request.Request(url, headers=kopf)
                 with urllib.request.urlopen(req, timeout=30) as r:
                     typ = (r.headers.get('Content-Type') or '').lower()
                     anfang = r.read(1024)
@@ -105,6 +109,7 @@ class Netzsuche:
 
     # ---------- Claude fragen ----------
     def _claude(self, prog):
+        prog = {k: str(v or '').replace('\x00', '').strip() for k, v in prog.items()}
         auftrag = AUFTRAG.format(name=prog.get('name', ''), hersteller=prog.get('publisher') or 'unbekannt',
                                  version=prog.get('version') or 'unbekannt')
         cmd = [CLAUDE, '-p', auftrag, '--output-format', 'json', '--model', MODELL,

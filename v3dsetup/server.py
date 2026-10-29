@@ -622,6 +622,10 @@ class H(BaseHTTPRequestHandler):
         pfad, q = self.pfad_q()
         if pfad == '/api/inventar':
             inv = self.koerper_json()
+            for prog in inv.get('programme') or []:   # Registry-Werte haben manchmal ein Null-Zeichen am Ende
+                for k, v in list(prog.items()):
+                    if isinstance(v, str):
+                        prog[k] = v.replace('\x00', '').strip()
             host = sicher(inv.get('host') or 'unbekannt')
             inv['zeit'] = inv.get('zeit') or time.strftime('%Y-%m-%d %H:%M')
             datei = f'{host}_{time.strftime("%Y%m%d-%H%M%S")}.json'
