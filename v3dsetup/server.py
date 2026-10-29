@@ -295,6 +295,97 @@ def plan(name, basis):
     return {'profil': pr['name'], 'pakete': out}
 
 
+# ---------------- Eigene Installer ----------------
+SILENT = {
+    'inno': '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-',
+    'nullsoft': '/S',
+    'burn': '/quiet /norestart',
+    'msi': '/quiet /norestart',
+    'squirrel': '--silent',
+    'installshield': '/s /v"/qn /norestart"',
+    'advanced': '/exenoui /qn /norestart',
+}
+# Erkennungsmerkmale im Installer (Reihenfolge = Vorrang)
+MERKMALE = [
+    (b'Inno Setup Setup Data', 'inno'), (b'JR.Inno.Setup', 'inno'),
+    (b'Nullsoft.NSIS', 'nullsoft'), (b'NullsoftInst', 'nullsoft'),
+    (b'.wixburn', 'burn'),
+    (b'SquirrelSetup', 'squirrel'), (b'Squirrel', 'squirrel'),
+    (b'InstallShield', 'installshield'),
+    (b'Advanced Installer', 'advanced'),
+]
+
+
+def installer_art(pfad):
+    """Installer-Bauart am Inhalt erkennen -> (art, silent-args) oder (None, None)."""
+    pfad = Path(pfad)
+    if pfad.suffix.lower() == '.msi':
+        return 'msi', SILENT['msi']
+    if pfad.suffix.lower() in ('.msix', '.appx', '.msixbundle', '.appxbundle'):
+        return pfad.suffix.lower().lstrip('.').replace('bundle', ''), ''
+    try:
+        with open(pfad, 'rb') as f:
+            kopf = f.read(16 << 20)   # Merkmale stehen im Manifest/Anfang des Stubs
+            f.seek(max(0, pfad.stat().st_size - (4 << 20)))
+            kopf += f.read()
+    except OSError:
+        return None, None
+    for merkmal, art in MERKMALE:
+        if merkmal in kopf:
+            return art, SILENT[art]
+    return None, None
+
+
+def link_laden(url, ziel):
+    if not re.match(r'^https?://', url or ''):
+        raise ValueError('Link muss mit http:// oder https:// beginnen')
+    for alt in ziel.iterdir():
+        if alt.name != 'info.json':
+            alt.unlink()
+    # erst wie ein Download-Programm fragen (manche Seiten schicken Browsern eine Zwischenseite),
+    # dann wie ein Browser (manche Seiten sperren alles andere)
+    for ua in ('V3D-Setup/1.0 (curl-kompatibel)', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36'):
+        r = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': ua}), timeout=120)
+        if 'text/html' not in (r.headers.get('Content-Type') or ''):
+            break
+        r.close()
+    else:
+        raise ValueError('Der Link liefert eine Webseite, keinen Installer – bitte den direkten Download-Link nehmen '
+                         '(Rechtsklick auf den Download-Knopf → Link kopieren)')
+    with r:
+        cd = r.headers.get('Content-Disposition') or ''
+        m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', cd)
+        datei = urllib.parse.unquote(m.group(1)) if m else os.path.basename(urllib.parse.urlparse(r.geturl()).path)
+        datei = sicher(urllib.parse.unquote(datei)) or 'installer.exe'
+        n = 0
+        with open(ziel / (datei + '.laden'), 'wb') as f:
+            while True:
+                block = r.read(1 << 20)
+                if not block:
+                    break
+                f.write(block)
+                n += len(block)
+    (ziel / (datei + '.laden')).replace(ziel / datei)
+    return datei, n
+
+
+def eigen_info(pid, name, pfad, groesse, args, hinweis, version, url):
+    h = hashlib.sha256()
+    with open(pfad, 'rb') as f:
+        for block in iter(lambda: f.read(1 << 20), b''):
+            h.update(block)
+    art, erkannt = installer_art(pfad)
+    if not art and hinweis == 'inno':           # Registry-Schluessel *_is1 = Inno Setup (MSI erkennt die Endung)
+        art, erkannt = hinweis, SILENT[hinweis]
+    typ = {'msi': 'msi', 'msix': 'msix', 'appx': 'appx'}.get(art or '', 'exe')
+    if args in (None, ''):
+        args = erkannt
+    return {'id': pid, 'name': name, 'version': version or time.strftime('%Y-%m-%d'), 'typ': typ, 'art': art,
+            'args': args, 'datei': pfad.name, 'sha256': h.hexdigest(), 'groesse': groesse, 'url': url,
+            'codes': [0, 3010, 1641], 'quelle': 'eigen', 'geladen': time.strftime('%Y-%m-%d %H:%M'),
+            'fehler': None if args is not None else 'Bauart nicht erkannt – bitte Silent-Parameter eintragen'}
+
+
 # ---------------- Treiber ----------------
 def treiber_liste():
     out = []
@@ -543,33 +634,26 @@ class H(BaseHTTPRequestHandler):
             threading.Thread(target=lade_job, args=(q.get('name', 'standard'),), daemon=True).start()
             return self.antwort(200, {'ok': True})
         if pfad == '/api/eigen':
-            # eigener Installer (nicht in winget): Rohdaten im Koerper, Angaben in der Adresse
+            # eigener Installer (nicht in winget/Chocolatey): Datei im Koerper ODER Download-Link (?url=)
             name = (q.get('name') or '').strip()
-            datei = sicher(q.get('datei') or 'installer.exe')
             if not name:
                 raise ValueError('Name fehlt')
             pid = 'eigen.' + sicher(re.sub(r'\s+', '-', name.lower()))
             ziel = DATEN / 'depot' / sicher(pid)
             ziel.mkdir(parents=True, exist_ok=True)
-            for alt in ziel.iterdir():
-                alt.unlink()
-            n = self.koerper_in_datei(ziel / datei)
-            h = hashlib.sha256()
-            with open(ziel / datei, 'rb') as f:
-                for block in iter(lambda: f.read(1 << 20), b''):
-                    h.update(block)
-            endung = datei.lower().rsplit('.', 1)[-1]
-            typ = {'msi': 'msi', 'msix': 'msix', 'appx': 'appx', 'msixbundle': 'msix'}.get(endung, 'exe')
-            args = q.get('args')
-            if args is None or args == '':
-                args = '/quiet /norestart' if typ == 'msi' else '' if typ in ('msix', 'appx') else None
-            info = {'id': pid, 'name': name, 'version': q.get('version') or time.strftime('%Y-%m-%d'),
-                    'typ': typ, 'args': args, 'datei': datei, 'sha256': h.hexdigest(), 'groesse': n,
-                    'codes': [0, 3010, 1641], 'quelle': 'eigen', 'geladen': time.strftime('%Y-%m-%d %H:%M')}
+            if q.get('url'):
+                datei, n = link_laden(q['url'], ziel)
+            else:
+                datei = sicher(q.get('datei') or 'installer.exe')
+                for alt in ziel.iterdir():
+                    if alt.name != 'info.json':
+                        alt.unlink()
+                n = self.koerper_in_datei(ziel / datei)
+            info = eigen_info(pid, name, ziel / datei, n, q.get('args'), q.get('hinweis'), q.get('version'), q.get('url'))
             schreib(ziel / 'info.json', info)
             with LOCK:
                 pr = profil(q.get('profil', 'standard'))
-                pr['pakete'][pid] = {'name': name, 'quelle': 'eigen', 'args': None}
+                pr['pakete'][pid] = {'name': name, 'quelle': 'eigen', 'args': None, 'aus': q.get('aus')}
                 schreib(profil_pfad(pr['name']), pr)
             return self.antwort(200, info)
         if pfad == '/api/treiber':

@@ -105,7 +105,7 @@
     <div class="leiste">
       <button class="haupt" id="ladeKnopf" onclick="ladeDepot()">⬇ Auf V3DA herunterladen</button>
       <button onclick="suchDialog(null)">+ Paket suchen</button>
-      <button onclick="eigenDialog()">+ Eigener Installer</button>
+      <button onclick="eigenDialog(null)">+ Eigener Installer</button>
       <span class="muted klein" id="profinfo"></span>
     </div>
     <div class="tabwrap"><table>
@@ -129,16 +129,20 @@
   <div class="leiste"><input id="suchFeld" style="flex:1" placeholder="z. B. firefox, 7-zip, bambu …" oninput="sucheTippen()">
     <button onclick="such.close()">Schließen</button></div>
   <div class="tabwrap" style="max-height:55vh"><table><tbody id="suchTab"></tbody></table></div>
-  <p class="muted klein" id="suchZu" hidden><button class="klein" onclick="zuordnungWeg()">Zuordnung entfernen</button></p>
+  <p class="leiste" style="margin:10px 0 0"><span class="muted klein" style="flex:1">Nicht dabei? Dann den Installer vom Hersteller nehmen:</span>
+    <button onclick="eigenDialog(suchFuer)">+ Als eigener Installer</button>
+    <button class="klein" id="suchZu" hidden onclick="zuordnungWeg()">Zuordnung entfernen</button></p>
 </dialog>
 
 <dialog id="eigen">
-  <h3 style="margin-top:0">Eigener Installer (nicht in winget)</h3>
-  <p class="muted klein">Für Programme ohne winget-Paket, z. B. Lizenz-Software. Silent-Parameter des Herstellers eintragen
-    (MSI: leer lassen = <code>/quiet /norestart</code>).</p>
+  <h3 style="margin-top:0">Eigener Installer</h3>
+  <p class="muted klein">Für Programme, die es weder in winget noch in Chocolatey gibt. Am einfachsten: auf der Hersteller-Seite
+    mit Rechtsklick auf den Download-Knopf „Link kopieren“ und hier einfügen – V3DA lädt dann selbst.</p>
   <div class="leiste"><input id="eName" placeholder="Name" style="flex:1"></div>
-  <div class="leiste"><input id="eArgs" placeholder="Silent-Parameter, z. B. /S oder /VERYSILENT" style="flex:1"></div>
-  <div class="leiste"><input type="file" id="eDatei" style="flex:1"></div>
+  <div class="leiste"><input id="eUrl" placeholder="Download-Link (https://…/setup.exe)" style="flex:1"></div>
+  <div class="leiste"><span class="muted klein">oder Datei:</span><input type="file" id="eDatei" style="flex:1"></div>
+  <div class="leiste"><input id="eArgs" placeholder="Silent-Parameter – leer lassen = automatisch erkennen" style="flex:1"></div>
+  <div class="muted klein" id="eHinweis" style="margin-bottom:8px"></div>
   <div class="leiste"><button class="haupt" onclick="eigenHoch()">Hochladen</button><button onclick="eigen.close()">Abbrechen</button>
     <span id="eStatus" class="muted klein"></span></div>
 </dialog>
@@ -234,7 +238,8 @@ function paketZelle(p) {
   }
   if (p.windows) return '';
   return INV.vorschlaege_laeuft ? '<span class="tag">suche …</span>'
-    : '<span class="tag warn" title="weder in winget noch in Chocolatey – als „Eigener Installer“ hochladen">kein Paket</span>';
+    : `<span class="tag warn" title="weder in winget noch in Chocolatey">kein Paket</span>
+       <button class="klein" onclick="eigenDialog(${p.i})" title="Installer vom Hersteller (Link oder Datei)">+ eigener</button>`;
 }
 async function vorschlagNehmen(i) {
   const p = INV.programme[i], v = p.vorschlag[0];
@@ -293,7 +298,7 @@ function zeigeProfil() {
     const d = p.depot;
     if (d) { geladen++; summe += d.groesse || 0; }
     const args = p.args ?? (d ? d.args : null);
-    const status = d ? `<span class="tag ok">${esc(d.version)}</span> <span class="muted klein">${mb(d.groesse||0)} · ${esc(d.typ)}</span>`
+    const status = d ? `<span class="tag ok">${esc(d.version)}</span> <span class="muted klein">${mb(d.groesse||0)} · ${esc(ARTNAME[d.art] || d.typ)}</span>`
                      : '<span class="tag">noch nicht geladen</span>';
     const warn = d && args == null ? '<div class="tag err" style="margin-top:3px">Parameter fehlt</div>' : '';
     return `<tr><td>${esc(p.name)}${quelleTag(p.id)}<div class="id">${esc(p.id.replace(/^choco:/, ''))}${p.aus ? ' · von ' + esc(p.aus) : ''}</div></td>
@@ -357,7 +362,7 @@ function sucheTippen() {
     if (q !== $('suchFeld').value) return;
     $('suchTab').innerHTML = r.map(x => `<tr><td>${esc(x.name)}${quelleTag(x.id)}<div class="id">${esc(x.id.replace(/^choco:/, ''))} · ${esc(x.version)}</div></td>
       <td><button class="klein haupt" onclick='waehle(${JSON.stringify(x).replace(/'/g, "&#39;")})'>wählen</button></td></tr>`).join('')
-      || '<tr><td class="muted">nichts gefunden – dann als „Eigener Installer“ hochladen</td></tr>';
+      || '<tr><td class="muted">nichts gefunden – unten „Als eigener Installer“</td></tr>';
   }, 400);
 }
 async function waehle(x) {
@@ -378,15 +383,38 @@ async function zuordnungWeg() {
 }
 
 /* ---------- Eigener Installer ---------- */
-function eigenDialog() { $('eStatus').textContent = ''; eigen.showModal(); }
+const ARTNAME = {inno: 'Inno Setup', nullsoft: 'NSIS', burn: 'WiX Burn', msi: 'MSI', squirrel: 'Squirrel', installshield: 'InstallShield', advanced: 'Advanced Installer', msix: 'MSIX', appx: 'APPX'};
+let eigenFuer = null;
+function eigenDialog(i) {
+  eigenFuer = i ?? null;
+  const p = i == null ? null : INV.programme[i];
+  $('eName').value = p ? p.name.replace(/\s+(version\s+)?v?\d+(\.\d+)+.*$/i, '').replace(/([a-z])([A-Z])/g, '$1 $2').trim() : '';
+  $('eUrl').value = ''; $('eArgs').value = ''; $('eDatei').value = ''; $('eStatus').textContent = '';
+  const h = p ? hinweisAusSchluessel(p.key) : null;
+  $('eHinweis').textContent = h ? `Laut Inventar ein ${ARTNAME[h]}-Installer – Silent-Parameter wird automatisch gesetzt.` : '';
+  if (such.open) such.close();
+  eigen.showModal();
+}
+function hinweisAusSchluessel(key) {
+  if (!key) return null;
+  if (/_is1$/i.test(key)) return 'inno';                       // Inno Setup legt <AppId>_is1 an
+  if (/^\{[0-9a-f-]{36}\}$/i.test(key)) return 'msi';         // MSI: ProductCode als Schlüssel
+  return null;
+}
 async function eigenHoch() {
-  const f = $('eDatei').files[0], name = $('eName').value.trim();
-  if (!f || !name) return alert('Name und Datei angeben');
-  $('eStatus').textContent = 'lade hoch …';
-  const q = new URLSearchParams({name, datei: f.name, args: $('eArgs').value, profil: profName});
+  const f = $('eDatei').files[0], name = $('eName').value.trim(), url = $('eUrl').value.trim();
+  if (!name || (!f && !url)) return alert('Name und Download-Link (oder Datei) angeben');
+  const p = eigenFuer == null ? null : INV.programme[eigenFuer];
+  const q = new URLSearchParams({name, args: $('eArgs').value, profil: profName});
+  const h = p && hinweisAusSchluessel(p.key); if (h) q.set('hinweis', h);
+  if (p) q.set('aus', INV.host);
+  if (url) q.set('url', url); else q.set('datei', f.name);
+  $('eStatus').textContent = url ? 'V3DA lädt herunter …' : 'lade hoch …';
   try {
-    await api('/api/eigen?' + q, {method: 'POST', body: f});
-    eigen.close(); ladeProfil(profName);
+    const info = await api('/api/eigen?' + q, {method: 'POST', body: url ? '' : f});
+    if (p) { await post('/api/zuordnung', {name: p.name, id: info.id}); p.id = info.id; p.manuell = true; }
+    eigen.close(); await ladeProfil(profName);
+    if (info.fehler) alert(name + ': ' + info.fehler);
   } catch (e) { $('eStatus').textContent = 'Fehler: ' + e.message; }
 }
 
