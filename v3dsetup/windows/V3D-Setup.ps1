@@ -312,7 +312,23 @@ function Do-TreiberSichern {
     $zip = "$ordner.zip"
     Fortschritt 12 100 "$anzahl Treiber - packe ZIP"
     Log "$anzahl Treiber - packe ZIP ..."
-    [IO.Compression.ZipFile]::CreateFromDirectory($ordner, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
+    # Datei fuer Datei packen (mit Fortschritt) und schnell statt stark:
+    # Treiber sind meist schon komprimiert, 'Optimal' kostet bei ~2 GB rund 10 Minuten fuer kaum Gewinn
+    Add-Type -AssemblyName System.IO.Compression
+    $dateien = @(Get-ChildItem -Path $ordner -Recurse -File)
+    $summe = ($dateien | Measure-Object -Property Length -Sum).Sum
+    [long]$gepackt = 0
+    $zs = [IO.File]::Create($zip)
+    $za = New-Object IO.Compression.ZipArchive($zs, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        $script:Teil = @{ basis = 12; spanne = 18; gesamt = 100; text = 'packe Treiber' }
+        foreach ($d in $dateien) {
+            $rel = $d.FullName.Substring($ordner.Length + 1)
+            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($za, $d.FullName, $rel, [IO.Compression.CompressionLevel]::Fastest)
+            $gepackt += $d.Length
+            if ($summe -gt 0) { Teil-Fortschritt ($gepackt / $summe) (' ({0} / {1} MB)' -f [math]::Round($gepackt / 1MB), [math]::Round($summe / 1MB)) }
+        }
+    } finally { $za.Dispose(); $zs.Close(); $script:Teil = $null }
     $mb = [math]::Round((Get-Item $zip).Length / 1MB)
     $cs = Get-CimInstance Win32_ComputerSystem
     $modell = [uri]::EscapeDataString("$($cs.Manufacturer) $($cs.Model)")
