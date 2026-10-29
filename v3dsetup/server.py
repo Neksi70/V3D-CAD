@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from choco import Choco
+from netzsuche import Netzsuche, anzeigename, schluessel
 from katalog import ALIAS, Katalog, UA, normname, woerter, zerlegt
 
 HIER = Path(__file__).resolve().parent
@@ -30,6 +31,7 @@ for d in ('inventare', 'profile', 'depot', 'treiber', 'katalog'):
 
 KATALOG = Katalog(DATEN / 'katalog')
 CHOCO = Choco(DATEN / 'katalog')
+NETZ = Netzsuche(DATEN / 'katalog')
 VORSCHLAG_LAEUFT = set()
 LOCK = threading.Lock()
 JOB = {'laeuft': False, 'log': [], 'fertig': 0, 'gesamt': 0, 'profil': None}
@@ -109,6 +111,7 @@ def vorschlaege_berechnen(datei):
         auto = KATALOG.zuordnen(progs)
         manuell = zuordnungen()
         erg = {}
+        rest = []
         for p, a in zip(progs, auto):
             if a or normname(p.get('name')) in manuell or WINDOWS_TEIL.match(p.get('name') or ''):
                 continue
@@ -127,14 +130,41 @@ def vorschlaege_berechnen(datei):
                 kand.sort(key=lambda k: (not k['sicher'], -k['punkte']))
             if kand:
                 erg[name] = kand[:3]
+            else:
+                rest.append(p)
         with LOCK:
             inv = lies(pfad)
             inv['vorschlaege'] = erg
+            inv['netzhinweise'] = {}
             schreib(pfad, inv)
+        # Phase 2: was nirgends als Paket steht, im Netz suchen (Claude, je Programm nur einmal)
+        def netz(p):
+            r = NETZ.suchen(p)
+            if not r:
+                return
+            with LOCK:
+                inv = lies(pfad)
+                if r.get('ok'):
+                    inv.setdefault('vorschlaege', {})[p['name']] = [netz_vorschlag(p['name'], r)]
+                else:
+                    inv.setdefault('netzhinweise', {})[p['name']] = r.get('hinweis') or 'nichts Offizielles gefunden'
+                schreib(pfad, inv)
+        threads = [threading.Thread(target=netz, args=(p,)) for p in rest]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
     except Exception:
         traceback.print_exc()
     finally:
         VORSCHLAG_LAEUFT.discard(datei)
+
+
+def netz_vorschlag(name, r):
+    return {'id': 'netz.' + schluessel(name), 'name': f"{anzeigename(name)} {r.get('version') or ''}".strip(), 'quelle': 'netz',
+            'sicher': False, 'punkte': 0, 'url': r['url'], 'version': r.get('version'), 'seite': r.get('quelle'),
+            'groesse': r.get('groesse'), 'hinweis': r.get('hinweis'),
+            'domain': urllib.parse.urlparse(r['url']).hostname}
 
 
 def vorschlaege_starten(datei):
@@ -164,6 +194,9 @@ def inventar_ansicht(datei):
         p['manuell'] = nn in manuell
         p['windows'] = bool(WINDOWS_TEIL.match(p.get('name') or ''))
         kand = (vorschl or {}).get(p.get('name') or '') or []
+        nh = (inv.get('netzhinweise') or {}).get(p.get('name') or '')
+        if nh:
+            p['netzhinweis'] = nh
         if not p['id'] and not p['windows'] and kand:
             if kand[0]['sicher']:
                 p['id'] = kand[0]['id']
@@ -185,6 +218,7 @@ def inventar_ansicht(datei):
     inv['programme'] = progs + extra
     inv['vorschlaege_laeuft'] = laeuft or sicher(datei) in VORSCHLAG_LAEUFT and vorschl is None
     inv.pop('vorschlaege', None)
+    inv.pop('netzhinweise', None)
     return inv
 
 
@@ -205,6 +239,22 @@ def jlog(t):
 
 
 def lade_paket(pid, eintrag):
+    if pid.startswith('netz.'):
+        if not eintrag.get('url'):
+            raise RuntimeError('kein Download-Link gespeichert')
+        ziel = DATEN / 'depot' / sicher(pid)
+        alt = lies(ziel / 'info.json')
+        if alt and alt.get('url') == eintrag['url'] and (ziel / alt['datei']).exists():
+            return f'aktuell ({alt.get("version")})'
+        ziel.mkdir(parents=True, exist_ok=True)
+        datei, n = link_laden(eintrag['url'], ziel)
+        hinweis = 'inno' if re.search(r'_is1$', eintrag.get('key') or '', re.I) else None
+        info = eigen_info(pid, eintrag.get('name') or pid, ziel / datei, n, None, hinweis, eintrag.get('version'), eintrag['url'])
+        info['quelle'] = 'netz'
+        info['seite'] = eintrag.get('seite')
+        schreib(ziel / 'info.json', info)
+        return f'geladen {info["version"]} ({n // 1048576} MB, {info.get("art") or info["typ"]}) von {urllib.parse.urlparse(eintrag["url"]).hostname}' + (
+            f' – {info["fehler"]}' if info.get('fehler') else '')
     if eintrag.get('quelle') == 'eigen':
         return 'eigener Installer – liegt schon im Depot' if depot_info(pid) else 'eigener Installer fehlt!'
     ins = CHOCO.installer(pid.split(':', 1)[1]) if pid.startswith('choco:') else KATALOG.installer(pid)
@@ -520,6 +570,14 @@ class H(BaseHTTPRequestHandler):
                 erg += [{'id': 'choco:' + r['id'], 'name': r['name'], 'version': r['version'], 'quelle': 'choco'}
                         for r in CHOCO.kandidaten(toks)]
             return self.antwort(200, erg)
+        if pfad == '/api/netzsuche':
+            prog = {'name': q.get('name', ''), 'publisher': q.get('publisher', ''), 'version': q.get('version', '')}
+            if len(prog['name'].strip()) < 2:
+                return self.fehler(400, 'Name fehlt')
+            r = NETZ.suchen(prog, neu=bool(q.get('neu')))
+            if r is None:
+                return self.fehler(409, 'Suche fuer dieses Programm laeuft schon')
+            return self.antwort(200, {**r, 'vorschlag': netz_vorschlag(prog['name'], r) if r.get('ok') else None})
         if pfad == '/api/inventare':
             return self.antwort(200, inventare_liste())
         if pfad == '/api/inventar':
@@ -592,13 +650,19 @@ class H(BaseHTTPRequestHandler):
                 akt = b.get('aktion')
                 if akt == 'setzen':
                     for e in b.get('pakete') or [b]:
+                        if e.get('an', True) and e['id'].startswith('netz.') and not e.get('url'):
+                            gemerkt = NETZ._cache.get(e['id'][5:]) or {}
+                            e = {**e, 'url': gemerkt.get('url'), 'version': gemerkt.get('version'), 'seite': gemerkt.get('quelle')}
                         if e.get('an', True):
                             alt = pr['pakete'].get(e['id'], {})
                             pr['pakete'][e['id']] = {**alt, 'name': e.get('name') or alt.get('name') or e['id'],
                                                      'quelle': e.get('quelle') or alt.get('quelle') or (
                                                          'choco' if e['id'].startswith('choco:') else
+                                                         'netz' if e['id'].startswith('netz.') else
                                                          'eigen' if e['id'].startswith('eigen.') else 'winget'),
-                                                     'aus': e.get('aus') or alt.get('aus')}
+                                                     'aus': e.get('aus') or alt.get('aus'),
+                                                     **{k: e.get(k) or alt.get(k) for k in ('url', 'version', 'key', 'seite')
+                                                        if e.get(k) or alt.get(k)}}
                         else:
                             pr['pakete'].pop(e['id'], None)
                 elif akt == 'args':

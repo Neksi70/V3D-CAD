@@ -3,7 +3,7 @@
 Simuliert, was V3D-Setup.ps1 auf Windows tut. Laedt echte, kleine Installer
 (7-Zip, Notepad++) aus dem Internet. Nicht gegen die echten Daten laufen lassen.
 
-  V3DSETUP_DATEN=/tmp/x V3DSETUP_PORT=18819 python3 server.py &
+  V3DSETUP_NETZ=0 V3DSETUP_DATEN=/tmp/x V3DSETUP_PORT=18819 python3 server.py &
   python3 test_ablauf.py
 """
 import hashlib
