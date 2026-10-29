@@ -29,7 +29,7 @@ from mcp.types import CallToolResult, TextContent
 
 ZIELE = {
     'server': os.environ.get('BROWSER_MCP_URL') or 'http://127.0.0.1:8812/mcp',
-    'notebook': os.environ.get('NOTEBOOK_MCP_URL') or 'http://100.66.252.89:8931/mcp',
+    'notebook': os.environ.get('NOTEBOOK_MCP_URL') or 'http://100.79.71.92:8931/mcp',
 }
 HILFE = {
     'server': 'systemctl --user status v3d-browser',
