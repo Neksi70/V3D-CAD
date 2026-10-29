@@ -30,6 +30,13 @@ Nach einem Neustart setzt die geplante Aufgabe fort und geht danach wieder in de
 Lange Windows-Update-Aufrufe blockieren den Puls – „online“ gilt beim Arbeiten bis 30 min ohne Puls.
 Das alte Konsolenmenü gibt es noch mit `-Modus Menue`.
 
+## Notfall-Treiber für den USB-Stick (🛟)
+`/api/notfalltreiber?host=&datei=` schneidet aus einer Treiber-Sicherung nur WLAN/LAN, Touchpad (inkl. Intel
+Serial IO I2C/GPIO – ohne die bleibt das Touchpad tot) und Bluetooth heraus (`NOTFALL_REGELN`, nach INF-Namen),
+dazu `Einspielen.cmd` (pnputil → WLAN-Auswahl → `warten.ps1` wartet auf V3DA und öffnet V3D Setup).
+pnputil installiert nur passende Treiber, daher dürfen alle Kandidaten mit. Gemerkt in `daten/notfall/`.
+Vivobook DESKTOP-0KM6CVE: 13 Treiber, 91 MB statt 1,9 GB.
+
 ## Windows-Skript
 `windows/V3D-Setup.ps1` – PowerShell 5.1, reines ASCII (+BOM beim Ausliefern), `__SERVER__` wird beim
 Ausliefern durch die aufgerufene Adresse ersetzt. Parameter: `-Modus`, `-Profil`, `-Quelle` (Ordner/UNC mit

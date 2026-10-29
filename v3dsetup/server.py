@@ -26,7 +26,7 @@ from katalog import ALIAS, Katalog, UA, normname, woerter, zerlegt
 HIER = Path(__file__).resolve().parent
 DATEN = Path(os.environ.get('V3DSETUP_DATEN', HIER / 'daten'))
 PORT = int(os.environ.get('V3DSETUP_PORT', '8819'))
-for d in ('inventare', 'profile', 'depot', 'treiber', 'katalog', 'rechner'):
+for d in ('inventare', 'profile', 'depot', 'treiber', 'katalog', 'rechner', 'notfall'):
     (DATEN / d).mkdir(parents=True, exist_ok=True)
 
 KATALOG = Katalog(DATEN / 'katalog')
@@ -478,7 +478,7 @@ def gesichert(host):
     inv = next((i for i in inventare_liste() if i.get('host') == host), None)
     tr = next((t for t in treiber_liste() if t['host'] == host), None)
     return {'inventar': {'zeit': inv['zeit'], 'anzahl': inv['anzahl'], 'datei': inv['datei']} if inv else None,
-            'treiber': {'zeit': tr['zeit'], 'anzahl': tr.get('anzahl'), 'groesse': tr['groesse']} if tr else None}
+            'treiber': {'zeit': tr['zeit'], 'anzahl': tr.get('anzahl'), 'groesse': tr['groesse'], 'datei': tr['datei']} if tr else None}
 
 
 def rechner_ansicht(r, mit_gesichert=None):
@@ -515,6 +515,92 @@ def agent_puls(b):
 TITEL = {'Inventar': 'Inventar senden', 'TreiberSichern': 'Treiber sichern', 'AlterRechner': 'Inventar + Treiber sichern',
          'Alles': 'Neu einrichten', 'Installieren': 'Programme installieren', 'TreiberZurueck': 'Treiber zurückspielen',
          'Updates': 'Updates', 'Beenden': 'Verbindung beenden'}
+
+
+# ---------------- Notfall-Treiber (WLAN + Touchpad) ----------------
+# Kleines Paket fuer den USB-Stick: damit ein frisch installiertes Windows sofort WLAN und
+# Touchpad hat und danach die V3D-Setup-Seite oeffnen kann. pnputil installiert nur Treiber,
+# zu denen passende Hardware da ist - deshalb duerfen alle Kandidaten mit.
+NOTFALL_REGELN = [
+    ('WLAN/LAN', r'^(netwtw|netwlv|netrtwl|rtwlan|mtkwl|bcmwl|athw|qcamain|netr28|mrvlpcie|rtu53cx|rtucx|rtwu|netrtl)'),
+    ('Touchpad', r'^(asusptp|ialpss|iaLPSS|hid_pci|hideventfilter|elan|synp|smbusdrv|ptp|hpptp|lenovoptp|dellptp|msptp)'),
+    ('Bluetooth', r'^(ibtusb|rtkfilter|btfilter|mtkbt|bcbtums|qcbtuart)'),
+]
+
+EINSPIELEN_CMD = r'''@echo off
+title V3D Treiber - WLAN, Touchpad, Bluetooth
+net session >nul 2>&1
+if errorlevel 1 (
+  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  exit /b
+)
+echo.
+echo  V3D Treiber: spiele WLAN-, Touchpad- und Bluetooth-Treiber ein ...
+echo.
+pnputil /add-driver "%~dp0treiber\*.inf" /subdirs /install
+echo.
+echo  Fertig. Jetzt bitte mit dem WLAN verbinden (Auswahl oeffnet sich) ...
+start "" ms-availablenetworks:
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0warten.ps1"
+'''
+
+WARTEN_PS1 = r'''# wartet, bis V3DA erreichbar ist, und oeffnet dann V3D Setup
+$Server = '__SERVER__'
+Write-Host ''
+Write-Host "  Warte auf Verbindung zu V3DA ($Server) " -NoNewline
+for ($i = 0; $i -lt 600; $i++) {
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri "$Server/api/status" -TimeoutSec 3 | Out-Null
+        Write-Host ' verbunden!' -ForegroundColor Green
+        Start-Process $Server
+        Start-Sleep -Seconds 3
+        exit
+    } catch { Write-Host '.' -NoNewline; Start-Sleep -Seconds 2 }
+}
+Write-Host ''
+Write-Host '  V3DA nicht erreichbar. WLAN verbunden? Seite von Hand oeffnen:' -ForegroundColor Yellow
+Write-Host "  $Server"
+Read-Host '  Enter zum Schliessen'
+'''
+
+
+def notfall_treiber(host, datei, basis):
+    """Baut (oder liefert gemerkt) das Notfall-ZIP aus einer Treiber-Sicherung."""
+    quelle = DATEN / 'treiber' / sicher(host) / sicher(datei)
+    if not quelle.is_file():
+        raise FileNotFoundError('Treiber-Sicherung fehlt')
+    ziel = DATEN / 'notfall' / f'{sicher(host)}_{quelle.stem}_{hashlib.md5(basis.encode()).hexdigest()[:6]}.zip'
+    if ziel.exists() and ziel.stat().st_mtime >= quelle.stat().st_mtime:
+        return ziel, lies(ziel.with_suffix('.json'), {})
+    import zipfile
+    gewaehlt = {}
+    with zipfile.ZipFile(quelle) as z:
+        for info in z.infolist():
+            if '\\' not in info.filename and '/' not in info.filename:
+                continue
+            ordner = re.split(r'[\\/]', info.filename)[0]
+            for kat, rx in NOTFALL_REGELN:
+                if re.match(rx, ordner, re.I):
+                    gewaehlt.setdefault(ordner, kat)
+        tmp = ziel.with_suffix('.laden')
+        with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as aus:
+            for info in z.infolist():
+                teile = re.split(r'[\\/]', info.filename)
+                if teile[0] in gewaehlt and not info.is_dir():
+                    aus.writestr('V3D-Treiber/treiber/' + '/'.join(teile), z.read(info))
+            aus.writestr('V3D-Treiber/Einspielen.cmd', EINSPIELEN_CMD.replace('\n', '\r\n'))
+            aus.writestr('V3D-Treiber/warten.ps1', '\ufeff' + WARTEN_PS1.replace('__SERVER__', basis).replace('\n', '\r\n'))
+            liste = '\r\n'.join(f'  {k:10} {o}' for o, k in sorted(gewaehlt.items(), key=lambda x: (x[1], x[0])))
+            aus.writestr('V3D-Treiber/LIESMICH.txt', (
+                f'V3D Treiber fuer {host} (Sicherung {datei})\r\n\r\n'
+                '1. Ordner V3D-Treiber auf einen USB-Stick kopieren (ZIP vorher entpacken!).\r\n'
+                '2. Am frisch installierten PC Einspielen.cmd doppelklicken (Adminrechte bestaetigen).\r\n'
+                '3. Mit dem WLAN verbinden - danach oeffnet sich V3D Setup von selbst.\r\n\r\n'
+                f'Enthaltene Treiber:\r\n{liste}\r\n'))
+    tmp.replace(ziel)
+    meta = {'anzahl': len(gewaehlt), 'kategorien': sorted(set(gewaehlt.values())), 'groesse': ziel.stat().st_size}
+    schreib(ziel.with_suffix('.json'), meta)
+    return ziel, meta
 
 
 # ---------------- Windows-Skripte ----------------
@@ -667,6 +753,9 @@ class H(BaseHTTPRequestHandler):
                 return self.antwort(200, dict(JOB, log=JOB['log'][-200:]))
         if pfad == '/api/treiber':
             return self.antwort(200, treiber_liste())
+        if pfad == '/api/notfalltreiber':
+            ziel, meta = notfall_treiber(q.get('host', ''), q.get('datei', ''), self.basis())
+            return self.datei_senden(ziel, f"V3D-Treiber-{sicher(q.get('host', ''))}.zip")
         if pfad.startswith('/depot/') or pfad.startswith('/treiber/'):
             wurzel = (DATEN / pfad.split('/')[1]).resolve()
             ziel = (DATEN / pfad.lstrip('/')).resolve()
