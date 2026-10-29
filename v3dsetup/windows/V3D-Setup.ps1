@@ -412,7 +412,9 @@ function Do-TreiberZurueck {
 function Starte-Installer([string]$datei, [string]$typ, [string]$argumente) {
     switch -Regex ($typ) {
         '^(msi|wix)$' {
-            $p = Start-Process msiexec.exe -ArgumentList ("/i `"$datei`" $argumente") -PassThru
+            # MSI-Protokoll, damit bei Fehler 1603 & Co. der Grund in der Weboberflaeche steht
+            $script:MsiLog = Join-Path $Arbeit ('msi_' + ([IO.Path]::GetFileNameWithoutExtension($datei) -replace '[^\w.-]', '_') + '.log')
+            $p = Start-Process msiexec.exe -ArgumentList ("/i `"$datei`" $argumente /l*v `"$($script:MsiLog)`"") -PassThru
         }
         '^(msix|appx)$' {
             Add-AppxPackage -Path $datei -ErrorAction Stop
@@ -519,7 +521,17 @@ function Do-Installieren {
             }
             $ok = @($p.codes) -contains $code
             if ($code -eq 3010 -or $code -eq 1641) { $script:Neustart = $true }
-            if ($ok) { Log "$kopf - OK" 'Green' } else { Log "$kopf - Fehlercode $code" 'Red' }
+            if ($ok) { Log "$kopf - OK" 'Green' } else {
+                Log "$kopf - Fehlercode $code" 'Red'
+                if ($script:MsiLog -and (Test-Path $script:MsiLog)) {
+                    # die aussagekraeftigen Zeilen: Fehlermeldungen und die fehlgeschlagene Aktion
+                    Get-Content $script:MsiLog -Encoding Unicode -ErrorAction SilentlyContinue |
+                        Where-Object { $_ -match 'Error \d{4}|Fehler \d{4}|returned value 3|R.ckgabewert 3|Installation failed|1603' } |
+                        Select-Object -First 6 | ForEach-Object { Log ('    MSI: ' + $_.Trim()) 'Red' }
+                    Log "    ganzes Protokoll: $($script:MsiLog)" 'DarkGray'
+                }
+            }
+            $script:MsiLog = $null
             [void]$ergebnis.Add([pscustomobject]@{ Programm = $p.name; Ergebnis = $(if ($ok) { 'installiert' } else { "Fehler $code" }) })
             if ($ok) { Ergebnis $p.name ('installiert ' + $p.version) 'ok' } else { Ergebnis $p.name "Fehlercode $code" 'fehler' }
         } catch {
