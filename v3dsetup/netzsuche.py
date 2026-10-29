@@ -33,7 +33,11 @@ KEINE Download-Portale (chip, softonic, filehippo, uptodown, softpedia, majorgee
 Nimm die neueste Version. Wenn es das Programm nicht mehr gibt oder nur nach Anmeldung/Kauf, sag das.
 Antworte NUR mit JSON in einer Zeile:
 {{"url": "...", "version": "...", "quelle": "<Seite, auf der der Link steht>", "hinweis": "<kurz, deutsch>"}}
-Wenn nichts Offizielles zu finden ist: {{"url": null, "hinweis": "<warum, kurz, deutsch>"}}'''
+Wenn nichts Offizielles zu finden ist: {{"url": null, "hinweis": "<warum, kurz, deutsch>"}}{nachtrag}'''
+NACHTRAG = '''
+WICHTIG: Diese Links wurden schon geprueft und funktionieren NICHT – such einen anderen (z. B. neuere Version,
+andere offizielle Seite wie Wiki/Support/Hilfe-Center des Herstellers):
+{liste}'''
 
 
 def anzeigename(name):
@@ -65,7 +69,9 @@ class Netzsuche:
 
     def bekannt(self, name):
         e = self._cache.get(schluessel(name))
-        if e and time.time() - e.get('t', 0) < 30 * 86400:
+        # Treffer und „gibt es nicht offiziell“ 30 Tage merken, tote Links nur 1 Tag
+        frist = 86400 if (e and e.get('url') and not e.get('ok')) else 30 * 86400
+        if e and time.time() - e.get('t', 0) < frist:
             return e
         return None
 
@@ -108,10 +114,11 @@ class Netzsuche:
         return False, 0, None, letzter
 
     # ---------- Claude fragen ----------
-    def _claude(self, prog):
+    def _claude(self, prog, schlecht=()):
         prog = {k: str(v or '').replace('\x00', '').strip() for k, v in prog.items()}
+        nachtrag = NACHTRAG.format(liste='\n'.join(f'- {u} ({g})' for u, g in schlecht)) if schlecht else ''
         auftrag = AUFTRAG.format(name=prog.get('name', ''), hersteller=prog.get('publisher') or 'unbekannt',
-                                 version=prog.get('version') or 'unbekannt')
+                                 version=prog.get('version') or 'unbekannt', nachtrag=nachtrag)
         cmd = [CLAUDE, '-p', auftrag, '--output-format', 'json', '--model', MODELL,
                '--allowedTools', 'WebSearch,WebFetch',
                '--disallowedTools', 'Edit,Write,NotebookEdit,Bash,Read,Grep,Glob,Task']
@@ -138,21 +145,28 @@ class Netzsuche:
             return None
         self.laeuft.add(k)
         try:
-            with GLEICHZEITIG:
-                try:
-                    a = self._claude(prog)
-                except Exception as e:
-                    # Fehler nicht 30 Tage merken – naechstes Mal neu versuchen
-                    return {'ok': False, 'hinweis': 'Netzsuche ging nicht: ' + str(e)[:150], 't': time.time()}
-            erg = {'url': a.get('url'), 'version': a.get('version'), 'quelle': a.get('quelle'),
-                   'hinweis': a.get('hinweis'), 'name': prog.get('name'), 't': time.time()}
-            if erg['url']:
+            schlecht = []
+            erg = None
+            for versuch in range(3):          # taugt der Link nicht: mit Hinweis darauf neu suchen
+                with GLEICHZEITIG:
+                    try:
+                        a = self._claude(prog, schlecht)
+                    except Exception as e:
+                        if erg:
+                            break
+                        # Fehler nicht 30 Tage merken – naechstes Mal neu versuchen
+                        return {'ok': False, 'hinweis': 'Netzsuche ging nicht: ' + str(e)[:150], 't': time.time()}
+                erg = {'url': a.get('url'), 'version': a.get('version'), 'quelle': a.get('quelle'),
+                       'hinweis': a.get('hinweis'), 'name': prog.get('name'), 't': time.time(), 'versuche': versuch + 1}
+                if not erg['url']:
+                    erg['ok'] = False
+                    break
                 ok, groesse, datei, grund = self.pruefen(erg['url'])
                 erg.update(ok=ok, groesse=groesse, datei=datei)
-                if not ok:
-                    erg['hinweis'] = f'gefundener Link taugt nicht ({grund})'
-            else:
-                erg['ok'] = False
+                if ok:
+                    break
+                schlecht.append((erg['url'], grund))
+                erg['hinweis'] = f'gefundene Links taugen nicht ({grund})'
             self._merken(k, erg)
             return erg
         finally:
