@@ -201,6 +201,26 @@ def init_db():
             preis REAL DEFAULT 0, quelle TEXT DEFAULT '');
         CREATE TABLE IF NOT EXISTS einstellungen(k TEXT PRIMARY KEY, v TEXT);
         CREATE TABLE IF NOT EXISTS sitzungen(token TEXT PRIMARY KEY, ablauf TEXT);
+        CREATE TABLE IF NOT EXISTS projekte(
+            id INTEGER PRIMARY KEY, name TEXT NOT NULL, kunde_id INTEGER REFERENCES kunden(id) ON DELETE SET NULL,
+            stand TEXT DEFAULT '', notiz TEXT DEFAULT '', angelegt TEXT, importiert TEXT);
+        CREATE TABLE IF NOT EXISTS fahrzeuge(
+            id INTEGER PRIMARY KEY, projekt_id INTEGER NOT NULL REFERENCES projekte(id) ON DELETE CASCADE,
+            nr INTEGER NOT NULL, auftragsnr TEXT DEFAULT '', bezeichnung TEXT DEFAULT '',
+            UNIQUE(projekt_id, nr));
+        CREATE TABLE IF NOT EXISTS projektpositionen(
+            id INTEGER PRIMARY KEY, projekt_id INTEGER NOT NULL REFERENCES projekte(id) ON DELETE CASCADE,
+            posnr TEXT DEFAULT '', baugruppe TEXT DEFAULT '', bezeichnung TEXT DEFAULT '',
+            artikel_id INTEGER REFERENCES artikel(id) ON DELETE SET NULL,
+            lieferant_id INTEGER REFERENCES lieferanten(id) ON DELETE SET NULL,
+            menge REAL DEFAULT 1, besteller TEXT DEFAULT '', besteller_manuell TEXT DEFAULT '',
+            notiz TEXT DEFAULT '', in_datei INTEGER DEFAULT 1, sort INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS positionsstatus(
+            position_id INTEGER NOT NULL REFERENCES projektpositionen(id) ON DELETE CASCADE,
+            fahrzeug_id INTEGER NOT NULL REFERENCES fahrzeuge(id) ON DELETE CASCADE,
+            status TEXT DEFAULT 'offen', status_datei TEXT DEFAULT '', geaendert TEXT,
+            PRIMARY KEY(position_id, fahrzeug_id));
+        CREATE INDEX IF NOT EXISTS ix_ppos_proj ON projektpositionen(projekt_id, posnr);
         CREATE INDEX IF NOT EXISTS ix_hist_art ON historie(artikel_id, datum);
         CREATE INDEX IF NOT EXISTS ix_ang_art ON angebote(artikel_id, datum);
         """)
@@ -731,6 +751,319 @@ def historie_einlesen(c, zeilen, zuordnung, quelle):
             "ohne_datum": ohne_datum, "ersatzdatum": ersatzdatum, "uebersprungen": uebersprungen}
 
 
+# ------------------------------------------------- Projekte (Bestellliste)
+PROJEKT_STATUS = ["offen", "angefragt", "beauftragt", "geliefert", "entfällt"]
+ZUSATZ_RUBRIKEN = [
+    ("AV-, IT- & Medientechnik", "#3b5bdb", ["Monitore & Displays", "PC & Netzwerk", "Audio", "Sat & Kamera"]),
+    ("Sanitär, Wasser & Klima", "#1098ad", ["Wasser & Pumpen", "Heizung", "Klima & Lüftung"]),
+    ("Hydraulik & Antriebe", "#e8590c", ["Hydraulik", "Motoren & Antriebe", "Gasfedern"]),
+    ("Beschläge, Türen & Fenster", "#5c940d", ["Scharniere & Schlösser", "Türen", "Fenster & Glas"]),
+    ("Ausstattung & Möbel", "#ae3ec9", ["Möbel", "Küche & Kaffee", "Sicherheit & Erste Hilfe"]),
+    ("Fremdleistungen & Dienstleistungen", "#868e96", ["Pulverbeschichtung", "Elektroinstallation", "Folierung & Werbung", "Anzahlungen"]),
+]
+STATUS_NORMAL = {"": "offen", "offen": "offen", "angefragt": "angefragt", "beauftragt": "beauftragt",
+                 "bestellt": "beauftragt", "geliefert": "geliefert", "erhalten": "geliefert",
+                 "entfällt": "entfällt", "entfaellt": "entfällt", "entfallen": "entfällt", "-": "entfällt"}
+
+
+def zusatz_rubriken(c):
+    for i, (name, farbe, unter) in enumerate(ZUSATZ_RUBRIKEN):
+        if c.execute("SELECT 1 FROM rubriken WHERE parent_id IS NULL AND name=?", (name,)).fetchone():
+            continue
+        rid = c.execute("INSERT INTO rubriken(name,farbe,sort) VALUES(?,?,?)", (name, farbe, 50 + i)).lastrowid
+        for j, u in enumerate(unter):
+            c.execute("INSERT INTO rubriken(name,farbe,parent_id,sort) VALUES(?,?,?,?)", (u, farbe, rid, j))
+
+
+def projekt_lesen(zeilen):
+    """Bestellliste mit Fahrzeugspalten lesen (Kopfzeile mit „Pos.-Nr." und „Artikel")."""
+    kopf_i = next((i for i, z in enumerate(zeilen[:30])
+                   if any(normal(x) == "posnr" for x in z) and any(normal(x) == "artikel" for x in z)), None)
+    if kopf_i is None:
+        raise Fehler("Kopfzeile mit „Pos.-Nr.“ und „Artikel“ nicht gefunden")
+    kopf = zeilen[kopf_i]
+    spalte, fzg, status_spalten = {}, {}, {}
+    for i, k in enumerate(kopf):
+        n, kl = normal(k), str(k).strip().lower()
+        m = re.fullmatch(r"(?:fzg|fahrzeug)\.?\s*(\d+)", kl)
+        ms = re.fullmatch(r"status\s*(?:fzg|fahrzeug)\.?\s*(\d+)", kl)
+        if m:
+            fzg[int(m.group(1))] = i
+        elif ms:
+            status_spalten[int(ms.group(1))] = i
+        elif n == "posnr":
+            spalte["posnr"] = i
+        elif n in ("bedarfsposition", "baugruppe", "gruppe"):
+            spalte["baugruppe"] = i
+        elif n == "artikel":
+            spalte["artikel"] = i
+        elif n == "lieferant":
+            spalte["lieferant"] = i
+        elif n in ("bestellmenge", "menge"):
+            spalte["menge"] = i
+        elif n.startswith("besteller") and "manuell" in n:
+            spalte["besteller_manuell"] = i
+        elif n.startswith("besteller"):
+            spalte["besteller"] = i
+        elif n.startswith("entfällt") or n.startswith("entfaellt"):
+            spalte["entfaellt"] = i
+    if not fzg:
+        raise Fehler("Keine Fahrzeugspalten („Fzg 1“, „Fzg 2“ …) gefunden")
+    darueber = zeilen[kopf_i - 1] if kopf_i else []
+    fahrzeuge = [{"nr": n, "auftragsnr": str(darueber[i]).strip() if i < len(darueber) else ""}
+                 for n, i in sorted(fzg.items())]
+    stand = next((str(x).split(":", 1)[1].strip() for z in zeilen[:kopf_i] for x in z
+                  if str(x).lower().startswith("stand")), "")
+    titel = next((str(z[0]).strip() for z in zeilen[:kopf_i] if z and str(z[0]).strip()), "")
+    w = lambda z, k: str(z[spalte[k]]).strip() if k in spalte and spalte[k] < len(z) else ""
+    positionen, widersprueche = [], []
+    for z in zeilen[kopf_i + 1:]:
+        if not (w(z, "posnr") or w(z, "artikel")):
+            continue
+        entf = {int(x) for x in re.findall(r"\d+", w(z, "entfaellt"))}
+        status = {}
+        for n, i in fzg.items():
+            roh = str(z[i]).strip().lower() if i < len(z) else ""
+            status[n] = "entfällt" if n in entf else STATUS_NORMAL.get(roh, "offen")
+        for n, i in status_spalten.items():
+            roh = str(z[i]).strip().lower() if i < len(z) else ""
+            if roh and n in status and STATUS_NORMAL.get(roh, roh) != status[n]:
+                widersprueche.append({"posnr": w(z, "posnr"), "artikel": w(z, "artikel"), "fzg": n,
+                                      "status_spalte": roh, "fzg_spalte": status[n]})
+        positionen.append({"posnr": w(z, "posnr"), "baugruppe": w(z, "baugruppe"), "artikel": w(z, "artikel"),
+                           "lieferant": w(z, "lieferant"), "menge": zahl(w(z, "menge"), 1) or 1,
+                           "besteller": w(z, "besteller"), "besteller_manuell": w(z, "besteller_manuell"),
+                           "status": status})
+    # doppelte Pos.-Nr. nicht still überschreiben: 254, 254/2, …
+    gesehen, doppelt = {}, []
+    for p in positionen:
+        n = gesehen.get(p["posnr"], 0) + 1
+        gesehen[p["posnr"]] = n
+        if n > 1:
+            doppelt.append(p["posnr"])
+            p["posnr"] = f"{p['posnr']}/{n}"
+    return {"titel": titel, "stand": stand, "fahrzeuge": fahrzeuge, "positionen": positionen,
+            "widersprueche": widersprueche, "doppelt": sorted(set(doppelt))}
+
+
+RECHTSFORMEN = r"\b(gmbh|mbh|co|kg|ag|ek|e k|sarl|eu|se|ug|ohg|gbr|inh|haftungsbeschraenkt|kgaa|ltd|inc)\b"
+
+
+def firmen_schluessel(name):
+    t = str(name).lower()
+    for a_, b_ in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss"), ("&", " "), ("+", " ")):
+        t = t.replace(a_, b_)
+    t = re.sub(r"[^a-z0-9 ]", " ", t)
+    t = re.sub(RECHTSFORMEN, " ", t)
+    return [x for x in t.split() if x]
+
+
+ALLERWELTSWORTE = {"metall", "metallbau", "metallverarbeitung", "stahl", "edelstahl", "stahlhandel", "technik",
+                   "handel", "elektro", "elektronik", "systeme", "system", "service", "gruppe", "group",
+                   "nutzfahrzeuge", "fahrzeugbau", "fahrzeuge", "pulverbeschichtung", "deutschland", "international",
+                   "vertrieb", "automation", "energietechnik", "heizsysteme", "shop", "online", "direkt",
+                   "veranstaltungstechnik", "werbung", "beschlaege", "kunststoff", "kunststoffe", "versand", "sohn",
+                   "soehne", "partner", "vertriebs", "industrie", "maschinentechnik", "dichtungen", "products", "europe", "germany"}
+
+
+def lieferanten_gruppen(namen, vorhandene):
+    """Schreibvarianten desselben Lieferanten finden.
+    sicher   = gleicher Namenskern (ohne Rechtsform/Umlaute) oder ein Name steckt ganz im anderen → vorausgewählt
+    unsicher = ähnlich geschrieben oder gemeinsames markantes Wort → nur Vorschlag, eigene Gruppe"""
+    import difflib
+    alle = list(dict.fromkeys([n for n in namen if n] + [v for v in vorhandene if v]))
+    schl = {n: firmen_schluessel(n) for n in alle}
+    haeufig = {n: namen.count(n) for n in alle}
+
+    def ziel_von(g):
+        bestehend = [x for x in g if x in vorhandene]
+        return bestehend[0] if bestehend else max(g, key=lambda x: (haeufig.get(x, 0), len(x)))
+
+    def gruppieren(paare, knoten):
+        eltern = {k: k for k in knoten}
+
+        def w(x):
+            while eltern[x] != x:
+                x = eltern[x]
+            return x
+        for a_, b_ in paare:
+            if w(a_) != w(b_):
+                eltern[w(a_)] = w(b_)
+        g = {}
+        for k in knoten:
+            g.setdefault(w(k), []).append(k)
+        return list(g.values())
+
+    sicher_paare, unsicher_paare = [], []
+    for i, a_ in enumerate(alle):
+        for b_ in alle[i + 1:]:
+            ta, tb = schl[a_], schl[b_]
+            if not ta or not tb:
+                continue
+            kurz = set(ta) if len(ta) < len(tb) else set(tb)
+            if ta == tb or ((set(ta) < set(tb) or set(tb) < set(ta)) and any(len(x) >= 4 for x in kurz)):
+                sicher_paare.append((a_, b_))
+            elif difflib.SequenceMatcher(None, " ".join(ta), " ".join(tb)).ratio() >= 0.86 or \
+                    any(len(x) >= 5 and x not in ALLERWELTSWORTE for x in set(ta) & set(tb)):
+                unsicher_paare.append((a_, b_))
+    sichere = gruppieren(sicher_paare, alle)
+    gruppe_von = {n: tuple(sorted(g)) for g in sichere for n in g}
+    erg = [{"ziel": ziel_von(g), "namen": sorted(g), "sicher": True} for g in sichere if len(g) > 1]
+    # unsichere Paare verbinden ganze sichere Gruppen
+    knoten = sorted(set(gruppe_von.values()))
+    paare = [(gruppe_von[a_], gruppe_von[b_]) for a_, b_ in unsicher_paare if gruppe_von[a_] != gruppe_von[b_]]
+    for gg in gruppieren(paare, knoten):
+        if len(gg) < 2:
+            continue
+        namen_g = sorted(n for g in gg for n in g)
+        groesste = max(gg, key=lambda g: (len(g), sum(haeufig.get(n, 0) for n in g)))
+        erg.append({"ziel": ziel_von(list(groesste)), "namen": namen_g, "sicher": False})
+    return sorted(erg, key=lambda x: (not x["sicher"], x["ziel"].lower()))
+
+
+RUBRIK_SYSTEM = """Du ordnest Einkaufsartikel eines Fahrzeug- und Sonderbauers (Marchi Group) in Rubriken (Warengruppen) ein.
+Antworte AUSSCHLIESSLICH mit JSON: {"0": rubrik_id, "1": rubrik_id, ...} – für jeden Artikel die passendste Rubrik-ID
+aus der Liste (Unterrubrik, wenn eine passt). Dienstleistungen, Abschlags-/Vorkasserechnungen, Beschichtung, Montage
+→ Fremdleistungen. Nutze Baugruppe und Lieferant als Hinweis."""
+
+
+def rubriken_zuordnen(c, posten):
+    """posten: [{"artikel","baugruppe","lieferant"}] -> [rubrik_id|None]. KI in Blöcken, sonst Stichwörter."""
+    rub = {r["id"]: dict(r) for r in c.execute("SELECT id, name, parent_id FROM rubriken")}
+    liste = [{"id": i, "name": (rub[r["parent_id"]]["name"] + " › " if r["parent_id"] in rub else "") + r["name"]}
+             for i, r in rub.items()]
+    erg = [None] * len(posten)
+    try:
+        for start in range(0, len(posten), 120):
+            block = posten[start:start + 120]
+            text = "RUBRIKEN:\n" + json.dumps(liste, ensure_ascii=False) + "\n\nARTIKEL:\n" + "\n".join(
+                f"{i}: {p['artikel']} | Baugruppe: {p['baugruppe']} | Lieferant: {p['lieferant']}"
+                for i, p in enumerate(block))
+            m = re.search(r"\{.*\}", ki_aufrufen(RUBRIK_SYSTEM, text, max_tokens=4000), re.S)
+            if m:
+                for k, v in json.loads(m.group(0)).items():
+                    if str(k).isdigit() and int(k) < len(block) and v in rub:
+                        erg[start + int(k)] = v
+    except Fehler as e:
+        print("Rubriken per KI nicht möglich:", e, flush=True)
+    for i, p in enumerate(posten):
+        if not erg[i]:
+            erg[i] = rubrik_raten(c, f"{p['artikel']} {p['baugruppe']}")
+    return erg
+
+
+def projekt_vorschau(c, zeilen, dateiname):
+    d = projekt_lesen(zeilen)
+    namen = [p["lieferant"] for p in d["positionen"]]
+    vorhandene = [r["name"] for r in c.execute("SELECT name FROM lieferanten")]
+    vorschlag = re.sub(r"^(bestellliste|bestellung|liste)[ _-]*", "", os.path.splitext(dateiname)[0], flags=re.I)
+    vorschlag = re.sub(r"[ _-]*\d{4}-\d{2}-\d{2}$", "", vorschlag).replace("_", " ").strip() or d["titel"]
+    zaehl = {}
+    for p in d["positionen"]:
+        for s_ in p["status"].values():
+            zaehl[s_] = zaehl.get(s_, 0) + 1
+    bestehend = c.execute("SELECT id, name FROM projekte ORDER BY id DESC").fetchall()
+    return {"titel": d["titel"], "stand": d["stand"], "name": vorschlag, "fahrzeuge": d["fahrzeuge"],
+            "positionen": len(d["positionen"]), "status": zaehl,
+            "lieferanten": len({n for n in namen if n}), "ohne_lieferant": sum(1 for n in namen if not n),
+            "gruppen": lieferanten_gruppen(namen, vorhandene), "widersprueche": d["widersprueche"],
+            "doppelt": d["doppelt"],
+            "projekte": [dict(r) for r in bestehend], "zeilen": zeilen}
+
+
+def projekt_einlesen(c, zeilen, name, gruppen, projekt_id=None):
+    """Erstimport und Wieder-Einlesen. Status aus der Datei wird nur übernommen, wenn er sich IN DER DATEI
+    seit dem letzten Einlesen geändert hat – in der App gesetzte Stände bleiben sonst erhalten."""
+    d = projekt_lesen(zeilen)
+    zusatz_rubriken(c)
+    alias = {}
+    for g in gruppen or []:
+        for n in g.get("namen", []):
+            alias[n] = g["ziel"]
+    name = str(name or d["titel"] or "Projekt").strip()
+    if projekt_id:
+        pid = projekt_id
+        c.execute("UPDATE projekte SET stand=?, importiert=? WHERE id=?", (d["stand"], jetzt(), pid))
+    else:
+        r = c.execute("SELECT id FROM projekte WHERE lower(name)=lower(?)", (name,)).fetchone()
+        pid = r["id"] if r else c.execute("INSERT INTO projekte(name, stand, angelegt, importiert) VALUES(?,?,?,?)",
+                                          (name, d["stand"], jetzt(), jetzt())).lastrowid
+        if r:
+            c.execute("UPDATE projekte SET stand=?, importiert=? WHERE id=?", (d["stand"], jetzt(), pid))
+    fz = {}
+    for f in d["fahrzeuge"]:
+        c.execute("""INSERT INTO fahrzeuge(projekt_id, nr, auftragsnr) VALUES(?,?,?)
+                     ON CONFLICT(projekt_id, nr) DO UPDATE SET auftragsnr=excluded.auftragsnr""",
+                  (pid, f["nr"], f["auftragsnr"]))
+        fz[f["nr"]] = c.execute("SELECT id FROM fahrzeuge WHERE projekt_id=? AND nr=?", (pid, f["nr"])).fetchone()["id"]
+    # Rubriken nur für Artikel bestimmen, die es noch nicht gibt
+    bekannt = {normal(r["name"]): r["id"] for r in c.execute("SELECT id, name FROM artikel")}
+    neu_idx = [i for i, p in enumerate(d["positionen"]) if p["artikel"] and normal(p["artikel"]) not in bekannt]
+    rubriken = rubriken_zuordnen(c, [{"artikel": d["positionen"][i]["artikel"], "baugruppe": d["positionen"][i]["baugruppe"],
+                                      "lieferant": d["positionen"][i]["lieferant"]} for i in neu_idx]) if neu_idx else []
+    rubrik_fuer = dict(zip(neu_idx, rubriken))
+    st = {"positionen_neu": 0, "positionen_geaendert": 0, "status_geaendert": 0, "app_ueberschrieben": 0,
+          "artikel_neu": 0, "lieferanten_neu": 0}
+    c.execute("UPDATE projektpositionen SET in_datei=0 WHERE projekt_id=?", (pid,))
+    for sort, p in enumerate(d["positionen"]):
+        lname = alias.get(p["lieferant"], p["lieferant"])
+        aid = bekannt.get(normal(p["artikel"]))
+        rid = rubrik_fuer.get(sort) or (c.execute("SELECT rubrik_id FROM artikel WHERE id=?", (aid,)).fetchone() or {"rubrik_id": None})["rubrik_id"] if aid else rubrik_fuer.get(sort)
+        lid, ln = lieferant_finden_oder_anlegen(c, None, lname, rid) if lname else (None, False)
+        st["lieferanten_neu"] += ln
+        if not aid and p["artikel"]:
+            aid, an = artikel_finden_oder_anlegen(c, None, p["artikel"], "", rubrik_id=rid, einheit="Stk", lieferant_id=lid)
+            bekannt[normal(p["artikel"])] = aid
+            st["artikel_neu"] += an
+        werte = (p["baugruppe"], p["artikel"], aid, lid, p["menge"], p["besteller"], p["besteller_manuell"], sort)
+        r = c.execute("SELECT id, baugruppe, bezeichnung, artikel_id, lieferant_id, menge, besteller, besteller_manuell, sort FROM projektpositionen WHERE projekt_id=? AND posnr=?",
+                      (pid, p["posnr"])).fetchone()
+        if r:
+            ppid = r["id"]
+            if tuple(r)[1:] != werte:
+                st["positionen_geaendert"] += 1
+            c.execute("""UPDATE projektpositionen SET baugruppe=?, bezeichnung=?, artikel_id=?, lieferant_id=?, menge=?,
+                         besteller=?, besteller_manuell=?, sort=?, in_datei=1 WHERE id=?""", werte + (ppid,))
+        else:
+            ppid = c.execute("""INSERT INTO projektpositionen(baugruppe, bezeichnung, artikel_id, lieferant_id, menge,
+                                besteller, besteller_manuell, sort, projekt_id, posnr) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                             werte + (pid, p["posnr"])).lastrowid
+            st["positionen_neu"] += 1
+        for n, wert in p["status"].items():
+            alt = c.execute("SELECT status, status_datei FROM positionsstatus WHERE position_id=? AND fahrzeug_id=?",
+                            (ppid, fz[n])).fetchone()
+            if not alt:
+                c.execute("INSERT INTO positionsstatus VALUES(?,?,?,?,?)", (ppid, fz[n], wert, wert, jetzt()))
+            elif alt["status_datei"] != wert:                  # in der Datei geändert → übernehmen
+                if alt["status"] != alt["status_datei"] and alt["status"] != wert:
+                    st["app_ueberschrieben"] += 1
+                c.execute("""UPDATE positionsstatus SET status=?, status_datei=?, geaendert=?
+                             WHERE position_id=? AND fahrzeug_id=?""", (wert, wert, jetzt(), ppid, fz[n]))
+                st["status_geaendert"] += alt["status"] != wert
+    st["nicht_mehr_in_datei"] = c.execute("SELECT COUNT(*) FROM projektpositionen WHERE projekt_id=? AND in_datei=0",
+                                          (pid,)).fetchone()[0]
+    st["projekt_id"] = pid
+    st["positionen"] = len(d["positionen"])
+    return st
+
+
+def projekt_laden(c, pid):
+    p = c.execute("SELECT * FROM projekte WHERE id=?", (pid,)).fetchone()
+    if not p:
+        raise Fehler("Projekt nicht gefunden")
+    fz = [dict(r) for r in c.execute("SELECT * FROM fahrzeuge WHERE projekt_id=? ORDER BY nr", (pid,))]
+    pos = [dict(r) for r in c.execute("""SELECT pp.*, a.rubrik_id FROM projektpositionen pp
+                                         LEFT JOIN artikel a ON a.id=pp.artikel_id
+                                         WHERE pp.projekt_id=? ORDER BY pp.sort, pp.id""", (pid,))]
+    status = {}
+    for r in c.execute("""SELECT ps.* FROM positionsstatus ps JOIN projektpositionen pp ON pp.id=ps.position_id
+                          WHERE pp.projekt_id=?""", (pid,)):
+        status.setdefault(r["position_id"], {})[r["fahrzeug_id"]] = r["status"]
+    for x in pos:
+        x["status"] = status.get(x["id"], {})
+    return {**dict(p), "fahrzeuge": fz, "positionen": pos, "status_werte": PROJEKT_STATUS}
+
+
 # ------------------------------------------------------------ KI & Sprache
 def mail_cfg():
     try:
@@ -1059,6 +1392,50 @@ class H(BaseHTTPRequestHandler):
         if res == "angebote" and rid and len(teile) > 2 and teile[2] == "bestellen" and methode == "POST":
             with _lock, db() as c:
                 return self.antwort(200, {"id": aus_angebot_bestellen(c, rid, self.json_body())})
+        if res == "projekte":
+            if unter == "vorschau" and methode == "POST":
+                name = (query.get("datei") or ["import.xlsx"])[0]
+                zeilen = datei_lesen(name, self.body())
+                with db() as c:
+                    return self.antwort(200, projekt_vorschau(c, zeilen, name))
+            if unter == "import" and methode == "POST":
+                d = self.json_body()
+                with _lock, db() as c:
+                    return self.antwort(200, projekt_einlesen(c, d.get("zeilen", []), d.get("name"),
+                                                              d.get("gruppen"), d.get("projekt_id")))
+            if rid and methode == "GET":
+                with db() as c:
+                    return self.antwort(200, projekt_laden(c, rid))
+            if rid and methode == "PUT":
+                d = self.json_body()
+                with _lock, db() as c:
+                    for k in ("name", "notiz", "kunde_id"):
+                        if k in d:
+                            c.execute(f"UPDATE projekte SET {k}=? WHERE id=?", (d[k], rid))
+                return self.antwort(200, {"ok": True})
+            if rid and methode == "DELETE":
+                with _lock, db() as c:
+                    c.execute("DELETE FROM projekte WHERE id=?", (rid,))
+                return self.antwort(200, {"ok": True})
+        if res == "projektstatus" and methode == "PUT":
+            d = self.json_body()
+            if d.get("status") not in PROJEKT_STATUS:
+                raise Fehler("Status unbekannt")
+            with _lock, db() as c:
+                ids = d.get("position_ids") or [d.get("position_id")]
+                for pid_ in ids:
+                    c.execute("""INSERT INTO positionsstatus(position_id, fahrzeug_id, status, status_datei, geaendert)
+                                 VALUES(?,?,?,'',?) ON CONFLICT(position_id, fahrzeug_id)
+                                 DO UPDATE SET status=excluded.status, geaendert=excluded.geaendert""",
+                              (pid_, d["fahrzeug_id"], d["status"], jetzt()))
+            return self.antwort(200, {"ok": True})
+        if res == "projektpositionen" and rid and methode == "PUT":
+            d = self.json_body()
+            with _lock, db() as c:
+                for k in ("lieferant_id", "notiz", "menge", "artikel_id"):
+                    if k in d:
+                        c.execute(f"UPDATE projektpositionen SET {k}=? WHERE id=?", (d[k], rid))
+            return self.antwort(200, {"ok": True})
         if res == "bestellungen":
             return self.bestellungen(methode, rid)
         if res == "export" and methode == "GET":
@@ -1142,6 +1519,16 @@ class H(BaseHTTPRequestHandler):
                 kopf = ["Bestellnr", "Datum", "Status", "Lieferant", "Kunde", "Projekt", "Besteller",
                         "Liefertermin", "Rubrik", "Position", "Menge", "Einheit", "Einzelpreis", "Summe",
                         "Vergleichspreis", "Ersparnis"]
+            elif was == "projekt":
+                pid = int((parse_qs(urlparse(self.path).query).get("id") or ["0"])[0])
+                pr = projekt_laden(c, pid)
+                kopf = ["Pos.-Nr.", "Baugruppe", "Artikel", "Lieferant", "Bestellmenge", "Besteller", "Besteller (manuell)"] + \
+                       [f"Fzg {f['nr']} ({f['auftragsnr']})" for f in pr["fahrzeuge"]]
+                lname = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM lieferanten")}
+                rows = [[p["posnr"], p["baugruppe"], p["bezeichnung"], lname.get(p["lieferant_id"], ""), p["menge"],
+                         p["besteller"], p["besteller_manuell"]] + [p["status"].get(f["id"], "offen") for f in pr["fahrzeuge"]]
+                        for p in pr["positionen"]]
+                was = "projekt-" + re.sub(r"[^A-Za-z0-9-]+", "-", pr["name"])
             elif was == "angebote":
                 rows = c.execute("""
                     SELECT an.datum, l.name, a.name, a.abmessung, an.menge, an.einheit, an.preis,
@@ -1229,6 +1616,17 @@ def alles():
                 GROUP BY b.id ORDER BY b.nr DESC"""),
             "angebote": liste("""SELECT * FROM angebote WHERE datum>=? ORDER BY datum DESC, id DESC""",
                               tage_vorher(heute(), 365)),
+            "projekte": liste("""
+                SELECT p.id, p.name, p.stand, p.importiert,
+                       (SELECT COUNT(*) FROM fahrzeuge f WHERE f.projekt_id=p.id) AS fahrzeuge,
+                       (SELECT COUNT(*) FROM projektpositionen pp WHERE pp.projekt_id=p.id) AS positionen,
+                       (SELECT COUNT(*) FROM positionsstatus ps JOIN projektpositionen pp ON pp.id=ps.position_id
+                         WHERE pp.projekt_id=p.id AND ps.status='geliefert') AS geliefert,
+                       (SELECT COUNT(*) FROM positionsstatus ps JOIN projektpositionen pp ON pp.id=ps.position_id
+                         WHERE pp.projekt_id=p.id AND ps.status!='entfällt') AS gesamt,
+                       (SELECT COUNT(*) FROM positionsstatus ps JOIN projektpositionen pp ON pp.id=ps.position_id
+                         WHERE pp.projekt_id=p.id AND ps.status='offen') AS offen
+                FROM projekte p ORDER BY p.id DESC"""),
             "historie_quellen": liste("""SELECT quelle, COUNT(*) AS n, MIN(datum) AS von, MAX(datum) AS bis
                                          FROM historie GROUP BY quelle ORDER BY MAX(id) DESC"""),
             "refs": refs,
