@@ -116,10 +116,17 @@ class Katalog:
         text = (text or '').strip()
         if len(text) < 2:
             return []
-        like = f'%{text}%'
+        # „AnycubicPhotonWorkshop“ -> Wörter; alle Wörter müssen in ID oder Name vorkommen
+        woerter = re.sub(r'([a-z])([A-Z])', r'\1 \2', text).replace('.', ' ').replace('-', ' ').split()
+        woerter = [w for w in woerter if len(w) >= 2] or [text]
+        bed = ' and '.join(['(i.id like ? or n.name like ?)'] * len(woerter))
+        werte = [x for w in woerter for x in (f'%{w}%', f'%{w}%')]
         with self._c() as c:
-            rows = c.execute(self._SQL + ' where i.id like ? or n.name like ? limit 3000',
-                             (like, like)).fetchall()
+            rows = c.execute(self._SQL + ' where ' + bed + ' limit 3000', werte).fetchall()
+            if not rows and len(woerter) > 1:  # sonst: irgendein Wort (das längste zuerst)
+                w = max(woerter, key=len)
+                rows = c.execute(self._SQL + ' where i.id like ? or n.name like ? limit 3000',
+                                 (f'%{w}%', f'%{w}%')).fetchall()
         best = self._neueste(None, rows)
         t = text.lower()
 
