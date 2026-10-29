@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from choco import Choco
+import hersteller
 from netzsuche import Netzsuche, anzeigename, schluessel
 from katalog import ALIAS, Katalog, UA, normname, woerter, zerlegt
 
@@ -116,9 +117,10 @@ def vorschlaege_berechnen(datei):
             if a or normname(p.get('name')) in manuell or WINDOWS_TEIL.match(p.get('name') or ''):
                 continue
             name = p.get('name') or ''
-            alias = next((ziel for muster, ziel in ALIAS if muster.search(name)), None)
+            alias = hersteller.erkennen(name) or next((ziel for muster, ziel in ALIAS if muster.search(name)), None)
             if alias:
-                erg[name] = [{'id': alias, 'name': name, 'sicher': True, 'quelle': 'choco' if alias.startswith('choco:') else 'winget'}]
+                erg[name] = [{'id': alias, 'name': name, 'sicher': True,
+                              'quelle': 'hersteller' if alias.startswith('herst.') else 'choco' if alias.startswith('choco:') else 'winget'}]
                 continue
             kand = [dict(k, quelle='winget') for k in KATALOG.unscharf(p)]
             if not any(k['sicher'] for k in kand):
@@ -239,6 +241,31 @@ def jlog(t):
 
 
 def lade_paket(pid, eintrag):
+    if pid in hersteller.HERSTELLER:
+        a = hersteller.abfragen(pid)      # frischer, signierter Link bei jedem Laden
+        ziel = DATEN / 'depot' / sicher(pid)
+        alt = lies(ziel / 'info.json')
+        if alt and alt.get('version') == a['version'] and (ziel / alt['datei']).exists():
+            return f'aktuell ({a["version"]})'
+        ziel.mkdir(parents=True, exist_ok=True)
+        datei, n = link_laden(a['url'], ziel)
+        if a.get('datei') and datei != sicher(a['datei']):
+            (ziel / datei).replace(ziel / sicher(a['datei']))
+            datei = sicher(a['datei'])
+        if a.get('hash'):
+            algo, soll = a['hash']
+            h = hashlib.new(algo)
+            with open(ziel / datei, 'rb') as f:
+                for block in iter(lambda: f.read(1 << 20), b''):
+                    h.update(block)
+            if h.hexdigest() != soll:
+                (ziel / datei).unlink()
+                raise RuntimeError(f'{algo.upper()} stimmt nicht mit der Angabe des Herstellers ueberein')
+        info = eigen_info(pid, a['name'], ziel / datei, n, None, None, a['version'], None)
+        info.update(quelle='hersteller', seite=a.get('seite'))
+        schreib(ziel / 'info.json', info)
+        return f'geladen {a["version"]} ({n // 1048576} MB, {info.get("art") or info["typ"]}) über die Hersteller-Schnittstelle' + (
+            f' – {info["fehler"]}' if info.get('fehler') else '')
     if pid.startswith('netz.'):
         if not eintrag.get('url'):
             raise RuntimeError('kein Download-Link gespeichert')
@@ -897,6 +924,7 @@ class H(BaseHTTPRequestHandler):
                                                      'quelle': e.get('quelle') or alt.get('quelle') or (
                                                          'choco' if e['id'].startswith('choco:') else
                                                          'netz' if e['id'].startswith('netz.') else
+                                                         'hersteller' if e['id'].startswith('herst.') else
                                                          'eigen' if e['id'].startswith('eigen.') else 'winget'),
                                                      'aus': e.get('aus') or alt.get('aus'),
                                                      **{k: e.get(k) or alt.get(k) for k in ('url', 'version', 'key', 'seite')
