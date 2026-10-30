@@ -4,7 +4,8 @@
 //   2. Symbole: Stichwörter → richtiges Symbol, jedes Symbol ergibt Formen
 //   3. Marker passen ins Feld, Magnet-Prüfung, Ringe mit Loch
 //   4. SVG: Ebenen, Gravur je Teil verschweißt, Maße in mm, Arbeitsbreite eingehalten
-//   5. Dialog: Aufgaben hinzufügen/löschen, keine Seitenfehler; Screenshot
+//   5. Wechselplatten: leere Plätze links, Platten passen in Rahmen/Tasche, SVG-Teil „aufgaben"
+//   6. Dialog: Aufgaben hinzufügen/löschen, keine Seitenfehler; Screenshot
 // Start: python3 volme3d_server.py 8766 --dev   →   node tests/belohnungstafel_test.mjs
 import { chromium } from 'playwright';
 
@@ -41,7 +42,7 @@ const res = await pg.evaluate((varianten) => {
   const out = [];
   const bbox = rs => { const b = [1e9, 1e9, -1e9, -1e9]; for (const r of rs) for (const q of r){ b[0] = Math.min(b[0], q[0]); b[1] = Math.min(b[1], q[1]); b[2] = Math.max(b[2], q[0]); b[3] = Math.max(b[3], q[1]); } return b; };
   for (const v of varianten){
-    const p = Object.assign(JSON.parse(JSON.stringify(_BEL_DEF)), v.p);
+    const p = Object.assign(JSON.parse(JSON.stringify(_BEL_DEF)), { wechsel: false }, v.p);
     const L = _belLayout(p), I = L.info;
     const eb = bbox(L.front.eng.flat());
     const inside = eb[0] >= I.m - 1 && eb[1] >= I.m - 1 && eb[2] <= p.B - I.m + 1 && eb[3] <= p.H - I.m + 1;
@@ -82,7 +83,7 @@ for (const [k, n, a, z] of sym.sizes) ok(`Symbol ${k} liegt im Kasten`, n > 0 &&
 const svg = await pg.evaluate(async () => {
   const r = {};
   for (const [nm, extra, teil] of [['alles', {}, 'alles'], ['ring', { mMag: 'ring', halt: 'scheiben', blatt: 450 }, 'alles'], ['marker', {}, 'marker']]){
-    const p = Object.assign(JSON.parse(JSON.stringify(_BEL_DEF)), extra);
+    const p = Object.assign(JSON.parse(JSON.stringify(_BEL_DEF)), { wechsel: false }, extra);
     const s = await _belBuildSVG(p, teil);
     const doc = new DOMParser().parseFromString(s, 'image/svg+xml');
     const g = doc.getElementById('gravieren'), c = doc.getElementById('schneiden');
@@ -98,8 +99,54 @@ ok('SVG alles: Schnitte = Kontur + 2 Löcher + 21 Marker', svg.alles.cut === 24,
 ok('SVG Ring+Rückplatte: Schnitte', svg.ring.cut === 3 + (3 + 49 + svg.ring.park) + 21 + 21 * 2, [svg.ring.cut, svg.ring.park]);
 ok('SVG nur Marker: 21 Gravur, 21 Schnitte', svg.marker.eng === 21 && svg.marker.cut === 21, svg.marker);
 
+// Wechselplatten
+const w8 = await pg.evaluate(async () => {
+  const r = {};
+  const bbox = rs => { const b = [1e9, 1e9, -1e9, -1e9]; for (const x of rs) for (const q of x){ b[0] = Math.min(b[0], q[0]); b[1] = Math.min(b[1], q[1]); b[2] = Math.max(b[2], q[0]); b[3] = Math.max(b[3], q[1]); } return b; };
+  for (const fach of ['rahmen', 'tasche']) for (const halt of ['blech', 'scheiben']){
+    const p = Object.assign(JSON.parse(JSON.stringify(_BEL_DEF)), { fach, halt });
+    const L = _belLayout(p), I = L.info;
+    // keine Gravur im Inneren der Plätze (nur der Rahmen selbst)
+    let inSlot = 0;
+    for (const g of L.front.eng){ const b = bbox(g); for (const [sx, sy, sw, sh] of I.slots) if (b[0] > sx + 1.5 && b[2] < sx + sw - 1.5 && b[1] > sy + 1.5 && b[3] < sy + sh - 1.5) inSlot++; }
+    const fit = L.plates.every(pl => { const b = bbox(pl.cut); return Math.abs(b[2] - b[0] - I.plateW) < 0.05 && I.plateW < I.slots[0][2] && I.plateH < I.slots[0][3]; });
+    const engIn = L.plates.every(pl => { const b = bbox(pl.eng.flat()); return b[0] >= 0 && b[1] >= 0 && b[2] <= pl.W && b[3] <= pl.H; });
+    const svg = await _belBuildSVG(p, 'aufgaben');
+    const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+    r[fach + '/' + halt] = { slots: I.slots.length, n: p.zeilen, plates: L.plates.length, inSlot, fit, engIn, win: L.front.cut.length - 1 - (p.aufh ? 2 : 0),
+      back: L.back ? L.back.cut.length - 1 - (p.aufh ? 2 : 0) : null, cells: p.zeilen * 7 + p.zeilen + (I.parkHoles || 0),
+      svgCut: doc.querySelectorAll('#schneiden path').length, svgEng: doc.querySelectorAll('#gravieren path').length, svgW: parseFloat(doc.documentElement.getAttribute('width')), pw: I.plateW, ph: I.plateH };
+  }
+  return r;
+});
+for (const [k, v] of Object.entries(w8)){
+  ok(`Wechsel ${k}: ${v.n} Plätze, 30 Platten`, v.slots === v.n && v.plates === 30, [v.slots, v.plates]);
+  ok(`Wechsel ${k}: Plätze leer (keine Gravur drin)`, v.inSlot === 0, v.inSlot);
+  ok(`Wechsel ${k}: Platte kleiner als Platz, Gravur auf der Platte`, v.fit && v.engIn, [v.pw, v.ph]);
+  ok(`Wechsel ${k}: Fenster nur bei Tasche`, v.win === (k.startsWith('tasche') ? v.n : 0), v.win);
+  if (k === 'tasche/blech') ok('Tasche ohne Scheiben: Rückplatte ohne Löcher', v.back === 0, v.back);
+  if (k.endsWith('scheiben')) ok(`Wechsel ${k}: Rückplatte Loch je Feld + je Platz`, v.back === v.cells, [v.back, v.cells]);
+  ok(`Wechsel ${k}: SVG Aufgaben = 30 Platten, ≤ Arbeitsfläche`, v.svgCut === 30 && v.svgEng === 30 && v.svgW <= 400.01, [v.svgCut, v.svgEng, v.svgW]);
+}
+
 // Dialog
 await pg.evaluate(() => _belOpen());
+await pg.waitForTimeout(300);
+const libN = await pg.$$eval('#bel-tasks .bel-task', e => e.length);
+ok('Dialog: Wechselplatten an → 30 Einträge in der Liste', libN === 30, libN);
+await pg.click('#bel-add');
+await pg.keyboard.type('Müll rausbringen');
+await pg.waitForTimeout(200);
+await pg.selectOption('#bel-tasks .bel-task:last-child select', 'kiste');
+const lastLib = await pg.evaluate(() => _belP.lib[_belP.lib.length - 1]);
+ok('Platte hinzufügen: Text + Symbol', lastLib.t === 'Müll rausbringen' && lastLib.i === 'kiste', lastLib);
+await pg.evaluate(() => { _belSet('fach', 'tasche'); });
+await pg.waitForTimeout(300);
+await pg.screenshot({ path: 'tests/belohnungstafel_wechsel.png' });
+await pg.$eval('#bel-cvwrap', e => e.scrollTop = 1e6);
+await pg.screenshot({ path: 'tests/belohnungstafel_wechsel_platten.png' });
+await pg.click('#bel-wechsel');
+await pg.waitForTimeout(200);
 await pg.waitForTimeout(300);
 const n0 = await pg.$$eval('#bel-tasks .bel-task', e => e.length);
 await pg.click('#bel-add');
