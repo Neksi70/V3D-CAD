@@ -24791,6 +24791,31 @@ async function unionSelected() {
           const e = new Error(kaputt.length ? kaputt.map(k => '„' + k.name + '“: ' + k.grund).join('; ') : 'zu wenige Teile');
           e.kaputt = kaputt; throw e;
         }
+        // 🫥 Motive, die verdecken: ihre Silhouette erst aus allem anderen schneiden
+        // Gewickelte/angeschmiegte Motive tasten die Wand unter sich ab — liegt dort schon
+        // ein VEREINTES Relief, gilt dessen Oberkante als Wand, und die Körper-Maske träfe
+        // nichts. Noch nicht vereinte Motive darunter werden dagegen exakt ausgeschnitten.
+        const decker = teile.map(t => t.o).filter(o => o.userData && o.userData.svgVerdecken && o.userData.shapeType === 'svg' && !o.userData.isHole);
+        const istMotiv = o => o.userData && o.userData.shapeType === 'svg';
+        for (const d of decker) {
+          const masken = {};
+          for (const tief of [true, false]) {
+            try { const mm = _svgVerdeckMaske(w, d, tief); const r = mm ? _mfAusStls(w, _meshWorldToStls(mm)) : null; masken[tief] = r && r.mf; }
+            catch (e) { console.warn('[union] Verdeck-Maske:', e); }
+          }
+          if (!masken[true] && !masken[false]) { notify('„' + (d.userData.name || 'Motiv') + '“: Verdecken ging nicht — wird normal vereint', 'w'); continue; }
+          let motivDrunter = false;
+          for (const t of teile) {
+            if (decker.includes(t.o)) continue;
+            const mk = istMotiv(t.o) ? masken[true] : masken[false];
+            if (istMotiv(t.o)) motivDrunter = true;
+            if (mk) t.mf = w.Manifold.difference(t.mf, mk);
+          }
+          console.log('[union] verdeckt:', d.userData.name || 'Motiv');
+          if (!motivDrunter && (d.userData._svgWrap || d.userData._svgSchmieg))
+            notify('🫥 Auf Rundungen verdeckt ein Motiv nur Motive, die noch nicht vereint sind. Tipp: erst alle Schichten auflegen, ' +
+                   'beim obersten „Verdeckt, was darunter liegt“ anhaken und dann alles zusammen vereinen.', 'w');
+        }
         let acc = null;
         for (const t of teile) acc = acc ? w.Manifold.union(acc, t.mf) : t.mf;
         return { acc, teile, kaputt, geflickt };
@@ -74423,8 +74448,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.282';
+const VOLME3D_VERSION = '1.18.283';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.283', date:'2026-10-30', changes:[
+    ['🫥','<b>Motiv verdeckt, was darunter liegt.</b> Legst du ein erhabenes Motiv über ein anderes – z. B. eine zweite Blume auf die erste –, dann hake beim oberen im Eigenschaften-Feld <b>🫥 Verdeckt, was darunter liegt</b> an. Beim <b>Vereinen</b> verschwinden die Linien des unteren Motivs innerhalb des oberen, wie bei einem Aufkleber; die Wand bleibt unberührt. Tipp: alle Schichten erst auflegen und dann zusammen vereinen, dann klappt es auch auf Rundungen exakt (danke Josy).'],
+  ]},
   { version:'1.18.282', date:'2026-10-30', changes:[
     ['⭐','<b>Belohnungstafel: Aufgaben als Wechselplatten.</b> Links auf der Tafel sind jetzt leere Plätze, entweder als gravierter Rahmen oder als ausgeschnittene Tasche mit Rückplatte (dann liegt die Platte bündig und rutscht nicht). Die Aufgaben sind eigene kleine Platten zum Tauschen. 30 Stück sind vorbereitet, bis zu 40 gehen. Bei jeder Platte wählst du das Symbol und schreibst den Text selbst. Neuer Knopf „⬇ Aufgaben“ lasert nur die Platten. Die alte Tafel mit fest gravierten Aufgaben gibt es weiter: Häkchen „Aufgaben als Wechselplatten“ abwählen.'],
   ]},
@@ -78277,8 +78305,8 @@ function _svgWrapBuildGeo(ud, spec) {
   // auf welligen Vasen über einen Millimeter herausstehen ("nicht ganz drauf",
   // Josy 13.9.) — gemessen: 1,36 mm statt 0,2.
   const eps = (spec.feld ? 0.2 : (spec.epsMm != null ? spec.epsMm : 0.2)) / 10;
-  const dIn  = spec.depthMm >= 0 ? -spec.depthMm / 10 : -0.02;
-  const dOut = spec.depthMm >= 0 ? eps : -spec.depthMm / 10;
+  const dIn  = spec.dInU  != null ? spec.dInU  : (spec.depthMm >= 0 ? -spec.depthMm / 10 : -0.02);   // dInU/dOutU: Verdeck-Maske
+  const dOut = spec.dOutU != null ? spec.dOutU : (spec.depthMm >= 0 ? eps : -spec.depthMm / 10);
   const P = flat.attributes.position;
   for (let i = 0; i < P.count; i++) {
     P.setXYZ(i, P.getX(i) - uMid, P.getY(i) - hMid,
@@ -78909,8 +78937,8 @@ function _svgSchmiegBuildGeo(ud, spec) {
   const uMid = (bb.min.x + bb.max.x) / 2, hMid = (bb.min.y + bb.max.y) / 2;
   const d0 = bb.min.z, dSpan = Math.max(1e-6, bb.max.z - bb.min.z);
   const eps = (spec.epsMm != null ? spec.epsMm : 0.2) / 10;
-  const dIn  = spec.depthMm >= 0 ? -spec.depthMm / 10 : -0.02;
-  const dOut = spec.depthMm >= 0 ? eps : -spec.depthMm / 10;
+  const dIn  = spec.dInU  != null ? spec.dInU  : (spec.depthMm >= 0 ? -spec.depthMm / 10 : -0.02);   // dInU/dOutU: Verdeck-Maske
+  const dOut = spec.dOutU != null ? spec.dOutU : (spec.depthMm >= 0 ? eps : -spec.depthMm / 10);
   const P = flat.attributes.position;
   for (let i = 0; i < P.count; i++)
     P.setXYZ(i, P.getX(i) - uMid, P.getY(i) - hMid, dIn + (P.getZ(i) - d0) / dSpan * (dOut - dIn));
@@ -79288,6 +79316,61 @@ function _svgUmlaufNoetig(hit, svgMesh, nW) {
     if (tiefe > 0.02 && tiefe < 5) return true;
   }
   return false;
+}
+
+// ── 🫥 Motiv verdeckt, was darunter liegt ───────────────────────────────
+// Josy 30.10.: zweite Blume auf die erste gelegt — innerhalb der oberen sollen die
+// Linien der unteren verschwinden („sozusagen ausgeschnitten“). Beim Vereinen wird
+// dafür eine Silhouette des Motivs (gefüllter Außenumriss, kleine Lücken zwischen
+// Blütenblättern geschlossen) in derselben Lage wie das Motiv gebaut — von 0,05 mm
+// über der Wand bis 30 mm davor — und von allem anderen abgezogen. Die Wand bleibt.
+function _svgVerdeckenSet(an) {
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'svg') return;
+  o.userData.svgVerdecken = !!an;
+  notify(an ? '🫥 Beim Vereinen verdeckt dieses Motiv, was darunter liegt' : 'Motiv verdeckt nichts mehr', 'ok');
+}
+function _svgSilhouettePfade(w, pd, rel) {
+  const flaeche = q => { let a = 0; for (let i = 0, j = q.length - 1; i < q.length; j = i++) a += q[j][0] * q[i][1] - q[i][0] * q[j][1]; return a / 2; };
+  const polys = [];
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const p of pd || []) {
+    const q = (p.pts || []).map(v => [v[0], v[1]]);
+    if (q.length < 3) continue;
+    if (flaeche(q) < 0) q.reverse();                          // alle Außenränder gleich herum
+    polys.push(q);
+    for (const v of q) { if (v[0] < x0) x0 = v[0]; if (v[0] > x1) x1 = v[0]; if (v[1] < y0) y0 = v[1]; if (v[1] > y1) y1 = v[1]; }
+  }
+  if (!polys.length) return null;
+  const r = Math.max(x1 - x0, y1 - y0) * (rel != null ? rel : 0.03);
+  let cs = new w.CrossSection(polys, 'NonZero');
+  const auf = cs.offset(r, 'Round'), zu = auf.offset(-r, 'Round');
+  const ringe = zu.toPolygons().filter(q => q.length >= 3 && flaeche(q) > 0);
+  try { cs.delete(); auf.delete(); zu.delete(); } catch (e) {}
+  return ringe.length ? ringe.map(q => ({ pts: q.map(v => [v[0], v[1]]), holes: [] })) : null;
+}
+// Maske als Mesh mit Weltlage (nicht in der Szene) oder null.
+// tief = für andere, noch nicht vereinte Motive: ab 1 mm in der Wand (die sind 0,2 mm
+// verankert) — schneidet sie unter dem Umriss ganz weg, auf jeder Form exakt.
+// sonst = für Körper: erst 0,05 mm über der Wand, die Wand selbst bleibt.
+function _svgVerdeckMaske(w, o, tief) {
+  const ud = o.userData, sil = _svgSilhouettePfade(w, ud._svgPathData);
+  if (!sil) return null;
+  const ud2 = Object.assign({}, ud, { _svgPathData: sil });
+  o.updateMatrixWorld(true);
+  let m = null;
+  if (ud._svgWrap || ud._svgSchmieg) {
+    const spec = Object.assign({}, ud._svgWrap || ud._svgSchmieg, { depthMm: -30, dInU: tief ? -0.1 : 0.005, dOutU: 3 });
+    const geo = ud._svgWrap ? _svgWrapBuildGeo(ud2, spec) : _svgSchmiegBuildGeo(ud2, spec);
+    m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial());
+    m.position.copy(o.position); m.quaternion.copy(o.quaternion); m.scale.copy(o.scale);
+  } else if (ud._snapSurfaceLocal) {
+    const tmp = new THREE.Mesh(_svgRebuildGeo(Object.assign({}, ud2, { svgDepth: 2, isHole: false })), new THREE.MeshBasicMaterial());
+    tmp.position.copy(o.position); tmp.quaternion.copy(o.quaternion); tmp.scale.copy(o.scale);
+    tmp.userData = { _snapSurfaceLocal: ud._snapSurfaceLocal.clone() };
+    m = _svgFlatSpan(tmp, tief ? 0.1 : -0.005, 3, null, false);
+  }
+  if (m) { if (o.parent && o.parent !== scene) o.parent.add(m); m.updateMatrixWorld(true); if (m.parent && m.parent !== scene) m.parent.remove(m); }
+  return m;
 }
 
 function _svgSnapIstEben(hit, svgMesh) {
@@ -80975,6 +81058,7 @@ function _fpBuildRows(type, o) {
                row(o.userData.isHole ? tip('Höhe (Dicke)', 'Dicke des Gravur-Körpers')
                                      : tip('Höhe (erhaben)', 'Wie weit das Motiv aus seiner Fläche herausragt — wächst immer aus der Fläche heraus, egal wie es gekippt ist'),
                    'fph', r2(rd.h), "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+               (o.userData.isHole ? '' : `<div class="fp-row" title="Beim Vereinen wird alles, was unter diesem Motiv liegt (z. B. ein früher aufgesetztes Relief), innerhalb seines Umrisses weggeschnitten — wie ein Aufkleber, der das Darunterliegende verdeckt. Die Wand selbst bleibt."><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11.5px"><input type="checkbox" ${o.userData.svgVerdecken ? 'checked' : ''} onchange="_svgVerdeckenSet(this.checked)" style="accent-color:#F97316"> 🫥 Verdeckt, was darunter liegt</label></div>`) +
                '<div class="fp-sep"></div>' + svgBtns + edgeBtn + shellBtn + hollowLidBtn + roundBtn + kcaBtn + bendBtn + moldBtn + legoBtn + sprBtn + snpBtn +
                _dispRows();
       }

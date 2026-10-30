@@ -192,6 +192,7 @@ window.V3D_HILFE = [
     s: ['Skizze öffnen.', 'Entsprechenden Knopf wählen und Datei auswählen.'] },
 
   // ── Kombinieren ────────────────────────────────────────────────────────
+  {"b": "Kombinieren", "i": "🫥", "t": "Motiv verdeckt, was darunter liegt", "k": "verdecken schichten relief übereinander blume motiv svg ausschneiden überlappen aufkleber erhaben vereinen", "was": "Legst du ein erhabenes Motiv über ein anderes (z. B. eine zweite Blume auf die erste), verschwinden beim Vereinen die Linien des unteren Motivs innerhalb des oberen – wie bei einem Aufkleber.", "wo": "Oberes Motiv auswählen → im Eigenschaften-Feld unter <b>Höhe (erhaben)</b> das Häkchen <b>🫥 Verdeckt, was darunter liegt</b>.", "s": ["Beide Motive auf die Wand legen und auf <b>Erhaben</b> stellen.", "Beim oberen Motiv <b>🫥 Verdeckt, was darunter liegt</b> anhaken.", "Körper und beide Motive auswählen und <b>Vereinen</b>."], "tipp": "Am sichersten ist es, alle Schichten erst aufzulegen und dann <b>zusammen</b> zu vereinen – so klappt es auch auf Rundungen exakt. Auf ebenen Flächen verdeckt das Motiv auch ein schon vereintes Relief; die Wand selbst bleibt immer unberührt."},
   { b: 'Kombinieren', i: '∪', t: 'Vereinen', k: 'vereinen union verschmelzen zusammenfügen',
     was: 'Macht aus mehreren Teilen ein einziges.',
     wo: 'Kombinieren → ∪ Vereinen.',
