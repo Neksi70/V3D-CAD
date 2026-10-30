@@ -350,6 +350,18 @@ function rabattLabel(d){
   return d.rabattArt==='betrag'?txt:`${txt} (${d.rabattProzent} %)`;
 }
 function kundeName(d){return d.kunde?(d.kunde.firma||d.kunde.name||'—'):'—';}
+// Ansprechpartner eines Kunden: Hauptkontakt (Felder am Kunden) + weitere aus k.kontakte
+function kontakteVon(k){
+  if(!k)return [];
+  return [{anrede:k.anrede||'',name:k.name||'',email:k.email||'',telefon:k.telefon||''},...(k.kontakte||[])];
+}
+// Beleg-Schnappschuss auf einen Ansprechpartner umstellen (leere Mail/Telefon = die der Firma)
+function kundeMitKontakt(k,i){
+  const s=JSON.parse(JSON.stringify(k)),c=kontakteVon(k)[i];
+  delete s.kontakte;
+  if(c&&i>0)Object.assign(s,{anrede:c.anrede||'',name:c.name||'',email:c.email||k.email||'',telefon:c.telefon||k.telefon||''});
+  return s;
+}
 
 // ---------------------------------------------------------------- Rendern
 function render(){
@@ -404,7 +416,7 @@ function docTable(list,mitArt){
   ${list.map(d=>`<tr class="click" onclick="openDoc('${d.id}')">
     <td><b>${esc(d.nummer||'(Entwurf)')}</b></td>
     ${mitArt?`<td>${d.art==='rechnung'?'🧾':'📝'}</td>`:''}
-    <td>${esc(kundeName(d))}</td><td>${dtDE(d.datum||d.created?.slice(0,10))}</td>
+    <td>${esc(kundeName(d))}${d.kunde&&d.kunde.firma&&d.kunde.name?`<br><small style="color:var(--dim)">${esc(d.kunde.name)}</small>`:''}</td><td>${dtDE(d.datum||d.created?.slice(0,10))}</td>
     <td class="num">${eur(calcTotals(d).brutto)}</td><td>${badge(d)}${(d.zugriffe||[]).length?` <span title="vom Kunden geöffnet: ${(d.zugriffe||[]).length}×">👁</span>`:''}</td>
     <td class="num"><button class="btn sm sec" onclick="event.stopPropagation();printDoc('${d.id}')">🖨️</button></td>
   </tr>`).join('')}</table>`;
@@ -413,7 +425,7 @@ let sucheTxt='';
 function sucheFilter(list){
   const q=sucheTxt.trim().toLowerCase();
   if(!q)return list;
-  return list.filter(d=>[d.nummer,kundeName(d),d.datum,String(calcTotals(d).brutto.toFixed(2)),
+  return list.filter(d=>[d.nummer,kundeName(d),d.kunde&&d.kunde.name,d.datum,String(calcTotals(d).brutto.toFixed(2)),
     ...(d.positionen||[]).map(p=>p.name)].join(' ').toLowerCase().includes(q));
 }
 function renderDocList(m,art){
@@ -460,9 +472,26 @@ function openDoc(id){
 }
 function edSet(field,val){editDoc[field]=val;}
 function edKunde(id){
-  editDoc.kundeId=id;
+  editDoc.kundeId=id;editDoc.kontaktIdx=0;
   const k=S.customers.find(c=>c.id===id);
-  editDoc.kunde=k?JSON.parse(JSON.stringify(k)):null; // Schnappschuss: Beleg behält Kundendaten von damals
+  editDoc.kunde=k?kundeMitKontakt(k,0):null; // Schnappschuss: Beleg behält Kundendaten von damals
+  render();
+}
+function edKontakt(i){
+  const k=S.customers.find(c=>c.id===editDoc.kundeId);if(!k)return;
+  editDoc.kontaktIdx=i;editDoc.kunde=kundeMitKontakt(k,i);
+}
+// Aktuell gewählter Ansprechpartner: gespeicherter Index, sonst per Name im Schnappschuss
+function edKontaktIdx(d,ks){
+  if(d.kontaktIdx!=null&&ks[d.kontaktIdx]&&ks[d.kontaktIdx].name===(d.kunde&&d.kunde.name))return d.kontaktIdx;
+  const i=ks.findIndex(c=>c.name===(d.kunde&&d.kunde.name));return i<0?0:i;
+}
+function fruehereAuftraege(d){
+  if(!d.kundeId)return '';
+  const list=S.docs.filter(x=>x.kundeId===d.kundeId&&x.id!==d.id).sort((a,b)=>(b.datum||b.created||'').localeCompare(a.datum||a.created||''));
+  if(!list.length)return `<div style="color:var(--dim);font-size:13px;margin-top:10px">Noch keine früheren Aufträge bei diesem Kunden.</div>`;
+  return `<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">📂 Frühere Aufträge dieses Kunden (${list.length})</summary>
+    <div style="overflow-x:auto;margin-top:6px">${docTable(list,true)}</div></details>`;
 }
 function edPos(i,f,v){editDoc.positionen[i][f]=(f==='menge'||f==='preis'||f==='ust'||f==='rabatt')?parseFloat(String(v).replace(',','.'))||0:v;renderTotalsOnly();}
 function edPosArtikel(i,artId){
@@ -526,6 +555,9 @@ function renderEditor(m){
           <option value="">— wählen —</option>
           ${S.customers.map(k=>`<option value="${k.id}" ${d.kundeId===k.id?'selected':''}>${esc(k.firma||k.name)}</option>`).join('')}
         </select></div>
+      ${(()=>{const ks=kontakteVon(S.customers.find(c=>c.id===d.kundeId));if(ks.length<2)return '';const sel=edKontaktIdx(d,ks);
+        return `<div><label>Ansprechpartner</label><select ${fest?'disabled':''} onchange="edKontakt(+this.value)">
+        ${ks.map((c,i)=>`<option value="${i}" ${i===sel?'selected':''}>${esc([c.anrede,c.name].filter(Boolean).join(' ')||'(ohne Namen)')}</option>`).join('')}</select></div>`;})()}
       <div><label>Datum</label><input type="date" value="${d.datum||today()}" ${fest?'disabled':''} onchange="edSet('datum',this.value)"></div>
       <div><label>${re?'Zahlungsziel (Tage)':'Gültig (Tage)'}</label>
         <input type="number" value="${d.zahlungszielTage??(re?S.settings.zahlungszielTage:S.settings.angebotGueltigTage)}" ${fest?'disabled':''} onchange="edSet('zahlungszielTage',parseInt(this.value)||14)"></div>
@@ -538,6 +570,7 @@ function renderEditor(m){
       ${re?`<div><label>Leitweg-ID / Käuferreferenz (für XRechnung an Firmen/Behörden, sonst leer)</label>
         <input value="${esc(d.leitwegId||'')}" ${fest?'disabled':''} onchange="edSet('leitwegId',this.value.trim())"></div>`:''}
     </div>
+    ${fruehereAuftraege(d)}
 
     <table class="pos-table"><tr><th style="width:23%">Bezeichnung</th><th style="width:21%">Beschreibung</th><th style="width:7%">Menge</th><th style="width:8%">Einheit</th><th style="width:10%">Einzelpreis €</th><th style="width:6%">Rab. %</th>${S.settings.steuer.modus==='klein'?'':'<th style="width:7%">USt %</th>'}<th style="width:9%" class="num">Summe</th><th style="width:9%"></th></tr>
     ${d.positionen.map((p,i)=>{
@@ -777,11 +810,11 @@ async function deleteDoc(){
 // --- Kunden
 function renderKunden(m){
   m.innerHTML=`<h1>Kunden<span class="spacer"></span><button class="btn" onclick="editKunde()">+ Kunde</button></h1>
-  <div class="card"><table class="list"><tr><th>Nr.</th><th>Firma / Name</th><th>Ort</th><th>E-Mail</th><th>Telefon</th><th></th></tr>
+  <div class="card"><table class="list"><tr><th>Nr.</th><th>Firma / Name</th><th>Ort</th><th>E-Mail</th><th>Telefon</th><th class="num">Aufträge</th><th></th></tr>
   ${S.customers.map(k=>`<tr class="click" onclick="editKunde('${k.id}')">
-    <td>${esc(k.nr||'')}</td><td><b>${esc(k.firma||k.name)}</b>${k.firma&&k.name?`<br><small style="color:var(--dim)">${esc(k.name)}</small>`:''}</td>
-    <td>${esc((k.plz||'')+' '+(k.ort||''))}</td><td>${esc(k.email||'')}</td><td>${esc(k.telefon||'')}</td>
-    <td><button class="btn sm danger" onclick="event.stopPropagation();delKunde('${k.id}')">✕</button></td></tr>`).join('')||'<tr><td colspan="6" style="color:var(--dim)">Noch keine Kunden.</td></tr>'}
+    <td>${esc(k.nr||'')}</td><td><b>${esc(k.firma||k.name)}</b>${k.firma?kontakteVon(k).filter(c=>c.name).map(c=>`<br><small style="color:var(--dim)">${esc(c.name)}</small>`).join(''):''}</td>
+    <td>${esc((k.plz||'')+' '+(k.ort||''))}</td><td>${esc(k.email||'')}</td><td>${esc(k.telefon||'')}</td><td class="num">${S.docs.filter(d=>d.kundeId===k.id).length||''}</td>
+    <td><button class="btn sm danger" onclick="event.stopPropagation();delKunde('${k.id}')">✕</button></td></tr>`).join('')||'<tr><td colspan="7" style="color:var(--dim)">Noch keine Kunden.</td></tr>'}
   </table></div>
   <div id="kundeForm"></div>`;
 }
@@ -801,6 +834,9 @@ function editKunde(id){
     <div><label>E-Mail</label><input id="kEmail" value="${esc(k.email||'')}"></div>
     <div><label>Telefon</label><input id="kTel" value="${esc(k.telefon||'')}"></div>
   </div>
+  <h4 style="margin:14px 0 4px">Weitere Ansprechpartner <small style="color:var(--dim);font-weight:normal">(im Beleg auswählbar)</small></h4>
+  <div id="kKontakte">${(k.kontakte||[]).map(kontaktZeile).join('')}</div>
+  <button class="btn sm sec" type="button" onclick="$('#kKontakte').insertAdjacentHTML('beforeend',kontaktZeile({}))">+ Ansprechpartner</button>
   <label>Notiz</label><textarea id="kNotiz" rows="2">${esc(k.notiz||'')}</textarea>
   <div style="margin-top:12px;display:flex;gap:10px">
     <button class="btn" onclick="saveKunde('${id||''}')">💾 Speichern</button>
@@ -808,12 +844,20 @@ function editKunde(id){
   </div></div>${id?kundeBereiche(id):''}`;
   if(id)$('#kundeForm').scrollIntoView({behavior:'smooth'});else $('#kFirma').focus();
 }
+function kontaktZeile(c){
+  return `<div class="kKontakt" style="display:grid;grid-template-columns:110px 1fr 1fr 1fr auto;gap:8px;align-items:end;margin-bottom:6px">
+    <div><select class="kkAnrede">${['','Herr','Frau'].map(a=>`<option value="${a}" ${(c.anrede||'')===a?'selected':''}>${a||'— neutral —'}</option>`).join('')}</select></div>
+    <div><input class="kkName" placeholder="Name" value="${esc(c.name||'')}"></div>
+    <div><input class="kkEmail" placeholder="E-Mail (leer = wie Firma)" value="${esc(c.email||'')}"></div>
+    <div><input class="kkTel" placeholder="Telefon (leer = wie Firma)" value="${esc(c.telefon||'')}"></div>
+    <button class="btn sm danger" type="button" title="entfernen" onclick="this.parentNode.remove()">✕</button></div>`;
+}
 // Kundenakte: Angebote, Rechnungen und Gutachten/Analysen dieses Kunden
 function kundeBereiche(kid){
   const eigene=art=>S.docs.filter(d=>d.art===art&&d.kundeId===kid).sort((a,b)=>(b.created||'').localeCompare(a.created||''));
   const bereich=(titel,list)=>`<div class="card"><h3>${titel}</h3>${list.length?docTable(list):'<p style="color:var(--dim)">Keine.</p>'}</div>`;
   const ga=S.gutachten.filter(g=>g.kundeId===kid).sort((a,b)=>(b.datum||'').localeCompare(a.datum||''));
-  return bereich('📝 Angebote',eigene('angebot'))+bereich('🧾 Rechnungen',eigene('rechnung'))+
+  return `<h2 style="margin:18px 0 8px">📂 Bisherige Aufträge</h2>`+bereich('📝 Angebote',eigene('angebot'))+bereich('🧾 Rechnungen',eigene('rechnung'))+
   `<div class="card"><h3 style="display:flex;align-items:center">🔬 Gutachten / Analysen<button class="btn sm" style="margin-left:auto" onclick="editGutachten('','${kid}')">+ Gutachten</button></h3>
   ${ga.length?`<table class="list"><tr><th>Titel</th><th>Datum</th><th>Status</th><th>Rechnung</th><th>PDF</th></tr>
   ${ga.map(g=>{const re=S.docs.find(d=>d.id===g.rechnungId);return `<tr class="click" onclick="editGutachten('${g.id}','${kid}')">
@@ -878,7 +922,9 @@ async function delGutachten(gid,kid){
 }
 async function saveKunde(id){
   const rec={firma:$('#kFirma').value.trim(),name:$('#kName').value.trim(),anrede:$('#kAnrede').value,strasse:$('#kStrasse').value.trim(),
-    plz:$('#kPlz').value.trim(),ort:$('#kOrt').value.trim(),email:$('#kEmail').value.trim(),telefon:$('#kTel').value.trim(),notiz:$('#kNotiz').value.trim()};
+    plz:$('#kPlz').value.trim(),ort:$('#kOrt').value.trim(),email:$('#kEmail').value.trim(),telefon:$('#kTel').value.trim(),notiz:$('#kNotiz').value.trim(),
+    kontakte:[...document.querySelectorAll('#kKontakte .kKontakt')].map(r=>({anrede:r.querySelector('.kkAnrede').value,name:r.querySelector('.kkName').value.trim(),
+      email:r.querySelector('.kkEmail').value.trim(),telefon:r.querySelector('.kkTel').value.trim()})).filter(c=>c.name)};
   if(!rec.firma&&!rec.name){toast('Firma oder Name angeben',true);return;}
   try{
     if(id)await api('customers/'+id,'PUT',rec);else await api('customers','POST',rec);
