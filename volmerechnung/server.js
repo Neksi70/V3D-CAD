@@ -138,6 +138,7 @@ function unfinalizeSperre(doc) {
   if (doc.mahnstufe) return 'es wurde schon gemahnt';
   if (doc.shareToken) return 'Versand-Link wurde schon erzeugt';
   if (doc.uebergebenAm) return 'wurde schon an V3D Mail übergeben';
+  if (doc.archiv) return 'E-Rechnung wurde schon ausgegeben (Download/Versand) und ist archiviert';
   return '';
 }
 
@@ -234,7 +235,8 @@ function giroSvg(doc) {
 
 // --- Beleg als PDF (Headless-Chrome druckt die Beleg-Seite) ------------------
 // Für den Mail-Versand: dieselbe HTML wie /beleg/<token>, aber als echte Datei.
-function belegPdf(doc) {
+function belegPdf(doc) { return htmlZuPdf(belegHtml(doc)); }
+function htmlZuPdf(html) {
   const chrome = ['/usr/bin/google-chrome', '/usr/bin/chromium-browser']
     .find((p) => fs.existsSync(p));
   if (!chrome) throw new Error('Kein Chrome/Chromium auf dem Server gefunden');
@@ -243,7 +245,7 @@ function belegPdf(doc) {
   try {
     const htmlFile = path.join(dir, 'beleg.html');
     const pdfFile = path.join(dir, 'beleg.pdf');
-    fs.writeFileSync(htmlFile, belegHtml(doc));
+    fs.writeFileSync(htmlFile, html);
     // Eigenes user-data-dir: sonst verweigert Chrome den Start, wenn irgendwo
     // schon eine Instanz mit dem Standard-Profil läuft.
     const r = require('child_process').spawnSync(chrome, [
@@ -589,11 +591,33 @@ async function zugferdPdf(doc) {
     return fs.readFileSync(aus);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
+// --- Archiv: einmal ausgegebene E-Rechnung bleibt byte-gleich (GoBD, 8 Jahre) --------
+// Beim ersten Download/Versand eingefroren (data/erechnung/), danach nur noch diese
+// Datei — Einstellungs- oder Programmänderungen ändern sie nicht mehr. SHA-256 am Beleg.
+const ARCHIV_DIR = path.join(DATA_DIR, 'erechnung');
+fs.mkdirSync(ARCHIV_DIR, { recursive: true });
+const archivPfad = (doc, art) => path.join(ARCHIV_DIR, `${String(doc.nummer).replace(/[^\w-]/g, '_')}_${doc.id}${art === 'pdf' ? '.pdf' : '-xrechnung.xml'}`);
+const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+async function archiviert(doc, art, erzeugen) {
+  const a = (doc.archiv || {})[art], p = archivPfad(doc, art);
+  if (a) {
+    if (!fs.existsSync(p)) throw new Error(`Archivierte E-Rechnung fehlt (${path.basename(p)}) — bitte aus dem Backup zurückholen`);
+    const buf = fs.readFileSync(p);
+    if (sha256(buf) !== a.sha256) throw new Error(`Archivierte E-Rechnung wurde verändert (${path.basename(p)}, Prüfsumme passt nicht)`);
+    return buf;
+  }
+  const buf = await erzeugen();
+  fs.writeFileSync(p, buf, { flag: 'wx' }); // nie überschreiben
+  doc.archiv = Object.assign({}, doc.archiv, { [art]: { am: now(), datei: path.basename(p), bytes: buf.length, sha256: sha256(buf) } });
+  docs.save();
+  return buf;
+}
+
 // Für Versand/Download: Rechnungen als ZUGFeRD, Angebote als einfache PDF.
 // Scheitert die Einbettung, geht die einfache PDF raus — mit Hinweis statt stillem Fehler.
 async function versandPdf(doc) {
   if (doc.art !== 'rechnung') return { pdf: belegPdf(doc), zugferd: false };
-  try { return { pdf: await zugferdPdf(doc), zugferd: true }; }
+  try { return { pdf: await (doc.festgeschrieben ? archiviert(doc, 'pdf', () => zugferdPdf(doc)) : zugferdPdf(doc)), zugferd: true }; }
   catch (err) { console.error('ZUGFeRD fehlgeschlagen', doc.nummer, err.message); return { pdf: belegPdf(doc), zugferd: false, fehler: err.message }; }
 }
 
@@ -628,7 +652,7 @@ const ERFASSEN = path.join(ROOT, 'erfassen.py');
 const belegPfad = (bid, orig) => {
   if (!/^[a-f0-9]{16}$/.test(String(bid))) return null;
   if (!orig) return path.join(BELEG_DIR, bid + '.jpg');
-  for (const e of ['.pdf', '.bild']) if (fs.existsSync(path.join(BELEG_DIR, bid + e))) return path.join(BELEG_DIR, bid + e);
+  for (const e of ['.pdf', '.bild', '.xml']) if (fs.existsSync(path.join(BELEG_DIR, bid + e))) return path.join(BELEG_DIR, bid + e);
   return null;
 };
 
@@ -912,10 +936,55 @@ function zugferdDaten(a) {
 }
 
 // Foto/PDF -> Scan + erkannte Felder (Upload aus der App ODER Mail-Anhang)
+// XRechnung/ZUGFeRD als reine XML-Datei (UBL Invoice/CreditNote oder CII)
+const istXml = (buf) => /^\s*<(\?xml|([\w-]+:)?(Invoice|CreditNote|CrossIndustryInvoice)\b)/.test(buf.slice(0, 400).toString('utf8').replace(/^\uFEFF/, ''));
+// Lesbare Ansicht der XML-Rechnung (für Vorschau/Gegenprüfen; das Original bleibt die XML)
+function xmlAnsichtHtml(f) {
+  const e = (n) => (n == null ? '' : Number(n).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €');
+  const L = f.lieferant || {};
+  return `<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><style>
+body{font:12pt/1.45 system-ui,sans-serif;color:#1c2030;margin:18mm}h1{font-size:18pt;margin:0 0 2mm}small{color:#667}
+table{width:100%;border-collapse:collapse;margin-top:6mm}td,th{padding:2mm;border-bottom:1px solid #ddd;text-align:left}.n{text-align:right}
+.box{border:1px solid #ccd;border-radius:3mm;padding:4mm;margin-top:5mm}</style></head><body>
+<small>E-Rechnung (${hesc(f.format || 'XML')}) — Sichtansicht, maßgeblich ist die XML-Datei</small>
+<h1>${f.gutschrift ? 'Gutschrift' : 'Rechnung'} ${hesc(f.nummer || '')}</h1>
+<div><b>${hesc(L.name || '')}</b><br>${hesc(L.strasse || '')}<br>${hesc([L.plz, L.ort].filter(Boolean).join(' '))}${L.ustId ? '<br>USt-IdNr. ' + hesc(L.ustId) : ''}${L.steuernummer ? '<br>St.-Nr. ' + hesc(L.steuernummer) : ''}</div>
+<div class="box">Datum: ${hesc(f.datum || '—')}${f.lieferdatum ? ' · Leistung: ' + hesc(f.lieferdatum) : ''}${f.faellig ? ' · fällig: ' + hesc(f.faellig) : ''}${f.kundennr ? '<br>Kunden-Nr. ' + hesc(f.kundennr) : ''}</div>
+<table><tr><th>Position</th><th class="n">Menge</th><th class="n">Preis</th><th class="n">USt</th></tr>
+${(f.positionen || []).map((p) => `<tr><td>${hesc(p.name)}</td><td class="n">${p.menge}</td><td class="n">${e(p.preis)}</td><td class="n">${p.satz} %</td></tr>`).join('')}</table>
+<table>${(f.steuern || []).map((s) => `<tr><td>Netto ${s.satz} %</td><td class="n">${e(s.netto)}</td><td>USt</td><td class="n">${e(s.ust)}</td></tr>`).join('')}
+<tr><td colspan="3"><b>Zu zahlen</b></td><td class="n"><b>${e(f.brutto)}</b></td></tr></table>
+${f.iban ? `<div class="box">IBAN ${hesc(f.iban)}${f.bic ? ' · BIC ' + hesc(f.bic) : ''}${f.verwendungszweck ? '<br>Verwendungszweck: ' + hesc(f.verwendungszweck) : ''}</div>` : ''}
+</body></html>`;
+}
+async function erfassenXml(buf) {
+  const bid = crypto.randomBytes(8).toString('hex');
+  const orig = path.join(BELEG_DIR, bid + '.xml');
+  fs.writeFileSync(orig, buf);
+  try {
+    const { felder } = await py(['xmlrechnung', orig]);
+    if (!felder) throw new Error('keine Rechnung im XML gefunden (erwartet XRechnung/UBL oder ZUGFeRD/CII)');
+    // Vorschaubild aus der Sichtansicht (wie bei PDFs: Seite 1 als JPG)
+    const os = require('os'), dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vrxml-'));
+    try {
+      const pdf = path.join(dir, 'a.pdf');
+      fs.writeFileSync(pdf, htmlZuPdf(xmlAnsichtHtml(felder)));
+      await py(['scan', pdf, belegPfad(bid)]);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    const hinweise = erfassenHinweise(felder);
+    if (felder.gutschrift) hinweise.unshift('Das ist eine Gutschrift — Betrag prüfen');
+    return { belegId: bid, quelle: 'xrechnung', zugeschnitten: true, zeilen: [], felder, hinweise };
+  } catch (e) {
+    for (const p of [orig, belegPfad(bid)]) fs.rmSync(p, { force: true });
+    return { status: 400, error: 'E-Rechnung konnte nicht gelesen werden: ' + e.message };
+  }
+}
+
 async function erfassenPuffer(buf) {
   const istPdf = buf.slice(0, 5).toString('latin1') === '%PDF-';
   const istBild = /^(\xff\xd8\xff|\x89PNG|RIFF....WEBP|GIF8)/s.test(buf.slice(0, 12).toString('latin1')) || /^....ftyp(heic|heix|mif1)/s.test(buf.slice(0, 12).toString('latin1'));
-  if (!istPdf && !istBild) return { status: 400, error: 'Bitte ein Foto (JPG/PNG) oder ein PDF hochladen' };
+  if (!istPdf && !istBild && istXml(buf)) return erfassenXml(buf);
+  if (!istPdf && !istBild) return { status: 400, error: 'Bitte ein Foto (JPG/PNG), ein PDF oder eine E-Rechnung (XML) hochladen' };
   const bid = crypto.randomBytes(8).toString('hex');
   const orig = path.join(BELEG_DIR, bid + (istPdf ? '.pdf' : '.bild'));
   fs.writeFileSync(orig, buf);
@@ -933,8 +1002,10 @@ async function erfassenPuffer(buf) {
       felder = Object.assign({}, zf, { lieferant: Object.assign({}, txt.lieferant, zf.lieferant) });
       for (const k of Object.keys(txt)) if (felder[k] == null) felder[k] = txt[k]; // Lücken aus dem Text
       felder.positionen = zf.positionen || [];
+      if (zf.lieferant && zf.lieferant.name) delete felder.nameGeraten; // Name kommt exakt aus der XML
     }
-    return { belegId: bid, quelle, zugeschnitten: sc.zugeschnitten, zeilen, felder, hinweise: erfassenHinweise(felder) };
+    return { belegId: bid, quelle, zugeschnitten: sc.zugeschnitten, zeilen, felder,
+      hinweise: (felder.gutschrift ? ['Das ist eine Gutschrift — Betrag prüfen'] : []).concat(erfassenHinweise(felder)) };
   } catch (e) {
     for (const p of [orig, belegPfad(bid)]) fs.rmSync(p, { force: true });
     return { status: 500, error: 'Beleg konnte nicht gelesen werden: ' + e.message };
@@ -1215,7 +1286,7 @@ Positionen:\n${liste.slice(0, 2000)}`;
     const acc = url.searchParams.get('acc') || '', uid = url.searchParams.get('uid') || '';
     const r = await mailApi('/api/message?' + new URLSearchParams({ acc, folder: 'INBOX', uid, markSeen: '0' }));
     // Nur was nach Rechnung aussieht: PDFs und angehängte Bilder (keine Logos aus der Signatur)
-    const anhaenge = (r.attachments || []).filter((x) => x.type === 'application/pdf' || /\.pdf$/i.test(x.filename)
+    const anhaenge = (r.attachments || []).filter((x) => x.type === 'application/pdf' || /\.(pdf|xml)$/i.test(x.filename) || /^(application|text)\/xml$/.test(x.type)
       || (/^image\//.test(x.type) && !x.cid && x.size > 30000)).map((x) => ({ part: x.part, name: x.filename, typ: x.type, groesse: x.size }));
     return send(res, 200, { betreff: r.subject, von: (r.from || [])[0] || {}, anhaenge });
   }
@@ -1275,8 +1346,9 @@ Positionen:\n${liste.slice(0, 2000)}`;
   if (col === 'belege' && docId && m === 'GET') {
     const p = belegPfad(docId, url.searchParams.get('orig') === '1');
     if (!p || !fs.existsSync(p)) return send(res, 404, { error: 'Beleg nicht gefunden' });
-    const typ = p.endsWith('.pdf') ? 'application/pdf' : p.endsWith('.jpg') ? 'image/jpeg' : 'application/octet-stream';
-    res.writeHead(200, { 'Content-Type': typ, 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
+    const typ = p.endsWith('.pdf') ? 'application/pdf' : p.endsWith('.jpg') ? 'image/jpeg' : p.endsWith('.xml') ? 'application/xml; charset=utf-8' : 'application/octet-stream';
+    res.writeHead(200, Object.assign({ 'Content-Type': typ, 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff' },
+      p.endsWith('.xml') ? { 'Content-Disposition': `attachment; filename="e-rechnung-${docId}.xml"` } : {}));
     return res.end(fs.readFileSync(p));
   }
   // Ausgabe als ZUGFeRD-PDF (Factur-X EN 16931) — für den Upload bei SumUp
@@ -1285,6 +1357,11 @@ Positionen:\n${liste.slice(0, 2000)}`;
     if (!a) return send(res, 404, { error: 'nicht gefunden' });
     const quelle = belegPfad(a.belegId, true);
     if (!quelle) return send(res, 400, { error: 'Zu dieser Ausgabe gibt es keinen erfassten Beleg' });
+    if (quelle.endsWith('.xml')) { // ist schon eine E-Rechnung: Original unverändert weitergeben
+      const name = `${a.datum || ''}_${a.lieferant || 'Rechnung'}_${a.nummer || ''}`.replace(/[^\w-]+/g, '_').replace(/_+$/, '') + '.xml';
+      res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"`, 'Cache-Control': 'no-store' });
+      return res.end(fs.readFileSync(quelle));
+    }
     const basis = quelle.endsWith('.pdf') ? quelle : belegPfad(a.belegId);
     const out = path.join(require('os').tmpdir(), 'zf-' + crypto.randomBytes(6).toString('hex') + '.pdf');
     try {
@@ -1470,12 +1547,15 @@ Positionen:\n${liste.slice(0, 2000)}`;
     }
     if (m === 'GET' && action === 'xrechnung') {
       if (doc.art !== 'rechnung' || !doc.festgeschrieben) return send(res, 400, { error: 'Nur festgeschriebene Rechnungen können als XRechnung exportiert werden' });
+      let xml;
+      try { xml = await archiviert(doc, 'xml', () => Buffer.from(xrechnungXml(doc), 'utf8')); }
+      catch (e) { return send(res, 500, { error: e.message }); }
       res.writeHead(200, {
         'Content-Type': 'application/xml; charset=utf-8',
         'Content-Disposition': `attachment; filename="${doc.nummer}-xrechnung.xml"`,
         'Cache-Control': 'no-store',
       });
-      return res.end(xrechnungXml(doc));
+      return res.end(xml);
     }
     if (m === 'PUT') {
       if (doc.festgeschrieben) return send(res, 409, { error: 'Beleg ist festgeschrieben und kann nicht mehr geändert werden' });

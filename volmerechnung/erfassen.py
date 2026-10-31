@@ -333,10 +333,16 @@ def einbetten(pdf_pfad, ausgang):
     print(json.dumps({'ok': True, 'bytes': len(out)}))
 
 # --- Digitale PDFs: Textlayer + eingebettete E-Rechnung ----------------------
+def SICHER():
+    """XML aus fremden Mails: keine Entitäten auflösen, nichts nachladen (XXE), keine Riesenbäume."""
+    from lxml import etree
+    return etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False)
+
+
 def _cii_felder(xml):
     """Eingebettete ZUGFeRD/Factur-X-Daten (CII) -> Felder wie felderAusText im Server."""
     from lxml import etree
-    t = etree.fromstring(xml)
+    t = etree.fromstring(xml, SICHER())
     ns = {'rsm': 'urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100',
           'ram': 'urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100',
           'udt': 'urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100'}
@@ -377,6 +383,7 @@ def _cii_felder(xml):
                     'preis': num(txt('ram:SpecifiedLineTradeAgreement/ram:NetPriceProductTradePrice/ram:ChargeAmount', li)) or 0,
                     'satz': num(txt('ram:SpecifiedLineTradeSettlement/ram:ApplicableTradeTax/ram:RateApplicablePercent', li)) or 0})
     return {
+        'gutschrift': txt('rsm:ExchangedDocument/ram:TypeCode') in ('381', '261', '396'),
         'lieferant': {k: v for k, v in L.items() if v},
         'nummer': txt('rsm:ExchangedDocument/ram:ID'),
         'datum': dat('rsm:ExchangedDocument/ram:IssueDateTime/udt:DateTimeString'),
@@ -392,6 +399,79 @@ def _cii_felder(xml):
         'positionen': pos,
     }
 
+
+
+def _ubl_felder(xml):
+    """XRechnung in UBL-Syntax (Invoice oder CreditNote) -> Felder wie _cii_felder."""
+    from lxml import etree
+    t = etree.fromstring(xml, SICHER())
+    art = etree.QName(t).localname
+    if art not in ('Invoice', 'CreditNote'):
+        return None
+    ns = {'cbc': 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2',
+          'cac': 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2'}
+
+    def txt(pfad, basis=t):
+        e = basis.find(pfad, ns)
+        return e.text.strip() if e is not None and e.text else None
+
+    def num(v):
+        try:
+            return round(float(v), 2)
+        except (TypeError, ValueError):
+            return None
+    sp = t.find('cac:AccountingSupplierParty/cac:Party', ns)
+    L = {}
+    if sp is not None:
+        L = {'name': txt('cac:PartyName/cbc:Name', sp) or txt('cac:PartyLegalEntity/cbc:RegistrationName', sp),
+             'strasse': txt('cac:PostalAddress/cbc:StreetName', sp), 'plz': txt('cac:PostalAddress/cbc:PostalZone', sp),
+             'ort': txt('cac:PostalAddress/cbc:CityName', sp)}
+        for pts in sp.findall('cac:PartyTaxScheme', ns):
+            schema = (txt('cac:TaxScheme/cbc:ID', pts) or '').upper()
+            L['ustId' if schema == 'VAT' else 'steuernummer'] = txt('cbc:CompanyID', pts)
+    steuern = [{'satz': num(txt('cac:TaxCategory/cbc:Percent', g)) or 0, 'netto': num(txt('cbc:TaxableAmount', g)),
+                'ust': num(txt('cbc:TaxAmount', g))} for g in t.findall('cac:TaxTotal/cac:TaxSubtotal', ns)]
+    zeile, menge = ('cac:InvoiceLine', 'cbc:InvoicedQuantity') if art == 'Invoice' else ('cac:CreditNoteLine', 'cbc:CreditedQuantity')
+    pos = []
+    for li in t.findall(zeile, ns):
+        basis = num(txt('cac:Price/cbc:BaseQuantity', li)) or 1
+        pos.append({'name': txt('cac:Item/cbc:Name', li) or 'Position', 'menge': num(txt(menge, li)) or 1,
+                    'preis': round((num(txt('cac:Price/cbc:PriceAmount', li)) or 0) / basis, 4),
+                    'satz': num(txt('cac:Item/cac:ClassifiedTaxCategory/cbc:Percent', li)) or 0})
+    pm = 'cac:PaymentMeans/'
+    zahlen = txt('cac:LegalMonetaryTotal/cbc:PayableAmount') or txt('cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount')
+    return {
+        'format': 'XRechnung (UBL)', 'gutschrift': art == 'CreditNote',
+        'lieferant': {k: v for k, v in L.items() if v},
+        'nummer': txt('cbc:ID'), 'datum': txt('cbc:IssueDate'),
+        'lieferdatum': txt('cac:Delivery/cbc:ActualDeliveryDate') or txt('cac:InvoicePeriod/cbc:EndDate'),
+        'faellig': txt('cbc:DueDate') or txt(pm + 'cbc:PaymentDueDate'),
+        'iban': (txt(pm + 'cac:PayeeFinancialAccount/cbc:ID') or '').replace(' ', '').upper() or None,
+        'bic': txt(pm + 'cac:PayeeFinancialAccount/cac:FinancialInstitutionBranch/cbc:ID'),
+        'verwendungszweck': txt(pm + 'cbc:PaymentID'),
+        'kundennr': txt('cac:AccountingCustomerParty/cac:Party/cac:PartyIdentification/cbc:ID'),
+        'brutto': num(zahlen), 'steuern': steuern, 'positionen': pos,
+    }
+
+
+def _xml_felder(xml):
+    """E-Rechnung in beliebiger Syntax (CII oder UBL) -> Felder; None, wenn keine Rechnung."""
+    f = _cii_felder(xml)
+    if f is not None:
+        f.setdefault('format', 'ZUGFeRD/XRechnung (CII)')
+        return f
+    return _ubl_felder(xml)
+
+
+def xmlrechnung(pfad):
+    with open(pfad, 'rb') as fh:
+        roh = fh.read()
+    from lxml import etree
+    try:
+        felder = _xml_felder(roh)
+    except etree.XMLSyntaxError as e:
+        raise SystemExit('keine gültige XML-Datei: ' + str(e)[:120])
+    print(json.dumps({'felder': felder}, ensure_ascii=False))
 
 def pdftext(pfad):
     r = subprocess.run(['pdftotext', '-layout', '-f', '1', '-l', '3', pfad, '-'], capture_output=True, timeout=60)
@@ -409,7 +489,7 @@ def pdftext(pfad):
         with open(pfad, 'rb') as f:
             _, xml = get_xml_from_pdf(f.read(), check_xsd=False)
         if xml:
-            zf = _cii_felder(xml)
+            zf = _xml_felder(xml)
     except Exception:
         zf = None
     print(json.dumps({'zeilen': zeilen, 'zugferd': zf}, ensure_ascii=False))
@@ -425,6 +505,8 @@ if __name__ == '__main__':
         pdftext(sys.argv[2])
     elif cmd == 'zugferd':
         zugferd(sys.argv[2], sys.argv[3])
+    elif cmd == 'xmlrechnung':
+        xmlrechnung(sys.argv[2])
     elif cmd == 'einbetten':
         einbetten(sys.argv[2], sys.argv[3])
     elif cmd == 'xml':  # nur zum Testen: XML auf stdout

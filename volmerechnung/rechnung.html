@@ -616,6 +616,7 @@ function renderEditor(m){
     ${fest?'':`<button class="btn" onclick="saveDoc()">💾 Speichern</button>`}
     ${d.id&&!d.unsaved?`<button class="btn sec" onclick="duplicateDoc()">📋 Duplizieren</button>`:''}
     ${!fest&&d.id&&!d.unsaved?`<button class="btn" style="background:var(--green)" onclick="finalizeDoc()">✅ Festschreiben &amp; Nummer vergeben</button>`:''}
+    ${fest&&re&&d.archiv?`<div style="flex-basis:100%;font-size:12.5px;color:var(--dim)">🔒 E-Rechnung archiviert ${Object.entries(d.archiv).map(([a,v])=>`(${a==='pdf'?'ZUGFeRD-PDF':'XRechnung'} am ${dtDE(v.am.slice(0,10))})`).join(' ')} — wird ab jetzt unverändert ausgeliefert.</div>`:''}
     ${fest&&re?`<a class="btn sec" style="text-decoration:none" href="${ROOTP}/api/docs/${d.id}/pdf?key=${encodeURIComponent(KEY)}" download="${esc(d.nummer)}.pdf" title="PDF mit eingebetteter E-Rechnung (ZUGFeRD/Factur-X, EN 16931)">⬇ E-Rechnung (ZUGFeRD-PDF)</a>
       <a class="btn sec" style="text-decoration:none" href="${ROOTP}/api/docs/${d.id}/xrechnung?key=${encodeURIComponent(KEY)}" download>📤 XRechnung (XML)</a>`:''}
     ${fest&&re&&['offen','ueberfaellig'].includes(docStatus(d))?`
@@ -803,7 +804,7 @@ async function reopenDoc(){
 }
 // Spiegelt unfinalizeSperre() im Server: nicht raus, nicht gemahnt, letzte vergebene Nummer
 function kannZurueck(d){
-  if(d.status!=='offen'||d.mahnstufe||d.shareToken||d.uebergebenAm||!d.nummer)return false;
+  if(d.status!=='offen'||d.mahnstufe||d.shareToken||d.uebergebenAm||d.archiv||!d.nummer)return false;
   const letzte=S.docs.filter(x=>x.art==='rechnung'&&x.nummer).map(x=>x.nummer).sort().pop();
   return d.nummer===letzte;
 }
@@ -1144,9 +1145,9 @@ function renderAusgaben(m){
     <b>🧾 Papierrechnung erfassen</b> <small style="color:var(--dim)">(Texterkennung läuft auf deinem Server — nichts verlässt die Maschine)</small>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
       <label class="btn" style="margin:0;color:#fff">📷 Fotografieren<input type="file" accept="image/*" capture="environment" hidden onchange="erfassenDatei(this.files[0]);this.value=''"></label>
-      <label class="btn sec" style="margin:0">📄 Foto/PDF hochladen<input type="file" accept="image/*,application/pdf" hidden onchange="erfassenDatei(this.files[0]);this.value=''"></label>
+      <label class="btn sec" style="margin:0">📄 Foto/PDF/E-Rechnung hochladen<input type="file" accept="image/*,application/pdf,.xml,application/xml,text/xml" hidden onchange="erfassenDatei(this.files[0]);this.value=''"></label>
     </div>
-    <p style="color:var(--mid);font-size:13px;margin-top:8px">Rechnung flach auf einen dunklen Untergrund legen und von oben fotografieren (oder Datei hierher ziehen). Danach Felder prüfen und „💶 Speichern &amp; überweisen" — dort kopierst du Empfänger, IBAN, Betrag &amp; Verwendungszweck einzeln in deine Banking-App.</p>
+    <p style="color:var(--mid);font-size:13px;margin-top:8px">Rechnung flach auf einen dunklen Untergrund legen und von oben fotografieren (oder Datei hierher ziehen). E-Rechnungen (XRechnung-XML oder ZUGFeRD-PDF) werden exakt übernommen. Danach Felder prüfen und „💶 Speichern &amp; überweisen" — dort kopierst du Empfänger, IBAN, Betrag &amp; Verwendungszweck einzeln in deine Banking-App.</p>
   </div>
   <div id="ausgabeForm"></div>
   <div class="card"><table class="list"><tr><th>Datum</th><th>Lieferant</th><th>Beschreibung</th><th>Kategorie</th><th class="num">Brutto</th><th></th></tr>
@@ -1193,7 +1194,7 @@ async function erfassenDatei(file){
     ERF=j;
     editAusgabe(null,felderZuAusgabe(j.felder,j.belegId),j.hinweise);
     // eingebettete E-Rechnung ist exakt — die KI würde nur raten
-    if(j.quelle==='zugferd'){AUS_POS=j.felder.positionen||[];posZeichnen();$('#erfKi').innerHTML='✅ <b>E-Rechnung im PDF gefunden</b> — Daten exakt übernommen (keine Texterkennung nötig).';}
+    if(j.quelle==='zugferd'||j.quelle==='xrechnung'){AUS_POS=j.felder.positionen||[];posZeichnen();$('#erfKi').innerHTML=`✅ <b>${j.quelle==='xrechnung'?'E-Rechnung ('+esc(j.felder.format||'XML')+')':'E-Rechnung im PDF gefunden'}</b> — Daten exakt übernommen (keine Texterkennung nötig).`;}
     else{if(j.quelle==='pdftext')$('#erfKi').dataset.q='Text direkt aus dem PDF gelesen. ';erfassenKi();}
   }catch(e){box.innerHTML='';toast(e.message,true);}
 }
