@@ -23,6 +23,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bericht
+import archiv
 import erechnung
 import erp
 import finanzen
@@ -43,6 +44,7 @@ GEHEIM = open(GEHEIM_PFAD).read().strip().encode()
 SITZUNG_STD = 12
 
 erp.DOK_ORDNER = os.path.join(DATEN, "dokumente")
+erp.ARCHIV_ORDNER = os.path.join(DATEN, "archiv")
 DB = erp.verbinden(DB_PFAD)
 erp.schema_anlegen(DB)
 seed.befuellen(DB)
@@ -512,7 +514,38 @@ def r_sammel_ls(body, benutzer, **_):
 
 @route("POST", "/api/belege/(?P<bid>\\d+)/verpackung")
 def r_verpackung(bid, body, benutzer, **_):
-    return erp.verpackung_speichern(DB, bid, body.get("verpackung") or [], benutzer)
+    v = erp.verpackung_speichern(DB, bid, body.get("verpackung") or [], benutzer)
+    st = DB.execute("SELECT status FROM beleg WHERE id=?", (bid,)).fetchone()
+    if st and st["status"] == "verarbeitet" and erp.ARCHIV_ORDNER:
+        archiv.archivieren(DB, bid, benutzer, "Verpackung geändert")   # neue Version, alte bleibt
+    return v
+
+
+@route("GET", "/api/belege/(?P<bid>\\d+)/archiv")
+def r_archiv(bid, **_):
+    return archiv.versionen(DB, bid)
+
+
+@route("GET", "/api/archiv/(?P<aid>\\d+)")
+def r_archiv_datei(aid, **_):
+    daten, r = archiv.datei(DB, aid)
+    return {"__datei": daten, "typ": "application/pdf" if r["art"] == "pdf" else "application/xml; charset=utf-8",
+            "name": os.path.basename(r["datei"]), "anhang": r["art"] != "pdf"}
+
+
+@route("GET", "/api/archiv/pruefen")
+def r_archiv_pruefen(**_):
+    return archiv.pruefen(DB)
+
+
+@route("GET", "/api/nummernkreise")
+def r_nummernkreise(**_):
+    return erp.nummernkreise(DB)
+
+
+@route("POST", "/api/nummernkreise")
+def r_nummernkreise_speichern(body, benutzer, **_):
+    return erp.nummernkreise_speichern(DB, body.get("liste") or [], benutzer)
 
 
 @route("POST", "/api/formular/vorschau")
@@ -604,19 +637,28 @@ def r_fertigung_loeschen(fid, benutzer, **_):
 
 # ---------------------------------------------------------------- Beleg-PDF / E-Rechnung
 @route("GET", "/api/belege/(?P<bid>\\d+)/pdf")
-def r_beleg_pdf(bid, **_):
+def r_beleg_pdf(bid, benutzer, **_):
+    a = archiv.holen(DB, bid, "pdf", benutzer)          # verarbeitet → immer das archivierte Original
+    if a:
+        return {"__datei": a[0], "typ": "application/pdf", "name": os.path.basename(a[1]["datei"])}
     pdf, name = bericht.beleg_pdf(DB, bid)
     return {"__datei": pdf, "typ": "application/pdf", "name": name}
 
 
 @route("GET", "/api/belege/(?P<bid>\\d+)/xrechnung")
-def r_xrechnung(bid, **_):
+def r_xrechnung(bid, benutzer, **_):
+    a = archiv.holen(DB, bid, "xrechnung", benutzer)
+    if a:
+        return {"__datei": a[0], "typ": "application/xml; charset=utf-8", "name": "XRechnung_" + os.path.basename(a[1]["datei"]), "anhang": True}
     xml, name = erechnung.xrechnung(DB, bid)
     return {"__datei": xml.encode() if isinstance(xml, str) else xml, "typ": "application/xml; charset=utf-8", "name": name, "anhang": True}
 
 
 @route("GET", "/api/belege/(?P<bid>\\d+)/zugferd")
-def r_zugferd(bid, **_):
+def r_zugferd(bid, benutzer, **_):
+    a = archiv.holen(DB, bid, "pdf", benutzer)
+    if a and DB.execute("SELECT 1 FROM beleg_archiv WHERE beleg_id=? AND version=? AND art='xrechnung'", (bid, a[1]["version"])).fetchone():
+        return {"__datei": a[0], "typ": "application/pdf", "name": "ZUGFeRD_" + os.path.basename(a[1]["datei"]), "anhang": True}
     pdf, name = erechnung.zugferd(DB, bid)
     return {"__datei": pdf, "typ": "application/pdf", "name": name, "anhang": True}
 

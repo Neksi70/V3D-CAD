@@ -38,7 +38,8 @@ def schema_anlegen(db):
                          ("offener_posten", "mahnsperre", "INTEGER NOT NULL DEFAULT 0"),
                          ("artikel", "arbeitsplan", "TEXT"), ("fertigung", "freigabe", "INTEGER NOT NULL DEFAULT 0"),
                          ("beleg", "verpackung", "TEXT"), ("beleg_position", "zusatz", "TEXT"),
-                         ("artikel", "gewicht_kg", "REAL"), ("benutzer", "email", "TEXT"), ("benutzer", "telefon", "TEXT")]:
+                         ("artikel", "gewicht_kg", "REAL"), ("benutzer", "email", "TEXT"), ("benutzer", "telefon", "TEXT"),
+                         ("beleg", "leistungsdatum", "TEXT")]:
         if sp not in [r["name"] for r in db.execute(f"PRAGMA table_info({tab})")]:
             db.execute(f"ALTER TABLE {tab} ADD COLUMN {sp} {typ}")
     if not db.execute("SELECT 1 FROM mahnstufe LIMIT 1").fetchone():
@@ -130,7 +131,7 @@ EINSTELLUNGEN = ["firma_name", "firma_zusatz", "strasse", "plz", "ort", "telefon
                  "handelsregister", "geschaeftsfuehrer", "bank_name", "iban", "bic", "logo",
                  "kopftext_vk", "fusstext_vk", "kopftext_ek", "fusstext_ek", "farbe_haupt", "farbe_akzent", "betriebsstaette",
                  "arbeitsgaenge", "maschinen", "ls_nur_freigegeben",
-                 "verpackungen", "formular", "positionsfelder", "briefpapier_bild"]
+                 "verpackungen", "formular", "positionsfelder", "briefpapier_bild", "nummernformat"]
 STANDARD_EINSTELLUNGEN = dict(
     firma_name="Muster Fertigung GmbH", firma_zusatz="Sondermaschinen · Vorrichtungen · Serienteile",
     strasse="Beispielstraße 1", plz="58089", ort="Hagen", telefon="02331 000000", email="info@muster-fertigung.example",
@@ -252,15 +253,83 @@ def pw_pruefen(pw, gespeichert):
 
 
 # ---------------------------------------------------------------- Nummern
+NUMMERN_MUSTER = "{P}-{JJ}-{N4}"
+
+
+def nummern_muster(db, praefix):
+    """Nummernformat je Präfix (Einstellung `nummernformat`, JSON {"RE": "RG{JJ}{N5}"}). {P}=Präfix, {JJ}/{JJJJ}=Jahr, {N4}/{N5}…=laufende Nr."""
+    r = db.execute("SELECT wert FROM einstellung WHERE schluessel='nummernformat'").fetchone()
+    try:
+        return (json.loads(r["wert"]) if r and r["wert"] else {}).get(praefix) or NUMMERN_MUSTER
+    except ValueError:
+        return NUMMERN_MUSTER
+
+
+def nummer_formatieren(muster, praefix, jahr, n):
+    import re as _re
+    t = muster.replace("{P}", praefix).replace("{JJJJ}", str(jahr)).replace("{JJ}", str(jahr)[2:])
+    return _re.sub(r"\{N(\d)\}", lambda m: f"{n:0{int(m.group(1))}d}", t)
+
+
 def naechste_nummer(db, praefix, datum):
+    """Fortlaufend und lückenlos je Präfix und Jahr – läuft in der Transaktion des Verarbeitens (Rollback = keine Lücke)."""
     jahr = int(datum[:4])
     r = db.execute("SELECT naechste FROM nummernkreis WHERE praefix=? AND jahr=?", (praefix, jahr)).fetchone()
     n = r["naechste"] if r else 1
+    muster = nummern_muster(db, praefix)
+    while db.execute("SELECT 1 FROM beleg WHERE nummer=?", (nummer_formatieren(muster, praefix, jahr, n),)).fetchone():
+        n += 1                                           # nie eine Nummer doppelt vergeben (z. B. nach Formatwechsel)
     if r:
         db.execute("UPDATE nummernkreis SET naechste=? WHERE praefix=? AND jahr=?", (n + 1, praefix, jahr))
     else:
         db.execute("INSERT INTO nummernkreis(praefix,jahr,naechste) VALUES(?,?,?)", (praefix, jahr, n + 1))
-    return f"{praefix}-{str(jahr)[2:]}-{n:04d}"
+    return nummer_formatieren(muster, praefix, jahr, n)
+
+
+def nummernkreise(db):
+    jahr = _dt.date.today().year
+    out = []
+    for a in zeilen(db.execute("SELECT code, name, praefix FROM belegart ORDER BY reihenfolge")):
+        r = db.execute("SELECT naechste FROM nummernkreis WHERE praefix=? AND jahr=?", (a["praefix"], jahr)).fetchone()
+        n = r["naechste"] if r else 1
+        m = nummern_muster(db, a["praefix"])
+        out.append(dict(a, muster=m, naechste=n, jahr=jahr, beispiel=nummer_formatieren(m, a["praefix"], jahr, n),
+                        letzte=(db.execute("SELECT nummer FROM beleg WHERE belegart=? AND nummer IS NOT NULL ORDER BY verarbeitet DESC, id DESC LIMIT 1",
+                                           (a["code"],)).fetchone() or {"nummer": None})["nummer"]))
+    return out
+
+
+def nummernkreise_speichern(db, liste, benutzer=None):
+    import re as _re
+    jahr = _dt.date.today().year
+    formate = {}
+    r = db.execute("SELECT wert FROM einstellung WHERE schluessel='nummernformat'").fetchone()
+    try:
+        formate = json.loads(r["wert"]) if r and r["wert"] else {}
+    except ValueError:
+        formate = {}
+    with transaktion(db):
+        for x in liste:
+            praefix = db.execute("SELECT praefix FROM belegart WHERE code=?", (x.get("code"),)).fetchone()
+            if not praefix:
+                continue
+            praefix = praefix["praefix"]
+            m = (x.get("muster") or NUMMERN_MUSTER).strip()
+            if not _re.search(r"\{N\d\}", m) or len(m) > 30:
+                raise Fehler(f"{x.get('code')}: Das Format braucht eine laufende Nummer, z. B. {{N4}} oder {{N5}}.")
+            formate[praefix] = m
+            n = int(x.get("naechste") or 1)
+            if n < 1:
+                raise Fehler("Die nächste Nummer muss mindestens 1 sein.")
+            nr = nummer_formatieren(m, praefix, jahr, n)
+            if db.execute("SELECT 1 FROM beleg WHERE nummer=?", (nr,)).fetchone():
+                raise Fehler(f"{nr} ist schon vergeben – bitte eine höhere nächste Nummer wählen.")
+            db.execute("INSERT INTO nummernkreis(praefix,jahr,naechste) VALUES(?,?,?) ON CONFLICT(praefix,jahr) DO UPDATE SET naechste=excluded.naechste",
+                       (praefix, jahr, n))
+        db.execute("INSERT INTO einstellung(schluessel,wert) VALUES('nummernformat',?) ON CONFLICT(schluessel) DO UPDATE SET wert=excluded.wert",
+                   (json.dumps(formate),))
+        protokoll(db, benutzer, "nummernkreis", None, "geändert", formate)
+    return nummernkreise(db)
 
 
 def naechste_stammnr(db, tabelle, spalte, start):
@@ -504,6 +573,7 @@ def beleg_speichern(db, d, benutzer=None):
                   projekt_id=d.get("projekt_id") or None, betreff=d.get("betreff"), ihre_referenz=d.get("ihre_referenz"),
                   kopftext=d.get("kopftext"), fusstext=d.get("fusstext"), zahlungsbed_id=d.get("zahlungsbed_id") or None,
                   lager_id=d.get("lager_id") or 1, netto=netto, steuer=steuer, brutto=brutto, memo=d.get("memo"),
+                  leistungsdatum=(d.get("leistungsdatum") or "").strip()[:60] or None,
                   verpackung=json.dumps(_verpackung_pruefen(d.get("verpackung")), ensure_ascii=False) if d.get("verpackung") else None)
     with transaktion(db):
         bid = d.get("id")
@@ -588,6 +658,7 @@ def beleg_lesen(db, bid):
     except ValueError:
         b["verpackung"] = []
     b["formular"] = formular(db, b["belegart"])
+    b["archiv"] = zeilen(db.execute("SELECT id, version, art, erstellt, benutzer, anlass, sha256, groesse FROM beleg_archiv WHERE beleg_id=? ORDER BY version, art", (bid,)))
     b["folgearten"] = [dict(r) for r in db.execute(
         "SELECT f.nach code, ba.name FROM belegart_folge f JOIN belegart ba ON ba.code=f.nach WHERE f.von=? ORDER BY ba.reihenfolge", (b["belegart"],))]
     b["kette"] = belegkette(db, bid)
@@ -721,6 +792,15 @@ def beleg_verarbeiten(db, bid, benutzer=None):
                 db.execute("INSERT INTO projekt_verlauf(projekt_id,zeit,benutzer,text) VALUES(?,?,?,?)", (b["projekt_id"], jetzt(), benutzer, txt))
                 meldungen.append(f"Meilenstein „{m['titel']}“ erledigt")
         protokoll(db, benutzer, "beleg", bid, "verarbeitet", {"nummer": nummer})
+    if ARCHIV_ORDNER:
+        try:
+            import archiv
+            a = archiv.archivieren(db, bid, benutzer, "verarbeitet")
+            meldungen.append("archiviert" + (" (mit E-Rechnung)" if a.get("erechnung") else ""))
+            if a.get("hinweis"):
+                meldungen.append(a["hinweis"])
+        except Exception as ex:                       # Verarbeiten bleibt gültig; Archiv wird beim ersten Abruf nachgeholt
+            meldungen.append(f"Achtung: Archiv nicht erstellt ({ex})")
     erg = {"beleg": beleg_lesen(db, bid), "meldungen": meldungen}
     if b["belegart"] == "WK":
         erg["abweichungen"] = mengen_abweichung(db, bid)
@@ -1106,6 +1186,7 @@ def charge_ausschuss(db, cid, menge, grund, benutzer=None):
 
 # ---------------------------------------------------------------- Dokumente
 DOK_ORDNER = None      # wird vom Server gesetzt
+ARCHIV_ORDNER = None   # unveränderbare Beleg-Originale (GoBD), vom Server gesetzt
 
 
 def dokument_speichern(db, objekt, objekt_id, name, daten, mime=None, benutzer=None):

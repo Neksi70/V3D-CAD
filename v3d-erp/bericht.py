@@ -519,6 +519,17 @@ def _schriften():
     return _SCHRIFT
 
 
+def leistungstext(db, b):
+    """Leistungszeitpunkt (§ 14 Abs. 4 Nr. 6 UStG): eingetragenes Leistungsdatum, sonst die Lieferscheine, sonst Rechnungsdatum."""
+    if b.get("leistungsdatum"):
+        return f"Leistungsdatum: {b['leistungsdatum']}"
+    ls = erp.zeilen(db.execute("""SELECT DISTINCT l.nummer, l.datum FROM beleg_position p JOIN beleg_position v ON v.id=p.vorgaenger_pos_id
+                                  JOIN beleg l ON l.id=v.beleg_id WHERE p.beleg_id=? AND l.belegart='LS' ORDER BY l.datum, l.nummer""", (b["id"],)))
+    if ls:
+        return "Lieferdatum gemäß " + ("Lieferschein " if len(ls) == 1 else "Lieferscheinen ") + ", ".join(f"{x['nummer']} vom {_de(x['datum'])}" for x in ls) + "."
+    return f"Leistungsdatum entspricht dem Rechnungsdatum ({_de(b['datum'])})."
+
+
 def beleg_pdf(db, bid, pdfa=False, fo=None):
     """Beleg als A4-PDF nach dem Formular-Baukasten (erp.formular): Spalten, Blöcke, Titel, Zusatztext, Schriftgröße, Briefpapier."""
     from reportlab.lib.pagesizes import A4 as A4H
@@ -862,7 +873,7 @@ def beleg_pdf(db, bid, pdfa=False, fo=None):
     if b["belegart"] == "RE" and e.get("iban") and bl["bank"]:
         y = absatz(f"Bitte überweisen Sie unter Angabe der Rechnungsnummer {b['nummer']} auf: IBAN {e['iban']}" + (f", BIC {e['bic']}" if e.get("bic") else ""), y)
     if b["belegart"] in ("RE", "GS") and b.get("datum"):
-        y = absatz("Leistungsdatum entspricht dem Rechnungsdatum, soweit nicht anders angegeben.", y, 8.5)
+        y = absatz(leistungstext(db, b), y, 8.5)
     if b.get("fusstext") and bl["fusstext"]:
         y = absatz(b["fusstext"], y - 4)
     if bl["quittung"]:

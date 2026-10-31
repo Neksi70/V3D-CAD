@@ -292,6 +292,21 @@ CREATE TABLE IF NOT EXISTS fertigung (
 CREATE INDEX IF NOT EXISTS ix_fertigung_charge ON fertigung(charge_id);
 CREATE INDEX IF NOT EXISTS ix_fertigung_offen ON fertigung(ende);
 
+-- ---------- Archiv: unveränderbare Originale verarbeiteter Belege (GoBD) ----------
+CREATE TABLE IF NOT EXISTS beleg_archiv (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  beleg_id  INTEGER NOT NULL REFERENCES beleg(id),
+  version   INTEGER NOT NULL,
+  art       TEXT NOT NULL,                 -- pdf | xrechnung
+  datei     TEXT NOT NULL,                 -- relativ zum Archiv-Ordner
+  sha256    TEXT NOT NULL,
+  groesse   INTEGER NOT NULL,
+  erstellt  TEXT NOT NULL,
+  benutzer  TEXT,
+  anlass    TEXT,
+  UNIQUE (beleg_id, version, art)
+);
+
 -- ---------- Dokumente (Dateien an Charge, Beleg, Projekt, Adresse, Artikel) ----------
 CREATE TABLE IF NOT EXISTS dokument (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
