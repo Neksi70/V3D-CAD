@@ -321,6 +321,17 @@ def zugferd(scan_pfad, ausgang):
     print(json.dumps({'ok': True, 'bytes': len(out)}))
 
 
+
+def einbetten(pdf_pfad, ausgang):
+    """Eigene Ausgangsrechnung (Chrome-PDF) + CII-XML vom Server -> ZUGFeRD/Factur-X EN 16931."""
+    from facturx import generate_from_binary
+    r = json.load(sys.stdin)
+    out = generate_from_binary(pdfa_basis(pdf_pfad), r['xml'].encode('utf-8'), flavor='factur-x', level='en16931',
+                               check_xsd=True, pdf_metadata=r.get('meta') or {}, lang='de-DE')
+    with open(ausgang, 'wb') as f:
+        f.write(out)
+    print(json.dumps({'ok': True, 'bytes': len(out)}))
+
 # --- Digitale PDFs: Textlayer + eingebettete E-Rechnung ----------------------
 def _cii_felder(xml):
     """Eingebettete ZUGFeRD/Factur-X-Daten (CII) -> Felder wie felderAusText im Server."""
@@ -414,6 +425,8 @@ if __name__ == '__main__':
         pdftext(sys.argv[2])
     elif cmd == 'zugferd':
         zugferd(sys.argv[2], sys.argv[3])
+    elif cmd == 'einbetten':
+        einbetten(sys.argv[2], sys.argv[3])
     elif cmd == 'xml':  # nur zum Testen: XML auf stdout
         print(cii_xml(json.load(sys.stdin)))
     else:

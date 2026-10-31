@@ -566,7 +566,7 @@ function renderEditor(m){
         <select ${fest?'disabled':''} onchange="edGutachten(this.value)"><option value="">— keins —</option>
         ${S.gutachten.filter(g=>g.kundeId===d.kundeId||g.id===d.gutachtenId).map(g=>`<option value="${g.id}" ${d.gutachtenId===g.id?'selected':''}>${esc(g.titel)} (${dtDE(g.datum)})</option>`).join('')}
         </select></div>`:''}
-      <div><label>Leistungszeitraum (optional)</label><input value="${esc(d.leistungszeitraum||'')}" placeholder="z. B. September 2026" ${fest?'disabled':''} onchange="edSet('leistungszeitraum',this.value.trim())"></div>
+      <div><label>${re?'Leistungsdatum / -zeitraum':'Leistungszeitraum (optional)'}</label><input value="${esc(d.leistungszeitraum||'')}" placeholder="z. B. 26.10.2026 oder Oktober 2026" ${fest?'disabled':''} onchange="edSet('leistungszeitraum',this.value.trim())"></div>
       ${re?`<div><label>Leitweg-ID / Käuferreferenz (für XRechnung an Firmen/Behörden, sonst leer)</label>
         <input value="${esc(d.leitwegId||'')}" ${fest?'disabled':''} onchange="edSet('leitwegId',this.value.trim())"></div>`:''}
     </div>
@@ -616,7 +616,8 @@ function renderEditor(m){
     ${fest?'':`<button class="btn" onclick="saveDoc()">💾 Speichern</button>`}
     ${d.id&&!d.unsaved?`<button class="btn sec" onclick="duplicateDoc()">📋 Duplizieren</button>`:''}
     ${!fest&&d.id&&!d.unsaved?`<button class="btn" style="background:var(--green)" onclick="finalizeDoc()">✅ Festschreiben &amp; Nummer vergeben</button>`:''}
-    ${fest&&re?`<a class="btn sec" style="text-decoration:none" href="${ROOTP}/api/docs/${d.id}/xrechnung?key=${encodeURIComponent(KEY)}" download>📤 XRechnung (XML)</a>`:''}
+    ${fest&&re?`<a class="btn sec" style="text-decoration:none" href="${ROOTP}/api/docs/${d.id}/pdf?key=${encodeURIComponent(KEY)}" download="${esc(d.nummer)}.pdf" title="PDF mit eingebetteter E-Rechnung (ZUGFeRD/Factur-X, EN 16931)">⬇ E-Rechnung (ZUGFeRD-PDF)</a>
+      <a class="btn sec" style="text-decoration:none" href="${ROOTP}/api/docs/${d.id}/xrechnung?key=${encodeURIComponent(KEY)}" download>📤 XRechnung (XML)</a>`:''}
     ${fest&&re&&['offen','ueberfaellig'].includes(docStatus(d))?`
       <button class="btn" style="background:var(--green)" onclick="docAction('status',{status:'bezahlt'})">💶 Als bezahlt markieren</button>
       <button class="btn sec" onclick="printMahnung('${d.id}')">📮 ${d.mahnstufe?'Mahnung':'Zahlungserinnerung'} drucken</button>`:''}
@@ -704,6 +705,7 @@ async function v3dMailShare(){
       text,
     });
     window.open(r.url,'_blank');
+    if(re&&!r.zugferd)toast('Achtung: E-Rechnung konnte nicht eingebettet werden — es geht eine einfache PDF raus'+(r.zfFehler?' ('+r.zfFehler+')':''),true);
     if(ga){await loadAll();toast('Gutachten als versendet markiert');}
   }catch(e){toast(e.message,true);}
   finally{if(btn)btn.disabled=false;}
@@ -770,6 +772,19 @@ async function saveDoc(){
 }
 async function finalizeDoc(){
   await saveDoc();
+  if(editDoc.art==='rechnung'&&editDoc.id){
+    // E-Rechnung: fehlende Pflichtangaben vor der Nummernvergabe zeigen (danach ist der Beleg fest)
+    let mg=[];try{mg=await api('docs/'+editDoc.id+'/emaengel');}catch(e){}
+    if(mg.length){
+      const schwer=mg.filter(m=>m.schwer),leicht=mg.filter(m=>!m.schwer);
+      const k=editDoc.kunde||{},privat=!k.firma;
+      let w='Hinweise zur E-Rechnung:\n\n'+[...schwer.map(m=>'❌ '+m.text),...leicht.map(m=>'ℹ️ '+m.text)].join('\n');
+      if(schwer.length)w+=privat?'\n\nKunde ohne Firma = Privatkunde: dort ist keine E-Rechnung nötig.'
+        :'\n\nMit diesen Lücken ist die eingebettete E-Rechnung nicht vollständig gültig (XRechnung wird abgelehnt).';
+      w+='\n\nTrotzdem festschreiben? (Abbrechen = erst ergänzen)';
+      if(!confirm(w))return;
+    }
+  }
   try{editDoc=await api('docs/'+editDoc.id+'/finalize','POST',{});await loadAll();toast('Festgeschrieben: '+editDoc.nummer);render();}
   catch(e){toast(e.message,true);}
 }

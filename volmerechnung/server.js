@@ -354,59 +354,119 @@ ${s.steuer.ustId ? `<span>USt-IdNr. ${hesc(s.steuer.ustId)}</span>` : ''}
 </div></div></body></html>`;
 }
 
-// --- XRechnung (EN 16931 / UBL 2.1) -----------------------------------------
+// --- E-Rechnung (EN 16931): XRechnung (UBL) + ZUGFeRD/Factur-X (CII) ------------
 const xesc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
-const geld = (n) => (Math.round(n * 100) / 100).toFixed(2);
+const cent = (n) => Math.round((Number(n) || 0) * 100 + Number.EPSILON * 100) / 100;
+const geld = (n) => cent(n).toFixed(2);
+const MONATE = ['januar', 'februar', 'märz', 'april', 'mai', 'juni', 'juli', 'august', 'september', 'oktober', 'november', 'dezember'];
 
-function xrechnungXml(doc) {
+// Freitext „Leistungszeitraum" -> Datum oder Zeitraum (ISO); null = nicht erkannt
+function leistungAus(txt) {
+  const t = String(txt || '').toLowerCase();
+  const iso = (d, m, y) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  const tage = [...t.matchAll(/(\d{1,2})\.(\d{1,2})\.(\d{4})/g)].map((m) => iso(m[1], m[2], m[3]));
+  if (tage.length === 1) return { datum: tage[0] };
+  if (tage.length >= 2) return { von: tage[0], bis: tage[tage.length - 1] };
+  const mo = t.match(new RegExp('(' + MONATE.join('|') + ')\\s+(\\d{4})'));
+  if (mo) {
+    const m = MONATE.indexOf(mo[1]) + 1, y = Number(mo[2]);
+    return { von: iso(1, m, y), bis: iso(new Date(Date.UTC(y, m, 0)).getUTCDate(), m, y) };
+  }
+  const mm = t.match(/^\s*(\d{1,2})\s*[./]\s*(\d{4})\s*$/);
+  if (mm) { const m = Number(mm[1]), y = Number(mm[2]); return { von: iso(1, m, y), bis: iso(new Date(Date.UTC(y, m, 0)).getUTCDate(), m, y) }; }
+  return null;
+}
+
+// Was der Rechnung für eine gültige E-Rechnung fehlt. schwer = Prüfer lehnt ab
+function eMaengel(doc) {
+  const s = settings.data, f = s.firma || {}, st = s.steuer || {}, k = doc.kunde || {};
+  const m = [];
+  if (!st.ustId && !st.steuernummer) m.push({ schwer: true, text: 'Eigene USt-IdNr. oder Steuernummer fehlt (Einstellungen)' });
+  if (!f.email) m.push({ schwer: true, text: 'Eigene E-Mail-Adresse fehlt (Einstellungen)' });
+  if (!String((s.bank || {}).iban || '').trim()) m.push({ schwer: true, text: 'Eigene IBAN fehlt (Einstellungen)' });
+  if (!k.email) m.push({ schwer: true, text: 'E-Mail-Adresse des Kunden fehlt (Pflichtangabe in der E-Rechnung)' });
+  if (!k.strasse || !k.plz || !k.ort) m.push({ schwer: true, text: 'Anschrift des Kunden unvollständig (Straße, PLZ, Ort)' });
+  if (!doc.leistungszeitraum) m.push({ schwer: false, text: 'Leistungsdatum fehlt — es gilt das Rechnungsdatum' });
+  else if (!leistungAus(doc.leistungszeitraum)) m.push({ schwer: false, text: `Leistungszeitraum „${doc.leistungszeitraum}" nicht als Datum lesbar (z. B. 26.10.2026 oder Oktober 2026) — es gilt das Rechnungsdatum` });
+  return m;
+}
+
+// Gemeinsame, auf Cent gerundete Zahlen für beide Formate
+function eDaten(doc) {
   const s = settings.data;
-  const t = calcTotals(doc);
   const klein = s.steuer.modus === 'klein';
   const k = doc.kunde || {};
+  const t = calcTotals(doc);
   const ziel = new Date(doc.datum); ziel.setDate(ziel.getDate() + (Number(doc.zahlungszielTage) || s.zahlungszielTage || 14));
-  const einheit = (e) => (/std/i.test(e) ? 'HUR' : /pauschal/i.test(e) ? 'C62' : 'C62'); // UN/ECE Rec 20
-  const posLines = (doc.positionen || []).filter((p) => p.typ !== 'text');
-  const catId = klein ? 'E' : 'S';
+  // UN/ECE Rec 20
+  const einheit = (e) => (/std|stunde/i.test(e) ? 'HUR' : /^km$/i.test(String(e).trim()) ? 'KMT' : /pausch/i.test(e) ? 'LS' : 'C62');
+  const cat = (satz) => (klein ? 'E' : satz > 0 ? 'S' : 'Z');
+  const lines = (doc.positionen || []).filter((p) => p.typ !== 'text').map((p, i) => {
+    let menge = Number(p.menge) || 0;
+    let preis = (Number(p.preis) || 0) * (1 - (Number(p.rabatt) || 0) / 100);
+    if (preis < 0) { preis = -preis; menge = -menge; } // BR-27: Preis nie negativ, Gutschrift-Zeile über die Menge
+    const satz = klein ? 0 : (Number(p.ust) || 0);
+    return { nr: i + 1, name: p.name || 'Position', beschreibung: p.beschreibung || '', menge, einheit: einheit(p.einheit || ''),
+      preis: Math.round(preis * 10000) / 10000, netto: cent(menge * preis), satz, cat: cat(satz) };
+  });
+  const netto = cent(lines.reduce((a, l) => a + l.netto, 0));
+  const rabatt = cent(t.rabatt);
+  // Gruppen je Steuersatz; Beleg-Rabatt anteilig verteilt (Rest auf die letzte Gruppe)
+  const saetze = [...new Set(lines.map((l) => l.satz))];
+  let rest = rabatt;
+  const gruppen = saetze.map((satz, i) => {
+    const summe = cent(lines.filter((l) => l.satz === satz).reduce((a, l) => a + l.netto, 0));
+    const rab = i === saetze.length - 1 ? cent(rest) : cent(netto ? rabatt * summe / netto : 0);
+    rest = cent(rest - rab);
+    const basis = cent(summe - rab);
+    return { satz, cat: cat(satz), summe, rabatt: rab, basis, ust: cent(basis * satz / 100) };
+  });
+  const basis = cent(netto - rabatt);
+  const ust = cent(gruppen.reduce((a, g) => a + g.ust, 0));
+  const notizen = [doc.betreff, doc.bezug ? 'Bezug: ' + bezugText(doc.bezug) : '',
+    ...(doc.positionen || []).filter((p) => p.typ === 'text').map((p) => [p.name, p.beschreibung].filter(Boolean).join(' ')),
+    klein ? 'Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.' : ''].map((x) => String(x || '').trim()).filter(Boolean);
+  return {
+    s, k, klein, lines, gruppen, netto, rabatt, basis, ust, brutto: cent(basis + ust),
+    rabattText: String(doc.rabattText || '').trim() || 'Rabatt',
+    faellig: ziel.toISOString().slice(0, 10),
+    leistung: leistungAus(doc.leistungszeitraum) || { datum: doc.datum },
+    // BT-10 ist in XRechnung Pflicht; ohne Leitweg-ID die Kundennummer
+    buyerRef: doc.leitwegId || k.nr || doc.nummer,
+    // BR-CO-26: ohne USt-IdNr. dient die Steuernummer als Verkäuferkennung (BT-29)
+    sellerId: s.steuer.ustId ? '' : s.steuer.steuernummer,
+    iban: String(s.bank.iban || '').replace(/\s/g, '').toUpperCase(),
+    grund: 'Kleinunternehmerregelung § 19 UStG',
+    notizen,
+  };
+}
 
-  // USt-Aufschlüsselung
-  const taxSubtotals = Object.entries(t.ust).map(([satz, betrag]) => {
-    const basis = klein ? t.nettoNachRabatt
-      : posLines.filter((p) => (Number(p.ust) || 0) === Number(satz))
-          .reduce((a, p) => a + (p.menge || 0) * (p.preis || 0) * (1 - (p.rabatt || 0) / 100), 0)
-          * (t.netto ? t.nettoNachRabatt / t.netto : 1);
-    return `<cac:TaxSubtotal>
-      <cbc:TaxableAmount currencyID="EUR">${geld(basis)}</cbc:TaxableAmount>
-      <cbc:TaxAmount currencyID="EUR">${geld(betrag)}</cbc:TaxAmount>
-      <cac:TaxCategory><cbc:ID>${catId}</cbc:ID><cbc:Percent>${Number(satz).toFixed(2)}</cbc:Percent>
-        ${klein ? '<cbc:TaxExemptionReason>Kleinunternehmerregelung §19 UStG — keine Umsatzsteuer</cbc:TaxExemptionReason>' : ''}
-        <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory>
-    </cac:TaxSubtotal>`;
-  }).join('\n');
-
-  const lines = posLines.map((p, i) => {
-    const netto = (p.menge || 0) * (p.preis || 0) * (1 - (p.rabatt || 0) / 100);
-    const stkPreis = (p.preis || 0) * (1 - (p.rabatt || 0) / 100);
-    return `<cac:InvoiceLine>
-    <cbc:ID>${i + 1}</cbc:ID>
-    <cbc:InvoicedQuantity unitCode="${einheit(p.einheit)}">${Number(p.menge) || 0}</cbc:InvoicedQuantity>
-    <cbc:LineExtensionAmount currencyID="EUR">${geld(netto)}</cbc:LineExtensionAmount>
+function xrechnungXml(doc) {
+  const e = eDaten(doc), { s, k } = e;
+  const steuer = (c, satz) => `<cac:TaxCategory><cbc:ID>${c}</cbc:ID><cbc:Percent>${satz.toFixed(2)}</cbc:Percent>${c === 'E' ? `<cbc:TaxExemptionReason>${xesc(e.grund)}</cbc:TaxExemptionReason>` : ''}<cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory>`;
+  const lines = e.lines.map((l) => `<cac:InvoiceLine>
+    <cbc:ID>${l.nr}</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="${l.einheit}">${l.menge}</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="EUR">${geld(l.netto)}</cbc:LineExtensionAmount>
     <cac:Item>
-      ${p.beschreibung ? `<cbc:Description>${xesc(p.beschreibung)}</cbc:Description>` : ''}
-      <cbc:Name>${xesc(p.name)}</cbc:Name>
-      <cac:ClassifiedTaxCategory><cbc:ID>${catId}</cbc:ID><cbc:Percent>${(klein ? 0 : Number(p.ust) || 0).toFixed(2)}</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory>
+      ${l.beschreibung ? `<cbc:Description>${xesc(l.beschreibung)}</cbc:Description>` : ''}
+      <cbc:Name>${xesc(l.name)}</cbc:Name>
+      <cac:ClassifiedTaxCategory><cbc:ID>${l.cat}</cbc:ID><cbc:Percent>${l.satz.toFixed(2)}</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory>
     </cac:Item>
-    <cac:Price><cbc:PriceAmount currencyID="EUR">${geld(stkPreis)}</cbc:PriceAmount></cac:Price>
-  </cac:InvoiceLine>`;
-  }).join('\n');
-
-  const rabattXml = t.rabatt > 0 ? `<cac:AllowanceCharge>
+    <cac:Price><cbc:PriceAmount currencyID="EUR">${l.preis}</cbc:PriceAmount></cac:Price>
+  </cac:InvoiceLine>`).join('\n');
+  const rabatte = e.gruppen.filter((g) => g.rabatt > 0).map((g) => `<cac:AllowanceCharge>
     <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
-    <cbc:AllowanceChargeReason>${xesc(String(doc.rabattText || '').trim() || 'Rabatt')}</cbc:AllowanceChargeReason>
-    <cbc:Amount currencyID="EUR">${geld(t.rabatt)}</cbc:Amount>
-    <cac:TaxCategory><cbc:ID>${catId}</cbc:ID><cbc:Percent>${klein ? '0.00' : '19.00'}</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory>
-  </cac:AllowanceCharge>` : '';
-
-  const ustSumme = t.brutto - t.nettoNachRabatt;
+    <cbc:AllowanceChargeReason>${xesc(e.rabattText)}</cbc:AllowanceChargeReason>
+    <cbc:Amount currencyID="EUR">${geld(g.rabatt)}</cbc:Amount>
+    ${steuer(g.cat, g.satz)}
+  </cac:AllowanceCharge>`).join('\n');
+  const subtotals = e.gruppen.map((g) => `<cac:TaxSubtotal>
+      <cbc:TaxableAmount currencyID="EUR">${geld(g.basis)}</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="EUR">${geld(g.ust)}</cbc:TaxAmount>
+      ${steuer(g.cat, g.satz)}
+    </cac:TaxSubtotal>`).join('\n');
+  const L = e.leistung;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
  xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
@@ -415,38 +475,126 @@ function xrechnungXml(doc) {
 <cbc:ProfileID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</cbc:ProfileID>
 <cbc:ID>${xesc(doc.nummer)}</cbc:ID>
 <cbc:IssueDate>${doc.datum}</cbc:IssueDate>
-<cbc:DueDate>${ziel.toISOString().slice(0, 10)}</cbc:DueDate>
+<cbc:DueDate>${e.faellig}</cbc:DueDate>
 <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
+${e.notizen.map((n) => `<cbc:Note>${xesc(n)}</cbc:Note>`).join('\n')}
 <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
-<cbc:BuyerReference>${xesc(doc.leitwegId || k.nr || doc.nummer)}</cbc:BuyerReference>
+<cbc:BuyerReference>${xesc(e.buyerRef)}</cbc:BuyerReference>
+${L.von ? `<cac:InvoicePeriod><cbc:StartDate>${L.von}</cbc:StartDate><cbc:EndDate>${L.bis}</cbc:EndDate></cac:InvoicePeriod>` : ''}
 <cac:AccountingSupplierParty><cac:Party>
+  ${s.firma.email ? `<cbc:EndpointID schemeID="EM">${xesc(s.firma.email)}</cbc:EndpointID>` : ''}
+  ${e.sellerId ? `<cac:PartyIdentification><cbc:ID>${xesc(e.sellerId)}</cbc:ID></cac:PartyIdentification>` : ''}
+  <cac:PartyName><cbc:Name>${xesc(s.firma.name)}</cbc:Name></cac:PartyName>
   <cac:PostalAddress><cbc:StreetName>${xesc(s.firma.strasse)}</cbc:StreetName><cbc:CityName>${xesc(s.firma.ort)}</cbc:CityName><cbc:PostalZone>${xesc(s.firma.plz)}</cbc:PostalZone><cac:Country><cbc:IdentificationCode>DE</cbc:IdentificationCode></cac:Country></cac:PostalAddress>
   ${s.steuer.ustId ? `<cac:PartyTaxScheme><cbc:CompanyID>${xesc(s.steuer.ustId)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme>` : ''}
   ${s.steuer.steuernummer ? `<cac:PartyTaxScheme><cbc:CompanyID>${xesc(s.steuer.steuernummer)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>FC</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme>` : ''}
-  <cac:PartyLegalEntity><cbc:RegistrationName>${xesc(s.firma.name)}</cbc:RegistrationName></cac:PartyLegalEntity>
+  <cac:PartyLegalEntity><cbc:RegistrationName>${xesc(s.firma.inhaber ? `${s.firma.name} (Inh. ${s.firma.inhaber})` : s.firma.name)}</cbc:RegistrationName></cac:PartyLegalEntity>
   <cac:Contact><cbc:Name>${xesc(s.firma.inhaber || s.firma.name)}</cbc:Name><cbc:Telephone>${xesc(s.firma.telefon)}</cbc:Telephone><cbc:ElectronicMail>${xesc(s.firma.email)}</cbc:ElectronicMail></cac:Contact>
 </cac:Party></cac:AccountingSupplierParty>
 <cac:AccountingCustomerParty><cac:Party>
+  ${k.email ? `<cbc:EndpointID schemeID="EM">${xesc(k.email)}</cbc:EndpointID>` : ''}
+  ${k.nr ? `<cac:PartyIdentification><cbc:ID>${xesc(k.nr)}</cbc:ID></cac:PartyIdentification>` : ''}
   <cac:PostalAddress><cbc:StreetName>${xesc(k.strasse)}</cbc:StreetName><cbc:CityName>${xesc(k.ort)}</cbc:CityName><cbc:PostalZone>${xesc(k.plz)}</cbc:PostalZone><cac:Country><cbc:IdentificationCode>DE</cbc:IdentificationCode></cac:Country></cac:PostalAddress>
   <cac:PartyLegalEntity><cbc:RegistrationName>${xesc(k.firma || k.name)}</cbc:RegistrationName></cac:PartyLegalEntity>
+  ${k.firma && k.name ? `<cac:Contact><cbc:Name>${xesc(k.name)}</cbc:Name>${k.telefon ? `<cbc:Telephone>${xesc(k.telefon)}</cbc:Telephone>` : ''}${k.email ? `<cbc:ElectronicMail>${xesc(k.email)}</cbc:ElectronicMail>` : ''}</cac:Contact>` : ''}
 </cac:Party></cac:AccountingCustomerParty>
-<cac:PaymentMeans><cbc:PaymentMeansCode>58</cbc:PaymentMeansCode>
-  <cac:PayeeFinancialAccount><cbc:ID>${xesc(String(s.bank.iban || '').replace(/\s/g, ''))}</cbc:ID><cbc:Name>${xesc(s.firma.name)}</cbc:Name></cac:PayeeFinancialAccount>
+${L.datum ? `<cac:Delivery><cbc:ActualDeliveryDate>${L.datum}</cbc:ActualDeliveryDate></cac:Delivery>` : ''}
+<cac:PaymentMeans><cbc:PaymentMeansCode>58</cbc:PaymentMeansCode><cbc:PaymentID>${xesc(doc.nummer)}</cbc:PaymentID>
+  <cac:PayeeFinancialAccount><cbc:ID>${xesc(e.iban)}</cbc:ID><cbc:Name>${xesc(s.firma.name)}</cbc:Name></cac:PayeeFinancialAccount>
 </cac:PaymentMeans>
-<cac:PaymentTerms><cbc:Note>Zahlbar bis ${ziel.toISOString().slice(0, 10)} ohne Abzug.</cbc:Note></cac:PaymentTerms>
-${rabattXml}
-<cac:TaxTotal><cbc:TaxAmount currencyID="EUR">${geld(ustSumme)}</cbc:TaxAmount>
-${taxSubtotals}
+<cac:PaymentTerms><cbc:Note>Zahlbar bis ${e.faellig} ohne Abzug.</cbc:Note></cac:PaymentTerms>
+${rabatte}
+<cac:TaxTotal><cbc:TaxAmount currencyID="EUR">${geld(e.ust)}</cbc:TaxAmount>
+${subtotals}
 </cac:TaxTotal>
 <cac:LegalMonetaryTotal>
-  <cbc:LineExtensionAmount currencyID="EUR">${geld(t.netto)}</cbc:LineExtensionAmount>
-  <cbc:TaxExclusiveAmount currencyID="EUR">${geld(t.nettoNachRabatt)}</cbc:TaxExclusiveAmount>
-  <cbc:TaxInclusiveAmount currencyID="EUR">${geld(t.brutto)}</cbc:TaxInclusiveAmount>
-  ${t.rabatt > 0 ? `<cbc:AllowanceTotalAmount currencyID="EUR">${geld(t.rabatt)}</cbc:AllowanceTotalAmount>` : ''}
-  <cbc:PayableAmount currencyID="EUR">${geld(t.brutto)}</cbc:PayableAmount>
+  <cbc:LineExtensionAmount currencyID="EUR">${geld(e.netto)}</cbc:LineExtensionAmount>
+  <cbc:TaxExclusiveAmount currencyID="EUR">${geld(e.basis)}</cbc:TaxExclusiveAmount>
+  <cbc:TaxInclusiveAmount currencyID="EUR">${geld(e.brutto)}</cbc:TaxInclusiveAmount>
+  ${e.rabatt > 0 ? `<cbc:AllowanceTotalAmount currencyID="EUR">${geld(e.rabatt)}</cbc:AllowanceTotalAmount>` : ''}
+  <cbc:PayableAmount currencyID="EUR">${geld(e.brutto)}</cbc:PayableAmount>
 </cac:LegalMonetaryTotal>
 ${lines}
 </Invoice>`;
+}
+
+// Factur-X / ZUGFeRD 2.x, Profil EN 16931 (Comfort) — wird in die PDF eingebettet
+function ciiXml(doc) {
+  const e = eDaten(doc), { s, k } = e;
+  const d102 = (iso) => `<udt:DateTimeString format="102">${String(iso).replace(/-/g, '')}</udt:DateTimeString>`;
+  const steuer = (tag, c, satz, extra = '') => `<ram:${tag}>${extra.pre || ''}<ram:TypeCode>VAT</ram:TypeCode>${c === 'E' && extra.grund ? `<ram:ExemptionReason>${xesc(e.grund)}</ram:ExemptionReason>` : ''}${extra.mid || ''}<ram:CategoryCode>${c}</ram:CategoryCode><ram:RateApplicablePercent>${satz.toFixed(2)}</ram:RateApplicablePercent></ram:${tag}>`;
+  const partei = (tag, p) => `<ram:${tag}>${p.id ? `<ram:ID>${xesc(p.id)}</ram:ID>` : ''}<ram:Name>${xesc(p.name)}</ram:Name>`
+    + (p.rechtlich ? `<ram:SpecifiedLegalOrganization><ram:TradingBusinessName>${xesc(p.rechtlich)}</ram:TradingBusinessName></ram:SpecifiedLegalOrganization>` : '')
+    + (p.kontakt ? `<ram:DefinedTradeContact><ram:PersonName>${xesc(p.kontakt)}</ram:PersonName>${p.tel ? `<ram:TelephoneUniversalCommunication><ram:CompleteNumber>${xesc(p.tel)}</ram:CompleteNumber></ram:TelephoneUniversalCommunication>` : ''}${p.email ? `<ram:EmailURIUniversalCommunication><ram:URIID>${xesc(p.email)}</ram:URIID></ram:EmailURIUniversalCommunication>` : ''}</ram:DefinedTradeContact>` : '')
+    + `<ram:PostalTradeAddress><ram:PostcodeCode>${xesc(p.plz)}</ram:PostcodeCode><ram:LineOne>${xesc(p.strasse)}</ram:LineOne><ram:CityName>${xesc(p.ort)}</ram:CityName><ram:CountryID>DE</ram:CountryID></ram:PostalTradeAddress>`
+    + (p.email ? `<ram:URIUniversalCommunication><ram:URIID schemeID="EM">${xesc(p.email)}</ram:URIID></ram:URIUniversalCommunication>` : '')
+    + (p.ustId ? `<ram:SpecifiedTaxRegistration><ram:ID schemeID="VA">${xesc(p.ustId)}</ram:ID></ram:SpecifiedTaxRegistration>` : '')
+    + (p.stnr ? `<ram:SpecifiedTaxRegistration><ram:ID schemeID="FC">${xesc(p.stnr)}</ram:ID></ram:SpecifiedTaxRegistration>` : '')
+    + `</ram:${tag}>`;
+  const L = e.leistung;
+  const x = ['<?xml version="1.0" encoding="UTF-8"?>',
+    '<rsm:CrossIndustryInvoice xmlns:rsm="urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100" xmlns:ram="urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100" xmlns:udt="urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100" xmlns:qdt="urn:un:unece:uncefact:data:standard:QualifiedDataType:100">',
+    '<rsm:ExchangedDocumentContext><ram:GuidelineSpecifiedDocumentContextParameter><ram:ID>urn:cen.eu:en16931:2017</ram:ID></ram:GuidelineSpecifiedDocumentContextParameter></rsm:ExchangedDocumentContext>',
+    `<rsm:ExchangedDocument><ram:ID>${xesc(doc.nummer)}</ram:ID><ram:TypeCode>380</ram:TypeCode><ram:IssueDateTime>${d102(doc.datum)}</ram:IssueDateTime>`
+      + e.notizen.map((n) => `<ram:IncludedNote><ram:Content>${xesc(n)}</ram:Content></ram:IncludedNote>`).join('') + '</rsm:ExchangedDocument>',
+    '<rsm:SupplyChainTradeTransaction>'];
+  for (const l of e.lines) {
+    x.push(`<ram:IncludedSupplyChainTradeLineItem><ram:AssociatedDocumentLineDocument><ram:LineID>${l.nr}</ram:LineID></ram:AssociatedDocumentLineDocument>`
+      + `<ram:SpecifiedTradeProduct><ram:Name>${xesc(l.name)}</ram:Name>${l.beschreibung ? `<ram:Description>${xesc(l.beschreibung)}</ram:Description>` : ''}</ram:SpecifiedTradeProduct>`
+      + `<ram:SpecifiedLineTradeAgreement><ram:NetPriceProductTradePrice><ram:ChargeAmount>${l.preis}</ram:ChargeAmount></ram:NetPriceProductTradePrice></ram:SpecifiedLineTradeAgreement>`
+      + `<ram:SpecifiedLineTradeDelivery><ram:BilledQuantity unitCode="${l.einheit}">${l.menge}</ram:BilledQuantity></ram:SpecifiedLineTradeDelivery>`
+      + `<ram:SpecifiedLineTradeSettlement>${steuer('ApplicableTradeTax', l.cat, l.satz)}`
+      + `<ram:SpecifiedTradeSettlementLineMonetarySummation><ram:LineTotalAmount>${geld(l.netto)}</ram:LineTotalAmount></ram:SpecifiedTradeSettlementLineMonetarySummation></ram:SpecifiedLineTradeSettlement>`
+      + '</ram:IncludedSupplyChainTradeLineItem>');
+  }
+  x.push('<ram:ApplicableHeaderTradeAgreement>', `<ram:BuyerReference>${xesc(e.buyerRef)}</ram:BuyerReference>`,
+    partei('SellerTradeParty', { id: e.sellerId, name: s.firma.name, rechtlich: s.firma.inhaber ? `${s.firma.name} (Inh. ${s.firma.inhaber})` : '',
+      kontakt: s.firma.inhaber || s.firma.name, tel: s.firma.telefon, email: s.firma.email,
+      strasse: s.firma.strasse, plz: s.firma.plz, ort: s.firma.ort, ustId: s.steuer.ustId, stnr: s.steuer.steuernummer }),
+    partei('BuyerTradeParty', { id: k.nr, name: k.firma || k.name, kontakt: k.firma && k.name ? k.name : '', tel: k.telefon, email: k.email,
+      strasse: k.strasse, plz: k.plz, ort: k.ort }),
+    '</ram:ApplicableHeaderTradeAgreement>');
+  // Lieferblock darf nicht leer sein (PEPPOL-R008): bei Zeiträumen gilt das Ende als Leistungsdatum
+  x.push(`<ram:ApplicableHeaderTradeDelivery><ram:ActualDeliverySupplyChainEvent><ram:OccurrenceDateTime>${d102(L.datum || L.bis)}</ram:OccurrenceDateTime></ram:ActualDeliverySupplyChainEvent></ram:ApplicableHeaderTradeDelivery>`);
+  x.push('<ram:ApplicableHeaderTradeSettlement>', `<ram:PaymentReference>${xesc(doc.nummer)}</ram:PaymentReference>`, '<ram:InvoiceCurrencyCode>EUR</ram:InvoiceCurrencyCode>',
+    `<ram:SpecifiedTradeSettlementPaymentMeans><ram:TypeCode>58</ram:TypeCode><ram:PayeePartyCreditorFinancialAccount><ram:IBANID>${xesc(e.iban)}</ram:IBANID><ram:AccountName>${xesc(s.firma.name)}</ram:AccountName></ram:PayeePartyCreditorFinancialAccount></ram:SpecifiedTradeSettlementPaymentMeans>`);
+  for (const g of e.gruppen) x.push(steuer('ApplicableTradeTax', g.cat, g.satz, { pre: `<ram:CalculatedAmount>${geld(g.ust)}</ram:CalculatedAmount>`, grund: true, mid: `<ram:BasisAmount>${geld(g.basis)}</ram:BasisAmount>` }));
+  if (L.von) x.push(`<ram:BillingSpecifiedPeriod><ram:StartDateTime>${d102(L.von)}</ram:StartDateTime><ram:EndDateTime>${d102(L.bis)}</ram:EndDateTime></ram:BillingSpecifiedPeriod>`);
+  for (const g of e.gruppen.filter((g) => g.rabatt > 0)) {
+    x.push(`<ram:SpecifiedTradeAllowanceCharge><ram:ChargeIndicator><udt:Indicator>false</udt:Indicator></ram:ChargeIndicator><ram:ActualAmount>${geld(g.rabatt)}</ram:ActualAmount><ram:Reason>${xesc(e.rabattText)}</ram:Reason>`
+      + `<ram:CategoryTradeTax><ram:TypeCode>VAT</ram:TypeCode><ram:CategoryCode>${g.cat}</ram:CategoryCode><ram:RateApplicablePercent>${g.satz.toFixed(2)}</ram:RateApplicablePercent></ram:CategoryTradeTax></ram:SpecifiedTradeAllowanceCharge>`);
+  }
+  x.push(`<ram:SpecifiedTradePaymentTerms><ram:Description>Zahlbar bis ${e.faellig.split('-').reverse().join('.')} ohne Abzug.</ram:Description><ram:DueDateDateTime>${d102(e.faellig)}</ram:DueDateDateTime></ram:SpecifiedTradePaymentTerms>`,
+    '<ram:SpecifiedTradeSettlementHeaderMonetarySummation>'
+      + `<ram:LineTotalAmount>${geld(e.netto)}</ram:LineTotalAmount>`
+      + (e.rabatt > 0 ? `<ram:AllowanceTotalAmount>${geld(e.rabatt)}</ram:AllowanceTotalAmount>` : '')
+      + `<ram:TaxBasisTotalAmount>${geld(e.basis)}</ram:TaxBasisTotalAmount><ram:TaxTotalAmount currencyID="EUR">${geld(e.ust)}</ram:TaxTotalAmount>`
+      + `<ram:GrandTotalAmount>${geld(e.brutto)}</ram:GrandTotalAmount><ram:DuePayableAmount>${geld(e.brutto)}</ram:DuePayableAmount>`
+      + '</ram:SpecifiedTradeSettlementHeaderMonetarySummation>',
+    '</ram:ApplicableHeaderTradeSettlement></rsm:SupplyChainTradeTransaction></rsm:CrossIndustryInvoice>');
+  return x.join('');
+}
+
+// Rechnung -> ZUGFeRD-PDF (Chrome-Druck -> PDF/A-3 via Ghostscript -> XML eingebettet)
+async function zugferdPdf(doc) {
+  const os = require('os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vrzf-'));
+  try {
+    const ein = path.join(dir, 'beleg.pdf'), aus = path.join(dir, 'zugferd.pdf');
+    fs.writeFileSync(ein, belegPdf(doc));
+    const f = settings.data.firma;
+    await py(['einbetten', ein, aus], { xml: ciiXml(doc), meta: {
+      author: f.name, keywords: 'Factur-X, ZUGFeRD, E-Rechnung', title: `${f.name}: Rechnung ${doc.nummer}`,
+      subject: `Rechnung ${doc.nummer} an ${(doc.kunde || {}).firma || (doc.kunde || {}).name || ''}`.trim() } });
+    return fs.readFileSync(aus);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+// Für Versand/Download: Rechnungen als ZUGFeRD, Angebote als einfache PDF.
+// Scheitert die Einbettung, geht die einfache PDF raus — mit Hinweis statt stillem Fehler.
+async function versandPdf(doc) {
+  if (doc.art !== 'rechnung') return { pdf: belegPdf(doc), zugferd: false };
+  try { return { pdf: await zugferdPdf(doc), zugferd: true }; }
+  catch (err) { console.error('ZUGFeRD fehlgeschlagen', doc.nummer, err.message); return { pdf: belegPdf(doc), zugferd: false, fehler: err.message }; }
 }
 
 // --- Lokale KI via Ollama ---------------------------------------------------
@@ -1277,11 +1425,11 @@ Positionen:\n${liste.slice(0, 2000)}`;
     if (m === 'GET' && action === 'pdf') {
       if (!doc.festgeschrieben) return send(res, 400, { error: 'Erst festschreiben — dann gibt es den Beleg als PDF' });
       try {
-        const pdf = belegPdf(doc);
+        const { pdf, zugferd } = await versandPdf(doc);
         res.writeHead(200, {
           'Content-Type': 'application/pdf',
           'Content-Disposition': `inline; filename="${String(doc.nummer || doc.id).replace(/[^\w.-]/g, '_')}.pdf"`,
-          'Cache-Control': 'no-store',
+          'Cache-Control': 'no-store', 'X-ZUGFeRD': zugferd ? '1' : '0',
         });
         return res.end(pdf);
       } catch (e) {
@@ -1291,9 +1439,9 @@ Positionen:\n${liste.slice(0, 2000)}`;
     if (m === 'POST' && action === 'uebergabe') {
       if (!doc.festgeschrieben) return send(res, 400, { error: 'Erst festschreiben — dann kann der Beleg verschickt werden' });
       const body = await readBody(req).catch(() => ({}));
-      let pdf;
+      let pdf, zugferd, zfFehler;
       doc.uebergebenAm = now(); docs.save();
-      try { pdf = belegPdf(doc); }
+      try { ({ pdf, zugferd, fehler: zfFehler } = await versandPdf(doc)); }
       catch (e) { return send(res, 500, { error: 'PDF-Erzeugung fehlgeschlagen: ' + e.message }); }
       for (const [k, v] of uebergaben) if (Date.now() - v.t > UEBERGABE_TTL) uebergaben.delete(k);
       const token = crypto.randomBytes(24).toString('base64url');
@@ -1312,7 +1460,13 @@ Positionen:\n${liste.slice(0, 2000)}`;
       } });
       // Mail-App hängt am selben Funnel wie die Beleg-Links (publicBase)
       const mailBase = String(CFG.publicBase).replace(/\/beleg\/?$/, '/mail/');
-      return send(res, 200, { url: mailBase + '?uebergabe=' + token });
+      return send(res, 200, { url: mailBase + '?uebergabe=' + token, zugferd, zfFehler });
+    }
+    if (m === 'GET' && action === 'emaengel') return send(res, 200, doc.art === 'rechnung' ? eMaengel(doc) : []);
+    if (m === 'GET' && action === 'zugferd-xml') { // nur zur Kontrolle
+      if (doc.art !== 'rechnung' || !doc.festgeschrieben) return send(res, 400, { error: 'Nur festgeschriebene Rechnungen' });
+      res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(ciiXml(doc));
     }
     if (m === 'GET' && action === 'xrechnung') {
       if (doc.art !== 'rechnung' || !doc.festgeschrieben) return send(res, 400, { error: 'Nur festgeschriebene Rechnungen können als XRechnung exportiert werden' });
