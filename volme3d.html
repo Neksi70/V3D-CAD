@@ -24813,7 +24813,9 @@ async function unionSelected() {
           if (!masken[true] && !masken[false]) { notify('„' + (d.userData.name || 'Motiv') + '“: Verdecken ging nicht — wird normal vereint', 'w'); continue; }
           let motivDrunter = false;
           for (const t of teile) {
-            if (decker.includes(t.o)) continue;
+            // Reihenfolge wie Aufkleber: ein verdeckendes Motiv schneidet alles, was früher da
+            // war — auch frühere verdeckende (Josy 31.10.: mit drei Blumen ging es nicht mehr)
+            if (t.o === d || (decker.includes(t.o) && (t.o.userData.id || 0) > (d.userData.id || 0))) continue;
             const mk = istMotiv(t.o) ? masken[true] : masken[false];
             if (istMotiv(t.o)) motivDrunter = true;
             if (mk) t.mf = w.Manifold.difference(t.mf, mk);
@@ -74455,8 +74457,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.284';
+const VOLME3D_VERSION = '1.18.285';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.285', date:'2026-10-31', changes:[
+    ['🫥','<b>Verdecken mit mehreren Schichten und auf Rundungen.</b> Das Häkchen <b>🫥 Verdeckt, was darunter liegt</b> erscheint jetzt auch bei Motiven, die schon um eine Rundung gewickelt oder angeschmiegt sind – vorher war es dort verschwunden. Und liegen mehrere verdeckende Motive übereinander, verdeckt das zuletzt aufgelegte die früheren, wie bei Aufklebern (vorher ging es nur mit zwei Schichten). Danke Josy!'],
+  ]},
   { version:'1.18.284', date:'2026-10-31', changes:[
     ['💾','<b>Gespeicherte Generator-Teile kommen vollständig zurück.</b> Lithophane, Lampenschirm, Bilderrahmen, Visitenkarte, Kürbis, Übertopf, Untersetzer, Halter, Skadis, Klappbox, Batteriehalter, Figuren und einige weitere Teile wurden beim Speichern nicht mit ihrer Form gesichert – nach dem Öffnen (Datei, „Meine Designs“ oder Rückgängig) stand an ihrer Stelle nur ein Kasten. Jetzt wird jede Form gespeichert, die keine einfache Grundform ist. <b>Schon gespeicherte Dateien</b> lassen sich leider nicht mehr retten – dort fehlt die Form in der Datei (danke Achim).'],
   ]},
@@ -81053,6 +81058,10 @@ function _fpBuildRows(type, o) {
              _dispRows();
     case 'svg': {
       const nShapes=(o.userData._svgPathData||[]).length;
+      // 🫥 auch an gewickelten/angeschmiegten Motiven: die zeigen die allgemeine Ansicht
+      // (Breite X/Tiefe Y/Höhe Z) — dort fehlte das Häkchen (Josy 31.10.: „sobald es auf dem
+      // Objekt ist, kann man es nicht mehr anklicken“)
+      const verdeckRow = o.userData.isHole ? '' : `<div class="fp-row" title="Beim Vereinen wird alles, was unter diesem Motiv liegt (z. B. ein früher aufgesetztes Relief), innerhalb seines Umrisses weggeschnitten — wie ein Aufkleber, der das Darunterliegende verdeckt. Liegen mehrere übereinander, verdeckt das zuletzt aufgelegte die früheren. Die Wand selbst bleibt."><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11.5px"><input type="checkbox" ${o.userData.svgVerdecken ? 'checked' : ''} onchange="_svgVerdeckenSet(this.checked)" style="accent-color:#F97316"> 🫥 Verdeckt, was darunter liegt</label></div>`;
       const svgBtns=
         (nShapes>1 ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_svgExplode()" title="Jede geschlossene Form wird ein eigenes Objekt — einzeln verschieben, färben, löschen">⧉ Zerlegen (${nShapes} Teile)</button></div>` : '') +
         (o.userData._svgPathData ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_svgEditAsSketch()" title="Konturen in den Skizzen-Editor übernehmen — beschneiden, teilen, ändern und neu extrudieren">✎ Als Skizze bearbeiten</button></div>` : '');
@@ -81068,7 +81077,7 @@ function _fpBuildRows(type, o) {
                row(o.userData.isHole ? tip('Höhe (Dicke)', 'Dicke des Gravur-Körpers')
                                      : tip('Höhe (erhaben)', 'Wie weit das Motiv aus seiner Fläche herausragt — wächst immer aus der Fläche heraus, egal wie es gekippt ist'),
                    'fph', r2(rd.h), "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
-               (o.userData.isHole ? '' : `<div class="fp-row" title="Beim Vereinen wird alles, was unter diesem Motiv liegt (z. B. ein früher aufgesetztes Relief), innerhalb seines Umrisses weggeschnitten — wie ein Aufkleber, der das Darunterliegende verdeckt. Die Wand selbst bleibt."><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11.5px"><input type="checkbox" ${o.userData.svgVerdecken ? 'checked' : ''} onchange="_svgVerdeckenSet(this.checked)" style="accent-color:#F97316"> 🫥 Verdeckt, was darunter liegt</label></div>`) +
+               verdeckRow +
                '<div class="fp-sep"></div>' + svgBtns + edgeBtn + shellBtn + hollowLidBtn + roundBtn + kcaBtn + bendBtn + moldBtn + legoBtn + sprBtn + snpBtn +
                _dispRows();
       }
@@ -81076,6 +81085,7 @@ function _fpBuildRows(type, o) {
              propLock() +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+             verdeckRow +
              '<div class="fp-sep"></div>' + svgBtns + edgeBtn + shellBtn + hollowLidBtn + roundBtn + kcaBtn + bendBtn + moldBtn + legoBtn + sprBtn + snpBtn +
              _dispRows();
     }
