@@ -74888,8 +74888,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.286';
+const VOLME3D_VERSION = '1.18.287';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.287', date:'2026-11-01', changes:[
+    ['💬','<b>Claude-Chat (Testphase, vorerst nur Admins):</b> Unter ☰ Menü → 💬 Claude-Chat sagt man Claude direkt hier im Fenster, was es bauen soll. Claude baut sichtbar in der eigenen Szene, jeder Schritt lässt sich rückgängig machen.'],
+  ]},
   { version:'1.18.286', date:'2026-10-31', changes:[
     ['🛍️','<b>Neuer Generator: Lichttüte mit Beschriftung.</b> Eine Papiertüte als Windlicht mit Zackenrand und Falzlinien an den Seiten. Vorne sitzt ein Kranz (doppelt, einfach oder ohne) mit zwei Textzeilen, z. B. „Advents ZAUBER“, und darunter ein Motiv wie Häuserzeile, Tanne, Hirsch oder ein <b>eigenes SVG</b>. Das Motiv steht auf dem Ring, kleine Sternchen lassen sich dazunehmen. Wie bei einer Lithophanie ist die Wand dünn: Kranz, Schrift und Motiv sitzen innen und erscheinen erst <b>dunkel im Licht</b>, außen bleibt die Tüte glatt. Wahlweise stehen sie außen erhaben hervor oder sind eingraviert und leuchten heller. Breite, Tiefe, Höhe, Zackenbreite und -tiefe sind einstellbar, die Tüte gibt es mit Boden oder unten offen, auf Wunsch auch mit derselben Beschriftung hinten. Vorlagen: Adventszauber, Weihnachten, Winterzeit, Name. Zu finden unter <b>GENERATOREN</b> → „Lichttüte“ (danke Silke).'],
   ]},
@@ -88752,7 +88755,213 @@ function _fillHoles(mesh) {
       it.onclick = () => liveStart();
       m.appendChild(it);
     }
+    // 💬 Claude-Chat läuft über Volkers API-Schlüssel (kostet je Nachricht) – vorerst nur Admins
+    if (me && me.admin && m && !document.getElementById('bm-ki-chat')) {
+      const it = document.createElement('div');
+      it.className = 'sli-item'; it.id = 'bm-ki-chat';
+      it.title = 'Claude direkt hier im Fenster sagen, was es bauen soll';
+      it.textContent = '💬 Claude-Chat';
+      it.onclick = () => kcOpen();
+      m.appendChild(it);
+    }
   });
+
+  // ── 💬 Claude-Chat: Claude direkt in V3D CAD (vorerst nur Admins) ──────
+  // Der Tab führt das Gespräch: Verlauf an /ki-chat/turn (der Server hängt Modell,
+  // Anleitung, Werkzeuge und API-Schlüssel an und reicht Claudes Datenstrom durch),
+  // Werkzeugaufrufe laufen hier über dieselben Befehle wie bei „Claude live“.
+  // Der Verlauf wächst nur hinten an (nichts umschreiben, sonst verfallen Cache und Denkblöcke).
+  const KC = { el: null, msgs: [], busy: false, ctrl: null, heute: 0, limit: 0 };
+  const kcEsc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const kcFmt = s => kcEsc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br>');
+  function kcSlim(r, verbose) {
+    if (verbose !== false || !r) return r;
+    const slim = o => (o && typeof o === 'object' && 'id' in o && 'bbox' in o)
+      ? { id: o.id, name: o.name, size: o.size, center: o.center, ...(o.volume_mm3 !== undefined ? { volume_mm3: o.volume_mm3 } : {}), ...(o.hole ? { hole: true } : {}) } : o;
+    const walk = v => Array.isArray(v) ? v.map(walk) : v && typeof v === 'object' ? slim(Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]))) : v;
+    return walk(r);
+  }
+  // Ein Werkzeugaufruf von Claude → tool_result-Block
+  async function kcTool(name, a) {
+    a = a || {};
+    let r;
+    switch (name) {
+      case 'list_commands': r = commands(a.filter || ''); break;
+      case 'execute': r = kcSlim(await execute(a.command, a.params || {}), a.verbose); break;
+      case 'batch': r = kcSlim(await batch((a.commands || []).map(c => ({ command: c.command, params: c.params || {} })), { rollback: a.rollback !== false }), a.verbose); break;
+      case 'inspect_scene': r = await execute('scene.inspect', { measure: !!a.measure }); break;
+      case 'measure':
+        if (a.a !== undefined && a.b !== undefined) {
+          const [d, m] = await Promise.all([execute('measure.distance', { a: a.a, b: a.b }), execute('measure.min_distance', { a: a.a, b: a.b })]);
+          r = d.ok && m.ok ? { ok: true, result: { ...d.result, ...m.result } } : (d.ok ? m : d);
+        } else r = await execute('measure', a.id !== undefined ? { id: a.id } : {});
+        break;
+      case 'screenshot': {
+        const p = { view: a.view || 'iso', width: Math.min(a.width || 480, 960), height: Math.min(a.height || 320, 720) };
+        if (a.section) p.section = a.section; if (a.ids) p.ids = a.ids;
+        r = await execute('view.screenshot', p);
+        if (r.ok) return { content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: r.result.png.replace(/^data:image\/png;base64,/, '') } }] };
+        break;
+      }
+      case 'export': r = await liveDownload({ format: a.format || '3mf', name: a.name, ids: a.ids }); break;
+      case 'undo': r = await execute('edit.undo'); break;
+      case 'redo': r = await execute('edit.redo'); break;
+      default: r = { ok: false, error: 'Unbekanntes Werkzeug ' + name };
+    }
+    let t = JSON.stringify(r, null, 1);
+    if (t.length > 40000) t = t.slice(0, 40000) + '\n… (gekürzt)';
+    return { content: t, ...(r && r.ok === false ? { is_error: true } : {}) };
+  }
+  // Ein Zug: Verlauf schicken, Datenstrom zu einer Assistent-Nachricht zusammensetzen
+  async function kcZug(onText) {
+    const res = await fetch('/ki-chat/turn', { method: 'POST', credentials: 'same-origin', signal: KC.ctrl.signal,
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify({ messages: KC.msgs }) });
+    if (!res.ok) { let j = {}; try { j = await res.json(); } catch (_) {} throw new Error(j.error || 'Server antwortet mit ' + res.status); }
+    const blocks = [], json = {}; let stop = null, fehler = null, buf = '';
+    const rd = res.body.getReader(), dec = new TextDecoder();
+    for (;;) {
+      const { value, done } = await rd.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const roh = buf.slice(0, i); buf = buf.slice(i + 2);
+        const dl = roh.split('\n').find(l => l.startsWith('data: '));
+        if (!dl) continue;
+        let ev; try { ev = JSON.parse(dl.slice(6)); } catch (_) { continue; }
+        if (ev.type === 'content_block_start') {
+          blocks[ev.index] = { ...ev.content_block };
+          if (ev.content_block.type === 'tool_use') json[ev.index] = '';
+        } else if (ev.type === 'content_block_delta') {
+          const b = blocks[ev.index], d = ev.delta; if (!b) continue;
+          if (d.type === 'text_delta') { b.text = (b.text || '') + d.text; onText(); }
+          else if (d.type === 'input_json_delta') json[ev.index] += d.partial_json;
+          else if (d.type === 'thinking_delta') b.thinking = (b.thinking || '') + d.thinking;
+          else if (d.type === 'signature_delta') b.signature = d.signature;
+        } else if (ev.type === 'content_block_stop') {
+          const b = blocks[ev.index];
+          if (b && b.type === 'tool_use') { try { b.input = JSON.parse(json[ev.index] || '{}'); } catch (_) { b.input = {}; b._kaputt = true; } }
+        } else if (ev.type === 'message_delta') stop = ev.delta && ev.delta.stop_reason;
+        else if (ev.type === 'error') fehler = (ev.error && ev.error.message) || 'Fehler im Datenstrom';
+        else if (ev.type === 'v3d_kosten') { KC.heute = ev.heute_usd; KC.limit = ev.limit_usd; }
+      }
+      kcLive(blocks);
+    }
+    if (fehler) throw new Error(fehler);
+    // Nach einem Fallback (anderes Modell übernimmt) gelten Denk-/Werkzeugblöcke davor nicht mehr
+    let content = blocks.filter(Boolean);
+    const fb = content.map(b => b.type).lastIndexOf('fallback');
+    if (fb >= 0) content = content.filter((b, k) => k > fb || !['thinking', 'redacted_thinking', 'tool_use'].includes(b.type));
+    content = content.filter(b => !(b.type === 'text' && !b.text));
+    return { content, stop };
+  }
+  function kcAdd(cls, html) {
+    const d = document.createElement('div'); d.className = 'kc-' + cls; d.innerHTML = html;
+    KC.log.appendChild(d); KC.log.scrollTop = KC.log.scrollHeight; return d;
+  }
+  let kcLiveEl = null;
+  function kcLive(blocks) {
+    const t = blocks.filter(b => b && b.type === 'text').map(b => b.text).join('\n\n');
+    if (!kcLiveEl) kcLiveEl = kcAdd('ai', '');
+    kcLiveEl.innerHTML = t ? kcFmt(t) : '<i style="color:#8aa0b4">denkt nach …</i>';
+    KC.log.scrollTop = KC.log.scrollHeight;
+  }
+  const kcToolLabel = (n, a) => n === 'batch' ? 'batch · ' + ((a.commands || []).length) + ' Befehle' : n === 'execute' ? a.command : n;
+  function kcKopf() {
+    if (!KC.el) return;
+    KC.el.querySelector('.kc-kosten').textContent = KC.limit ? 'heute ' + (+KC.heute).toFixed(2) + ' / ' + (+KC.limit).toFixed(0) + ' $' : '';
+    KC.send.textContent = KC.busy ? '■ Stopp' : 'Senden';
+  }
+  async function kcSenden() {
+    if (KC.busy) { try { KC.ctrl.abort(); } catch (_) {} return; }
+    const txt = KC.ta.value.trim(); if (!txt) return;
+    KC.ta.value = '';
+    const start = KC.msgs.length;
+    KC.msgs.push({ role: 'user', content: [{ type: 'text', text: txt }] });
+    kcAdd('du', kcFmt(txt));
+    KC.busy = true; KC.ctrl = new AbortController(); kcKopf();
+    try {
+      for (let runde = 0; runde < 40; runde++) {
+        kcLiveEl = null;
+        const { content, stop } = await kcZug(() => {});
+        if (stop === 'refusal') {
+          if (kcLiveEl) kcLiveEl.remove();
+          KC.msgs.length = start;   // abgelehnten Zug nicht weiterführen
+          kcAdd('sys', 'Claude hat diese Anfrage abgelehnt. Bitte anders formulieren.');
+          break;
+        }
+        const calls = stop === 'tool_use' ? content.filter(b => b.type === 'tool_use') : [];
+        // abgeschnittene Antwort: halbe Werkzeugaufrufe nicht mitschicken
+        const msg = { role: 'assistant', content: stop === 'tool_use' ? content : content.filter(b => b.type !== 'tool_use') };
+        if (!msg.content.length) msg.content = [{ type: 'text', text: '(keine Antwort)' }];
+        KC.msgs.push(msg);
+        if (kcLiveEl && !kcLiveEl.textContent.trim().replace('denkt nach …', '')) kcLiveEl.remove();
+        if (!calls.length) { if (stop === 'max_tokens') kcAdd('sys', 'Antwort war zu lang und wurde abgeschnitten.'); break; }
+        const results = [];
+        for (const c of calls) {
+          const zeile = kcAdd('tool', '🔧 ' + kcEsc(kcToolLabel(c.name, c.input || {})) + ' …');
+          let r;
+          try { r = c._kaputt ? { content: 'Eingabe war kein gültiges JSON', is_error: true } : await kcTool(c.name, c.input); }
+          catch (e) { r = { content: String(e && e.message || e), is_error: true }; }
+          zeile.innerHTML = (r.is_error ? '⚠️ ' : '🔧 ') + kcEsc(kcToolLabel(c.name, c.input || {})) + (r.is_error ? ' – Fehler' : ' ✓');
+          results.push({ type: 'tool_result', tool_use_id: c.id, ...r });
+        }
+        KC.msgs.push({ role: 'user', content: results });
+        if (runde === 39) kcAdd('sys', 'Nach 40 Schritten angehalten – schreib „weiter“, wenn Claude fortfahren soll.');
+      }
+    } catch (e) {
+      if (kcLiveEl && !kcLiveEl.textContent.replace('denkt nach …', '').trim()) kcLiveEl.remove();
+      // Verlauf auf einen gültigen Stand bringen: offene Werkzeugaufrufe ohne Ergebnis gehen nicht
+      const last = KC.msgs[KC.msgs.length - 1];
+      if (last && last.role === 'user' && last.content.some(b => b.type === 'tool_result')) {
+        KC.msgs.push({ role: 'assistant', content: [{ type: 'text', text: '(unterbrochen)' }] });
+      } else if (last && last.role === 'user') KC.msgs.length = start;
+      kcAdd('sys', e && e.name === 'AbortError' ? 'Angehalten.' : kcEsc('Fehler: ' + (e && e.message || e)));
+    }
+    KC.busy = false; KC.ctrl = null; kcKopf();
+  }
+  function kcNeu() {
+    if (KC.busy) return;
+    KC.msgs = []; KC.log.innerHTML = '';
+    kcAdd('sys', 'Sag Claude, was es bauen soll – z. B. „Box 60 × 40 × 25 mm mit Deckel, Wand 2 mm“. Claude baut in deiner Szene, jeder Schritt lässt sich mit Rückgängig zurücknehmen.');
+  }
+  async function kcOpen() {
+    if (KC.el) { KC.el.style.display = KC.el.style.display === 'none' ? 'flex' : 'none'; return; }
+    const el = KC.el = document.createElement('div');
+    el.id = 'ki-chat';
+    el.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:5000;width:min(400px,calc(100vw - 24px));height:min(560px,70vh);display:flex;flex-direction:column;background:#16212d;color:#e6edf3;border:1px solid #3b9cff;border-radius:12px;font:13.5px/1.45 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.35)';
+    el.innerHTML = `<style>#ki-chat .kc-log{flex:1;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+      #ki-chat .kc-du{align-self:flex-end;background:#244a73;border-radius:10px 10px 2px 10px;padding:6px 10px;max-width:85%}
+      #ki-chat .kc-ai{background:#1f2d3b;border-radius:10px 10px 10px 2px;padding:6px 10px;max-width:92%}
+      #ki-chat .kc-tool{font-size:12px;color:#8aa0b4;padding-left:4px}
+      #ki-chat .kc-sys{font-size:12px;color:#9fb3c6;font-style:italic}
+      #ki-chat code{background:#0e1620;padding:0 4px;border-radius:4px}
+      #ki-chat button{font:inherit;font-size:12px;padding:3px 9px;border-radius:6px;border:1px solid #3b9cff;background:transparent;color:#e6edf3;cursor:pointer}</style>
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #243444;font-weight:600">💬 Claude baut mit
+        <span class="kc-kosten" style="margin-left:auto;font-weight:400;font-size:11.5px;color:#8aa0b4"></span>
+        <button class="kc-neu" title="Neues Gespräch">Neu</button><button class="kc-zu" title="Ausblenden">✕</button></div>
+      <div class="kc-log"></div>
+      <div style="display:flex;gap:6px;padding:8px;border-top:1px solid #243444">
+        <textarea rows="2" placeholder="Was soll Claude bauen?" style="flex:1;resize:none;font:inherit;background:#0e1620;color:#e6edf3;border:1px solid #2c4054;border-radius:8px;padding:6px 8px"></textarea>
+        <button class="kc-send" style="align-self:stretch;background:#3b9cff;border-color:#3b9cff;font-weight:600">Senden</button></div>`;
+    document.body.appendChild(el);
+    KC.log = el.querySelector('.kc-log'); KC.ta = el.querySelector('textarea'); KC.send = el.querySelector('.kc-send');
+    // Tasten und Mausrad gehören dem Chat, nicht dem CAD (Entf, Kürzel, Zoom)
+    ['keydown', 'keyup', 'keypress'].forEach(t => el.addEventListener(t, e => e.stopPropagation()));
+    el.addEventListener('wheel', e => e.stopPropagation(), { passive: true });
+    KC.ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); kcSenden(); } });
+    KC.send.onclick = kcSenden;
+    el.querySelector('.kc-neu').onclick = kcNeu;
+    el.querySelector('.kc-zu').onclick = () => { el.style.display = 'none'; };
+    kcNeu();
+    try {
+      const s = await (await fetch('/ki-chat/status', { credentials: 'same-origin' })).json();
+      if (s.error) kcAdd('sys', kcEsc(s.error));
+      else { KC.heute = s.verbrauch_usd; KC.limit = s.tageslimit_usd; if (!s.bereit) kcAdd('sys', 'Auf dem Server ist noch kein API-Schlüssel hinterlegt.'); }
+    } catch (_) {}
+    kcKopf(); KC.ta.focus();
+  }
+  window.v3dKiChat = { open: kcOpen, state: () => ({ busy: KC.busy, n: KC.msgs.length, heute: KC.heute }) };
 
   // ── Generatoren mit eigenem Fenster (alle Einträge der Generator-Liste) ──
   // Allgemeiner Adapter statt eines je Generator: Fenster öffnen, Knopfgruppen und

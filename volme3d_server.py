@@ -23,6 +23,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import v3d_auth
 # Nutzungsmessung pro Konto (Beta): Grundlage fuer die spaeteren Tarife.
 import v3d_nutzung
+import v3d_kichat
 
 # OCCT-Backend (occt-server.js) laeuft lokal auf HTTPS:3001 (self-signed).
 # Wir reichen /api/occt* + /occt-health dorthin durch, damit die Server-CAD-
@@ -538,6 +539,17 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _kichat_admin(self):
+        """KI-Chat (eigener API-Schlüssel, kostet Geld): vorerst nur Admins."""
+        sess = self._session()
+        if not sess:
+            self._json(401, {'error': 'Bitte anmelden.', 'login': '/login'})
+            return None
+        if not (DEV_MODE or v3d_nutzung.ist_admin(sess)):
+            self._json(403, {'error': 'Der KI-Chat ist noch nicht freigeschaltet.'})
+            return None
+        return sess
+
     def _auth_session(self):
         """POST /auth/session — Firebase-ID-Token gegen Sitzungs-Cookie."""
         length = int(self.headers.get('Content-Length', 0))
@@ -678,6 +690,11 @@ class Handler(BaseHTTPRequestHandler):
             if not self._need_session():
                 return
             self._export_store()
+            return
+        if self.path == '/ki-chat/turn':
+            sess = self._kichat_admin()
+            if sess:
+                v3d_kichat.turn(self, sess)
             return
         if self.path != '/volme3d-export.stl':
             self.send_error(404)
@@ -925,6 +942,12 @@ class Handler(BaseHTTPRequestHandler):
                              # Admin (Liste ~/.config/volme3d/admins) — z. B. für
                              # „Claude live“, das nur mit Volkers Claude funktioniert
                              'admin': bool(DEV_MODE or v3d_nutzung.ist_admin(sess))})
+            return
+
+        if path == '/ki-chat/status':
+            sess = self._kichat_admin()
+            if sess:
+                self._json(200, v3d_kichat.status((sess.get('e') or sess.get('u') or '?').lower()))
             return
 
         if path == '/occt-health':
