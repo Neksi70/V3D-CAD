@@ -18,8 +18,10 @@ cat > /etc/samba/smb.conf <<'EOF'
 [global]
    workgroup = WORKGROUP
    server string = V3DA
-   interfaces = lo tailscale0
-   bind interfaces only = yes
+   # auf allen Adressen lauschen, aber nur localhost + Tailnet reinlassen
+   # (bind an tailscale0 greift bei Samba 4.15 nicht: smbd hoerte nur auf 127.0.0.1)
+   hosts allow = 127.0.0.1 ::1 100.64.0.0/10 fd7a:115c:a1e0::/48
+   hosts deny = ALL
    smb ports = 445
    disable netbios = yes
    server min protocol = SMB2_10
@@ -41,7 +43,7 @@ cat > /etc/samba/smb.conf <<'EOF'
 EOF
 testparm -s >/dev/null
 
-# smbd erst starten, wenn tailscale0 da ist (sonst lauscht er nach dem Booten nirgends)
+# smbd erst nach Tailscale starten
 mkdir -p /etc/systemd/system/smbd.service.d
 cat > /etc/systemd/system/smbd.service.d/tailscale.conf <<'EOF'
 [Unit]
