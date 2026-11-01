@@ -5038,11 +5038,11 @@ Patrick</textarea>
         <div class="vrow"><label title="Wandstärke der Tülle">Wand</label> <input type="range" id="dkl-wand" min="1.2" max="4" value="2" step="0.1" oninput="_dklSet('wand',this.value)"><span class="vv" id="dklv-wand">2</span><span class="vu">mm</span></div>
         <span class="vsec">Größe</span>
         <div class="vtbrow" id="dkl-groesse-bg" style="display:flex;gap:4px;margin-bottom:7px">
-          <button class="vtb" data-v="140" title="Klein" onclick="_dklSet('groesse',140)">Klein</button>
-          <button class="vtb on" data-v="200" title="Mittel" onclick="_dklSet('groesse',200)">Mittel</button>
-          <button class="vtb" data-v="260" title="Groß" onclick="_dklSet('groesse',260)">Groß</button>
+          <button class="vtb" data-v="klein" title="So kurz wie es mit diesen Kerzen geht" onclick="_dklStufe('klein')">Klein</button>
+          <button class="vtb on" data-v="mittel" title="Ein Viertel länger als die kürzeste Länge" onclick="_dklStufe('mittel')">Mittel</button>
+          <button class="vtb" data-v="gross" title="Gut anderthalbmal so lang wie die kürzeste Länge" onclick="_dklStufe('gross')">Groß</button>
         </div>
-        <div class="vrow"><label title="Grundgröße (ungefähre Länge mit einer Kerze). Bei mehreren Kerzen wird nur der Rumpf länger">Größe</label> <input type="range" id="dkl-groesse" min="100" max="360" value="200" step="5" oninput="_dklSet('groesse',this.value)"><span class="vv" id="dklv-groesse">200</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Gesamtlänge von der Schwanzspitze bis zur Nase. Für viele oder dicke Kerzen gibt es eine Mindestlänge, die das Fenster unten nennt">Länge</label> <input type="range" id="dkl-groesse" min="100" max="400" value="260" step="5" oninput="_dklSet('groesse',this.value)"><span class="vv" id="dklv-groesse">260</span><span class="vu">mm</span></div>
         <div class="vrow"><label title="Höhe des Zopfmusters am Pullover. 0 = glatter Pullover">Strickmuster</label> <input type="range" id="dkl-strick" min="0" max="150" value="100" step="5" oninput="_dklSet('strick',this.value)"><span class="vv" id="dklv-strick">100</span><span class="vu">%</span></div>
         <div class="vtbrow" id="dkl-opt-bg" style="display:flex;gap:4px;margin-bottom:7px">
           <button class="vtb on" data-k="muetze" title="Strickmütze mit Bommel" onclick="_dklToggle('muetze')">🧶 Mütze</button>
@@ -58817,14 +58817,34 @@ async function _lgfCreate(){
 // Seite, liegend gedruckt — Schichten laufen längs, nicht quer zur Fuge. Stiftplätze sucht
 // _dklPins: Raster in der Schnittebene, Vorauswahl übers Distanzfeld, jeder Platz exakt per
 // Boolean geprüft (Kerzenlöcher fehlen im Feld!), verteilt per Mindestabstand.
-const _dklP = { rasse: 'dackel', groesse: 200, kerzen: 4, kerzeD: 22, tuelleH: 12, tiefe: 20, wand: 2, spiel: 0.4, strick: 100, muetze: 1, bommel: 1, teilen: 0 };
+const _dklP = { rasse: 'dackel', stufe: 'mittel', groesse: 260, kerzen: 4, kerzeD: 22, tuelleH: 12, tiefe: 20, wand: 2, spiel: 0.4, strick: 100, muetze: 1, bommel: 1, teilen: 0 };
 const _DKL_DEF = { ..._dklP };
 const _DKL_COL = '#d9bc9a', _DKL_COL_MOPS = '#cfb38c', _DKL_COL_BOMMEL = '#d4a63c';
 const _DKL_KIPP = 18 * Math.PI / 180;                                       // Mütze nach hinten gekippt
 let _dklRT = null;
 
+// Regler „Länge“ = echte Gesamtlänge (Volker 2.11.: 200 gewählt, 253 bekommen — bis 1.18.290 war
+// groesse die Grundlänge mit EINER Kerze, mehr Kerzen verlängerten den Rumpf obendrauf). Jetzt wird
+// die Grundgröße u so gewählt, dass len(u) = Länge (len ist in u monoton → Bisektion). Untergrenze:
+// Tüllen höchstens 85 % so breit wie der Pullover-Rumpf und Kerzenloch nicht durch den Bauch.
 function _dklDims(p){
-  const u = p.groesse, n = Math.max(1, Math.min(4, Math.round(p.kerzen))), mops = p.rasse === 'mops';
+  const L = _dklGrund(p);
+  const d = _dklDimsU(p, L.u);
+  d.ziel = p.groesse; d.minLen = L.minLen; d.zuKurz = L.zuKurz;
+  return d;
+}
+function _dklGrund(p){
+  const ok = u => { const d = _dklDimsU(p, u); return d.ro <= 0.85 * (d.rb + d.ts) && d.okLoch; };
+  let lo = 20, hi = 3000;                                                   // kleinste zulässige Grundgröße
+  if (!ok(hi)) lo = hi; else for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; if (ok(m)) hi = m; else lo = m; }
+  const uMin = hi, minLen = _dklDimsU(p, uMin).len;
+  if (p.groesse <= minLen) return { u: uMin, minLen, zuKurz: p.groesse < minLen - 0.5 };
+  let a = uMin, b = 3000;
+  for (let i = 0; i < 50; i++) { const m = (a + b) / 2; if (_dklDimsU(p, m).len < p.groesse) a = m; else b = m; }
+  return { u: (a + b) / 2, minLen, zuKurz: false };
+}
+function _dklDimsU(p, u){
+  const n = Math.max(1, Math.min(4, Math.round(p.kerzen))), mops = p.rasse === 'mops';
   const ri = p.kerzeD / 2 + p.spiel, ro = ri + p.wand, gap = Math.max(3, 0.015 * u), sp = 2 * ro + gap;
   const rows = mops && n === 4 ? 2 : 1, cols = n / rows;                   // Adventsmops: 2 × 2 auf dem breiten Rücken
   const Lb = Math.max((mops ? 0.28 : 0.5) * u, (cols - 1) * sp + 2 * ro + 0.185 * u);   // Rumpflänge (Kapsel-Achse)
@@ -58845,7 +58865,7 @@ function _dklDims(p){
   const top = p.muetze ? bom[1] + rp : hc[1] + rh;
   const zB = (mops ? 0.19 : 0.17) * u;
   return { u, n, mops, rows, ri, ro, sp, Lb, xr, xf, yb, rb, ts, xA, xs, zs, yBack, yT, yLoch, hc, rh, k, ax, hb, R, Hh, rp, hCut, zr, zl, bom,
-    len: mops ? (hc[0] + 0.15 * u) - (xr - 0.19 * u) : (hc[0] + 0.225 * u) - (xr - 0.16 * u), hoehe: Math.max(top, yT), okLoch: yLoch > yb - 0.55 * rb,
+    len: mops ? (hc[0] + 0.148 * u) - (xr - 0.146 * u) : (hc[0] + 0.221 * u) - (xr - 0.159 * u), hoehe: Math.max(top, yT), okLoch: yLoch > yb - 0.55 * rb,   // len: an der echten Hüllbox gemessen
     bb: [xr - (mops ? 0.21 : 0.19) * u, 0, -zB, hc[0] + (mops ? 0.17 : 0.22) * u, Math.max(top, yT) + 0.02 * u, zB] };
 }
 
@@ -59117,7 +59137,8 @@ function _dklBuild(w, p, q){
 
 // Stift- und Lochmaße: Ø mit der Größe (3–8 mm), je Seite L tief, Loch = Stift + Spiel/2 radial
 function _dklPinMass(p, d){
-  const dp = Math.max(3, Math.min(8, 0.028 * d.u)), L = Math.max(5, Math.min(12, 0.045 * d.u));
+  const h = v => Math.round(v * 2) / 2;                                     // auf 0,5 mm runden (Stiftmaß zum Nachmessen)
+  const dp = h(Math.max(3, Math.min(8, 0.028 * d.u))), L = h(Math.max(5, Math.min(12, 0.045 * d.u)));
   return { dp, r: dp / 2, L, rL: dp / 2 + p.spiel / 2, tief: L + 0.6, wand: Math.max(1.6, 0.25 * dp), seg: 40 };
 }
 // Stiftplätze in der Schnittebene: tiefste Punkte zuerst, Mindestabstand, jeder exakt geprüft
@@ -59220,13 +59241,20 @@ function _dklRepaint(){
   if (_dklRT) clearTimeout(_dklRT);
   _dklRT = setTimeout(() => { _dklRT = null; if (!_mfWasm) return; if (_gpv['dkl']) _gpvUpdate('dkl'); else _dklBoot(); }, 200);
 }
-function _dklSet(k, v){ _dklP[k] = parseFloat(v); _dklSync(); _dklRepaint(); }
+function _dklSet(k, v){ _dklP[k] = parseFloat(v); if (k === 'groesse') _dklP.stufe = ''; _dklSync(); _dklRepaint(); }
+function _dklStufe(st){ _dklP.stufe = st; _dklSync(); _dklRepaint(); }
+// Stufen relativ zur Mindestlänge der gewählten Kerzen — sonst wäre „Klein“ mit 4 Kerzen gar nicht baubar
+const _DKL_STUFE = { klein: 1, mittel: 1.25, gross: 1.55 };
+function _dklStufenLaenge(p, st){ const m = _dklGrund({ ...p, groesse: 0 }).minLen; return Math.ceil(m * _DKL_STUFE[st] / 5) * 5; }
 function _dklToggle(k){ _dklP[k] = _dklP[k] ? 0 : 1; _dklSync(); _dklRepaint(); }
 function _dklReset(){ const r = _dklP.rasse; Object.assign(_dklP, _DKL_DEF, { rasse: r }); _dklSync(); _dklRepaint(); }
 function _dklRasse(r){ _dklP.rasse = r; _dklSync(); _dklRepaint(); }
 const _dklName = p => p.rasse === 'mops' ? 'Mops' : 'Dackel';
 
 function _dklSync(){
+  if (_DKL_STUFE[_dklP.stufe]) _dklP.groesse = _dklStufenLaenge(_dklP, _dklP.stufe);
+  const gs = document.getElementById('dkl-groesse');
+  if (gs) { const mn = Math.ceil(_dklGrund({ ..._dklP, groesse: 0 }).minLen / 5) * 5; gs.min = Math.max(60, mn - 40); gs.max = Math.max(400, mn * 2); }
   for (const k of ['groesse','kerzeD','tuelleH','tiefe','wand','spiel','strick']) {
     const s = document.getElementById('dkl-' + k), t = document.getElementById('dklv-' + k);
     if (s) s.value = _dklP[k];
@@ -59236,15 +59264,16 @@ function _dklSync(){
   mark('#dkl-kerzen-bg', _dklP.kerzen);
   mark('#dkl-rasse-bg', _dklP.rasse);
   const ti = document.getElementById('dkl-titel'); if (ti) ti.textContent = _dklP.rasse === 'mops' ? '🐶 Mops-Kerzenhalter' : '🐕 Dackel-Kerzenhalter';
-  mark('#dkl-groesse-bg', _dklP.groesse);
+  mark('#dkl-groesse-bg', _dklP.stufe);
   document.querySelectorAll('#dkl-opt-bg .vtb[data-k]').forEach(b => b.classList.toggle('on', !!_dklP[b.dataset.k]));
   mark('#dkl-teilen-bg', _dklP.teilen);
   const bb = document.querySelector('#dkl-opt-bg .vtb[data-k="bommel"]'); if (bb) bb.style.display = _dklP.muetze ? '' : 'none';
   const el = document.getElementById('dkl-info');
   if (!el) return;
   const d = _dklDims(_dklP);
-  let s = 'Länge ca. <b>' + d.len.toFixed(0) + ' mm</b> · Höhe ca. <b>' + d.hoehe.toFixed(0) + ' mm</b>' +
-          (d.rows > 1 ? ' (Kerzen 2 × 2)' : d.Lb > (d.mops ? 0.28 : 0.5) * d.u + 0.5 ? ' (Rumpf für ' + d.n + ' Kerzen verlängert)' : '') +
+  let s = 'Länge <b>' + d.len.toFixed(0) + ' mm</b> · Höhe ca. <b>' + d.hoehe.toFixed(0) + ' mm</b>' + (d.rows > 1 ? ' (Kerzen 2 × 2)' : '') +
+          (d.zuKurz ? '<br><b style="color:#ffb455">⚠ ' + _dklP.groesse + ' mm ist zu kurz für ' + d.n + (d.n === 1 ? ' Kerze' : ' Kerzen') + ' Ø ' + _dklP.kerzeD +
+            ' mm — der ' + _dklName(_dklP) + ' wird ' + Math.ceil(d.minLen) + ' mm lang. Kürzer geht es mit weniger oder dünneren Kerzen.</b>' : '') +
           '<br>' + d.n + (d.n === 1 ? ' Tülle' : ' Tüllen') + ' für LED-Stabkerzen Ø ' + _dklP.kerzeD + ' mm: Loch Ø ' + (2 * d.ri).toFixed(1) + ' mm, ' + _dklP.tiefe + ' mm tief.' +
           (_dklP.teilen
             ? '<br>✂️ <b>Halbiert:</b> beide Hälften liegen auf der Schnittfläche — Stützen nur noch wenig unter Beinen und Ohren, deutlich kürzere Druckzeit. Zusammengesteckt mit <b>Steckstiften</b> Ø ' + _dklPinMass(_dklP, d).dp.toFixed(1) + ' mm (eigenes Teil, liegend drucken), dazu etwas Kleber auf die Schnittfläche.'
@@ -75307,8 +75336,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.291';
+const VOLME3D_VERSION = '1.18.292';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.292', date:'2026-11-02', changes:[
+    ['📏','<b>Dackel und Mops: Die Länge stimmt jetzt aufs Millimeter.</b> Der Regler hieß „Größe“ und war die Länge mit <i>einer</i> Kerze; bei vier Kerzen wurde der Rumpf noch verlängert, aus 200 mm wurden so 253 mm. Jetzt heißt er <b>Länge</b> und ist die echte Gesamtlänge von der Schwanzspitze bis zur Nase. Für viele oder dicke Kerzen gibt es eine Mindestlänge (z. B. Adventsdackel mit 4 × Ø 22 mm: 207 mm) – wer kürzer einstellt, bekommt einen deutlichen Hinweis. <b>Klein</b>, <b>Mittel</b> und <b>Groß</b> richten sich jetzt nach dieser Mindestlänge und passen so immer. Die Steckstifte haben runde Maße (auf 0,5 mm).'],
+  ]},
   { version:'1.18.291', date:'2026-11-01', changes:[
     ['♥','<b>Lithophane als Herz, Stern, Kreis …</b> Beim flachen Lithophane wählst du jetzt den Umriss: <b>Rechteck</b>, <b>Abgerundet</b>, <b>Kreis</b>, <b>Oval</b>, <b>Herz</b>, <b>Stern</b> oder <b>Sechseck</b>. Das Foto füllt die Form ohne Verzerrung, die Kante ist glatt geschnitten und der <b>Rahmen</b> läuft am Umriss entlang. Nebenbei repariert: Das flache Lithophane war an zwei Seitenwänden falsch herum vernetzt – Slicer haben das still geflickt, jetzt ist es von Haus aus sauber (danke Achim).'],
   ]},

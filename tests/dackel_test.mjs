@@ -39,15 +39,27 @@ const varianten = (process.env.ONLY ? [] : [
   { name: 'Mops 4 Kerzen Mini Ø14, Bommel fest', p: { rasse: 'mops', groesse: 100, kerzeD: 14, bommel: 0 } },
 ]);
 
-// Dackel unverändert durch den Mops-Umbau (Vorschau-Raster, Werte von v1.18.287)
+// Länge = Wunsch (Volker 2.11.: „habe 200 gewählt“ und 253 mm bekommen). Zu kurz für die Kerzen →
+// Mindestlänge + Hinweis. Stufen Klein/Mittel/Groß richten sich nach der Mindestlänge.
 {
-  const ref = await pg.evaluate(() => [{}, { kerzen: 1, groesse: 140 }, { muetze: 0 }].map(p => {
-    Object.assign(_dklP, _DKL_DEF, p);
-    const R = _dklBuild(_mfWasm, _dklP, 'vorschau'), v = [Math.round(R.hund.volume() * 100) / 100, R.hund.numTri()];
-    R.hund.delete(); if (R.bommel) R.bommel.delete();
-    return v;
-  }));
-  ok('Dackel-Geometrie unverändert', JSON.stringify(ref) === JSON.stringify([[460495.51, 65448], [124257.91, 60168], [441706.77, 70054]]), ref);
+  const r = await pg.evaluate(() => {
+    const out = [];
+    for (const P of [{ kerzen: 4, groesse: 260 }, { kerzen: 4, groesse: 200 }, { kerzen: 1, groesse: 140 }, { kerzen: 2, groesse: 230 },
+                     { rasse: 'mops', kerzen: 4, groesse: 200 }, { rasse: 'mops', kerzen: 1, groesse: 120 }, { rasse: 'mops', kerzen: 3, groesse: 300 }]) {
+      Object.assign(_dklP, _DKL_DEF, P, { stufe: '' });
+      const d = _dklDims(_dklP), R = _dklBuild(_mfWasm, _dklP, 'vorschau'), bb = R.hund.boundingBox();
+      out.push({ P, echt: +(bb.max[0] - bb.min[0]).toFixed(1), soll: Math.max(P.groesse, d.minLen), min: +d.minLen.toFixed(1), zuKurz: d.zuKurz });
+      R.hund.delete(); if (R.bommel) R.bommel.delete();
+    }
+    Object.assign(_dklP, _DKL_DEF); _dklOpen('dackel'); _dklSync();
+    const info = document.getElementById('dkl-info').innerHTML, lenStufen = ['klein', 'mittel', 'gross'].map(st => _dklStufenLaenge(_dklP, st));
+    Object.assign(_dklP, { stufe: '', groesse: 200 }); _dklSync();
+    const warn = document.getElementById('dkl-info').innerHTML; _dklClose();
+    return { out, lenStufen, warn200: /zu kurz/.test(warn) && /207 mm/.test(warn), infoMittel: info.slice(0, 40) };
+  });
+  for (const x of r.out) ok('Länge ' + JSON.stringify(x.P) + ' = ' + Math.round(x.soll) + ' mm', Math.abs(x.echt - x.soll) < 1.5 && x.zuKurz === (x.P.groesse < x.min - 0.5), x);
+  ok('Stufen Klein < Mittel < Groß, Klein = Mindestlänge', r.lenStufen[0] >= 207 && r.lenStufen[0] < 215 && r.lenStufen[0] < r.lenStufen[1] && r.lenStufen[1] < r.lenStufen[2], r.lenStufen);
+  ok('200 mm mit 4 Kerzen: Hinweis „zu kurz“, nennt 207 mm', r.warn200, r);
 }
 for (const v of varianten) {
   const r = await pg.evaluate(p => {
