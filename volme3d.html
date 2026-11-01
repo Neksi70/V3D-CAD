@@ -5048,7 +5048,12 @@ Patrick</textarea>
           <button class="vtb on" data-k="muetze" title="Strickmütze mit Bommel" onclick="_dklToggle('muetze')">🧶 Mütze</button>
           <button class="vtb on" data-k="bommel" title="Bommel als eigenes Teil zum Aufstecken — so lässt er sich in einer anderen Farbe drucken" onclick="_dklToggle('bommel')">🟡 Bommel extra</button>
         </div>
-        <div class="vrow"><label title="Luft im Kerzenloch und am Bommel-Zapfen">Spiel</label> <input type="range" id="dkl-spiel" min="0.1" max="1" value="0.4" step="0.05" oninput="_dklSet('spiel',this.value)"><span class="vv" id="dklv-spiel">0.4</span><span class="vu">mm</span></div>
+        <span class="vsec">Druck</span>
+        <div class="vtbrow" id="dkl-teilen-bg" style="display:flex;gap:4px;margin-bottom:7px">
+          <button class="vtb on" data-v="0" title="Ein Stück, aufrecht auf den Pfoten — braucht Baumstützen unter Bauch, Kinn, Ohren und Schwanz" onclick="_dklSet('teilen',0)">Am Stück</button>
+          <button class="vtb" data-v="1" title="Längs halbiert: beide Hälften liegen flach auf der Schnittfläche, kaum Stützen, kürzere Druckzeit. Zusammengesteckt mit Steckstiften (eigenes Teil)" onclick="_dklSet('teilen',1)">✂️ Halbiert mit Steckern</button>
+        </div>
+        <div class="vrow"><label title="Luft im Kerzenloch, am Bommel-Zapfen und an den Steckstiften">Spiel</label> <input type="range" id="dkl-spiel" min="0.1" max="1" value="0.4" step="0.05" oninput="_dklSet('spiel',this.value)"><span class="vv" id="dklv-spiel">0.4</span><span class="vu">mm</span></div>
         <div class="g3info" id="dkl-info"></div>
       </div>
     </div>
@@ -58778,7 +58783,13 @@ async function _lgfCreate(){
 // Beine, runder Kopf mit flachem Gesicht (Schnauzenpolster, Nasenfalte, Glupschaugen,
 // Knickohren) und Ringelschwanz. Pullover, Mütze, Bommel und Tüllen sind dieselben;
 // Mütze und Bommel wachsen mit dem Kopf (Faktor k = Kopfradius / Dackel-Kopfradius).
-const _dklP = { rasse: 'dackel', groesse: 200, kerzen: 4, kerzeD: 22, tuelleH: 12, tiefe: 20, wand: 2, spiel: 0.4, strick: 100, muetze: 1, bommel: 1 };
+// ✂️ Halbiert (2.11.2026): Schnitt in der Mittelebene z = 0, beide Hälften liegen beim Druck
+// auf der Schnittfläche (Stützen nur noch unter Beinen/Ohren, Druckzeit runter). Verbunden mit
+// separaten Steckstiften (angeformte Stifte zeigten beim Druck in die Platte): Stift mit flacher
+// Seite, liegend gedruckt — Schichten laufen längs, nicht quer zur Fuge. Stiftplätze sucht
+// _dklPins: Raster in der Schnittebene, Vorauswahl übers Distanzfeld, jeder Platz exakt per
+// Boolean geprüft (Kerzenlöcher fehlen im Feld!), verteilt per Mindestabstand.
+const _dklP = { rasse: 'dackel', groesse: 200, kerzen: 4, kerzeD: 22, tuelleH: 12, tiefe: 20, wand: 2, spiel: 0.4, strick: 100, muetze: 1, bommel: 1, teilen: 0 };
 const _DKL_DEF = { ..._dklP };
 const _DKL_COL = '#d9bc9a', _DKL_COL_MOPS = '#cfb38c', _DKL_COL_BOMMEL = '#d4a63c';
 const _DKL_KIPP = 18 * Math.PI / 180;                                       // Mütze nach hinten gekippt
@@ -59059,8 +59070,61 @@ function _dklBuild(w, p, q){
       const bo = keep(_lgfLevel(w, _dklBommelSdf(p, d), [-r, 0, -r, r, 2 * r, r], Math.max(0.3, edge * 0.6)));
       out.bommel = bo.subtract(keep(zyl(d.zl + 1.5, d.zr + p.spiel / 2, d.zr + p.spiel / 2).translate([0, -1, 0])));   // Loch 0,5 tiefer als der Zapfen
     }
+    if (p.teilen) {
+      const pin = _dklPinMass(p, d), pts = _dklPins(w, p, d, hund, pin);
+      if (pts.length) {
+        const hl = pts.map(([x, y]) => keep(M.cylinder(2 * pin.tief, pin.rL, pin.rL, pin.seg).translate([x, y, -pin.tief])));
+        hund = keep(hund.subtract(keep(M.union(hl))));
+      }
+      out.pins = pts; out.pin = pin;
+      out.plus = hund.trimByPlane([0, 0, 1], 0);                           // Hälfte z ≥ 0 (rechte Seite)
+      out.minus = hund.trimByPlane([0, 0, -1], 0);                         // Hälfte z ≤ 0
+      out.stifte = pts.length ? _dklStifte(w, pin, pts.length) : null;
+      return out;
+    }
     out.hund = hund.translate([0, 0, 0]);
     return out;
+  } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
+}
+
+// Stift- und Lochmaße: Ø mit der Größe (3–8 mm), je Seite L tief, Loch = Stift + Spiel/2 radial
+function _dklPinMass(p, d){
+  const dp = Math.max(3, Math.min(8, 0.028 * d.u)), L = Math.max(5, Math.min(12, 0.045 * d.u));
+  return { dp, r: dp / 2, L, rL: dp / 2 + p.spiel / 2, tief: L + 0.6, wand: Math.max(1.6, 0.25 * dp), seg: 40 };
+}
+// Stiftplätze in der Schnittebene: tiefste Punkte zuerst, Mindestabstand, jeder exakt geprüft
+function _dklPins(w, p, d, hund, pin){
+  const M = w.Manifold, f = _dklSdf(p, d), bb = d.bb, st = Math.max(2, pin.dp * 0.8);
+  const need = pin.rL + pin.wand, zz = [0, pin.tief / 2, -pin.tief / 2, pin.tief, -pin.tief];
+  const cand = [];
+  for (let x = bb[0]; x <= bb[3]; x += st) for (let y = need; y <= bb[4]; y += st) {
+    let worst = -Infinity;
+    for (const z of zz) { worst = Math.max(worst, f(x, y, z)); if (worst > -need) break; }
+    if (worst <= -need) cand.push([x, y, -worst]);
+  }
+  cand.sort((a, b) => b[2] - a[2]);
+  const minD = Math.max(5 * pin.dp, 0.13 * d.u), out = [], H = 2 * (pin.tief + pin.wand);
+  const cylV = Math.PI * need * need * H;
+  for (const [x, y] of cand) {
+    if (out.length >= 6) break;
+    if (out.some(([a, b]) => Math.hypot(a - x, b - y) < minD)) continue;
+    const c = M.cylinder(H, need, need, 32).translate([x, y, -H / 2]), r = c.subtract(hund), v = r.volume();
+    c.delete(); r.delete();
+    if (v < 0.002 * cylV) out.push([x, y]);                                // ringsum Material (Kerzenlöcher, Rand)
+  }
+  return out;
+}
+// n Steckstifte nebeneinander, liegend mit flacher Unterseite (y = 0), Enden angefast
+function _dklStifte(w, pin, n){
+  const M = w.Manifold, r = pin.r, len = 2 * pin.L, ch = Math.min(0.6, r * 0.3), fl = 0.15 * pin.dp, tmp = [];
+  const keep = x => { tmp.push(x); return x; };
+  try {
+    const e = 0.05;                                                         // Fasen überlappen den Schaft, sonst zerfällt der Stift
+    const one = keep(M.union([keep(M.cylinder(ch, r - ch, r, pin.seg)), keep(M.cylinder(len - 2 * ch + 2 * e, r, r, pin.seg).translate([0, 0, ch - e])),
+      keep(M.cylinder(ch, r, r - ch, pin.seg).translate([0, 0, len - ch]))]));
+    let lie = keep(keep(one.rotate([0, 90, 0])).trimByPlane([0, 1, 0], -r + fl));   // Achse längs x, unten abgeflacht
+    lie = keep(lie.translate([-len / 2, r - fl, 0]));
+    return M.union(Array.from({ length: n }, (_, i) => keep(lie.translate([0, 0, (i - (n - 1) / 2) * (pin.dp + 4)]))));
   } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
 }
 
@@ -59075,7 +59139,16 @@ function _dklPreviewGeo(){
   if (!_mfWasm) throw new Error('Manifold lädt noch');
   const p = _dklP, r = _dklBuild(_mfWasm, p, 'vorschau'), d = r.d;
   const parts = [];
-  const g = _mfToGeo(r.hund); parts.push([g.toNonIndexed(), _DKL_COL]); g.dispose(); r.hund.delete();
+  const colH = p.rasse === 'mops' ? _DKL_COL_MOPS : _DKL_COL;
+  if (r.plus) {                                                            // halbiert: auseinandergezogen + Stifte
+    const gap = 0.07 * d.u;
+    for (const [m, s] of [[r.plus, 1], [r.minus, -1]]) { const t = m.translate([0, 0, s * gap]), g = _mfToGeo(t); parts.push([g.toNonIndexed(), colH]); g.dispose(); t.delete(); m.delete(); }
+    for (const [x, y] of r.pins) {
+      const c = new THREE.CylinderGeometry(r.pin.r, r.pin.r, 2 * r.pin.L, 20).toNonIndexed(); c.rotateX(Math.PI / 2); c.translate(x, y, 0);
+      parts.push([c, '#6f7782']);
+    }
+    if (r.stifte) r.stifte.delete();
+  } else { const g = _mfToGeo(r.hund); parts.push([g.toNonIndexed(), colH]); g.dispose(); r.hund.delete(); }
   if (r.bommel) {
     const m = _dklBommelPlace(r.bommel, d), gb = _mfToGeo(m); parts.push([gb.toNonIndexed(), _DKL_COL_BOMMEL]); gb.dispose(); m.delete(); r.bommel.delete();
   }
@@ -59137,6 +59210,7 @@ function _dklSync(){
   const ti = document.getElementById('dkl-titel'); if (ti) ti.textContent = _dklP.rasse === 'mops' ? '🐶 Mops-Kerzenhalter' : '🐕 Dackel-Kerzenhalter';
   mark('#dkl-groesse-bg', _dklP.groesse);
   document.querySelectorAll('#dkl-opt-bg .vtb[data-k]').forEach(b => b.classList.toggle('on', !!_dklP[b.dataset.k]));
+  mark('#dkl-teilen-bg', _dklP.teilen);
   const bb = document.querySelector('#dkl-opt-bg .vtb[data-k="bommel"]'); if (bb) bb.style.display = _dklP.muetze ? '' : 'none';
   const el = document.getElementById('dkl-info');
   if (!el) return;
@@ -59144,7 +59218,9 @@ function _dklSync(){
   let s = 'Länge ca. <b>' + d.len.toFixed(0) + ' mm</b> · Höhe ca. <b>' + d.hoehe.toFixed(0) + ' mm</b>' +
           (d.rows > 1 ? ' (Kerzen 2 × 2)' : d.Lb > (d.mops ? 0.28 : 0.5) * d.u + 0.5 ? ' (Rumpf für ' + d.n + ' Kerzen verlängert)' : '') +
           '<br>' + d.n + (d.n === 1 ? ' Tülle' : ' Tüllen') + ' für LED-Stabkerzen Ø ' + _dklP.kerzeD + ' mm: Loch Ø ' + (2 * d.ri).toFixed(1) + ' mm, ' + _dklP.tiefe + ' mm tief.' +
-          '<br>Aufrecht auf den Pfoten drucken, <b>Baumstützen</b> unter Bauch, Kinn, Ohren und Schwanz' + (d.mops ? ' (Ringel)' : '') + '.';
+          (_dklP.teilen
+            ? '<br>✂️ <b>Halbiert:</b> beide Hälften liegen auf der Schnittfläche — Stützen nur noch wenig unter Beinen und Ohren, deutlich kürzere Druckzeit. Zusammengesteckt mit <b>Steckstiften</b> Ø ' + _dklPinMass(_dklP, d).dp.toFixed(1) + ' mm (eigenes Teil, liegend drucken), dazu etwas Kleber auf die Schnittfläche.'
+            : '<br>Aufrecht auf den Pfoten drucken, <b>Baumstützen</b> unter Bauch, Kinn, Ohren und Schwanz' + (d.mops ? ' (Ringel)' : '') + '. Weniger Stützen: <b>✂️ Halbiert mit Steckern</b>.');
   if (_dklP.muetze && _dklP.bommel) s += '<br>Bommel eigenes Teil (z. B. Gold): flache Seite nach unten drucken, auf den Zapfen der Mütze stecken (ggf. ein Tropfen Kleber).';
   s += '<br>Nur LED-Kerzen verwenden — keine echten Flammen auf PLA.';
   if (!d.okLoch) s += '<br><b style="color:#ffb455">⚠ Das Kerzenloch reicht sehr tief in den Bauch — Lochtiefe verkleinern oder ' + _dklName(_dklP) + ' größer machen.</b>';
@@ -59158,25 +59234,37 @@ async function _dklCreate(){
     const w = await _mfInit();
     await new Promise(res => setTimeout(res, 30));
     const r = _dklBuild(w, p, 'fein'), d = r.d;
-    const geos = [['hund', _mfToGeo(r.hund)]]; r.hund.delete();
+    const geos = [];
+    if (r.plus) {                                                          // Hälften auf die Schnittfläche legen
+      const a = r.plus.rotate([-90, 0, 0]), b = r.minus.rotate([90, 0, 0]);
+      geos.push(['rechts', _mfToGeo(a)], ['links', _mfToGeo(b)]);   // +z = rechte Seite (Kopf zeigt nach +x) a.delete(); b.delete(); r.plus.delete(); r.minus.delete();
+      if (r.stifte) { geos.push(['stifte', _mfToGeo(r.stifte)]); r.stifte.delete(); }
+    } else { geos.push(['hund', _mfToGeo(r.hund)]); r.hund.delete(); }
     if (r.bommel) { geos.push(['bommel', _mfToGeo(r.bommel)]); r.bommel.delete(); }
     saveUndo();
     const tk = p.rasse === 'mops' ? 'mops' : 'dackel', hn = _dklName(p);
     typeCounts[tk] = (typeCounts[tk] || 0) + 1;
     const n = typeCounts[tk], neu = [];
-    let xr = d.bb[3];
+    let xr = d.bb[3], zNext = null;
     for (const [k, g0] of geos) {
       const geo = g0.toNonIndexed(); g0.dispose();
-      let dx = 0;
-      if (k === 'bommel') { geo.computeBoundingBox(); dx = xr + 10 - geo.boundingBox.min.x; }
+      let dx = 0, dz = 0;
+      geo.computeBoundingBox();
+      if (k === 'bommel') dx = xr + 10 - geo.boundingBox.min.x;
+      if (k === 'links' || k === 'rechts' || k === 'stifte') {              // in z nebeneinander, 10 mm Abstand
+        const bx = geo.boundingBox;
+        if (zNext === null) zNext = bx.min.z;
+        dz = zNext - bx.min.z; zNext += (bx.max.z - bx.min.z) + 10;
+        if (k === 'stifte') dx = -(bx.min.x + bx.max.x) / 2;
+      }
       geo.scale(0.1, 0.1, 0.1);
       _moldNormals(geo);
-      const color = k === 'hund' ? (p.rasse === 'mops' ? _DKL_COL_MOPS : _DKL_COL) : _DKL_COL_BOMMEL;
+      const color = k === 'bommel' ? _DKL_COL_BOMMEL : k === 'stifte' ? '#8a929c' : (p.rasse === 'mops' ? _DKL_COL_MOPS : _DKL_COL);
       const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.75, metalness: 0.02, side: THREE.DoubleSide });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.castShadow = true; mesh.receiveShadow = true;
-      mesh.position.set(dx / 10, 0, 0);
-      mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: (k === 'hund' ? hn : hn + '-Bommel') + ' #' + n, color, isHole: false,
+      mesh.position.set(dx / 10, 0, dz / 10);
+      mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: { hund: hn, bommel: hn + '-Bommel', links: hn + ' Hälfte links', rechts: hn + ' Hälfte rechts', stifte: hn + '-Steckstifte (' + (r.pins ? r.pins.length : 0) + ')' }[k] + ' #' + n, color, isHole: false,
         fillet: 0, chamfer: 0, displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
         displacementInvert: false, displacementSymmetric: false, dackelParams: { ...p }, noEdgeLines: true,
         _origGeo: geo, _dispKeep: [{ yMin: -1e6, yMax: 0.02, rMax: 1e6 }], texProfile: 'kantig', texWhere: 'aussen' };
@@ -59185,7 +59273,8 @@ async function _dklCreate(){
     }
     selectObjs(neu); updateTree(); fitToObjects(neu);
     _progressDone();
-    notify(_dklName(p) + ' erstellt ✓ ' + d.n + (d.n === 1 ? ' Kerzentülle' : ' Kerzentüllen') + (neu.length > 1 ? ', Bommel als eigenes Teil daneben' : '') + ' — aufrecht drucken mit Baumstützen', 'ok');
+    if (r.pins && !r.pins.length) notify('Kein Platz für Steckstifte gefunden — Hälften ohne Stifte zusammenkleben', 'w');
+    notify(_dklName(p) + ' erstellt ✓ ' + (r.plus ? 'halbiert, ' + r.pins.length + ' Steckstifte, ' : '') + d.n + (d.n === 1 ? ' Kerzentülle' : ' Kerzentüllen') + (neu.length > 1 ? ', Bommel als eigenes Teil daneben' : '') + ' — aufrecht drucken mit Baumstützen', 'ok');
     _dklClose();
   } catch (e) {
     console.error('Dackel/Mops:', e);
@@ -74964,8 +75053,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.288';
+const VOLME3D_VERSION = '1.18.289';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.289', date:'2026-11-02', changes:[
+    ['✂️','<b>Dackel und Mops halbiert drucken – mit Steckstiften.</b> Unter <i>Druck</i> gibt es jetzt <b>✂️ Halbiert mit Steckern</b>: Der Hund wird längs in eine linke und rechte Hälfte geteilt, beide liegen flach auf der Schnittfläche. So braucht er kaum noch Stützen (nachgerechnet 80–90 % weniger Stützmaterial), und die Druckzeit sinkt deutlich. Zusammengesteckt wird mit Steckstiften: Die Löcher sitzen automatisch dort, wo rundherum genug Material ist (Rumpf, Brust, Hüfte, Kopf), die Stifte kommen als eigenes Teil dazu und werden liegend gedruckt, damit sie nicht an der Fuge abbrechen. Etwas Kleber auf die Schnittfläche, Stifte rein, zusammendrücken – fertig. Die Luft an den Stiften stellt der Regler <b>Spiel</b> ein.'],
+  ]},
   { version:'1.18.288', date:'2026-11-01', changes:[
     ['🐶','<b>Neuer Generator: Mops-Kerzenhalter.</b> Der Bruder vom Adventsdackel: ein stämmiger Mops mit flachem Gesicht, Nasenfalte, großen Kulleraugen, Knickohren und Ringelschwanz, ebenfalls im Zopfmuster-Pullover mit Strickmütze und Bommel. Auf dem Rücken trägt er 1 bis 4 LED-Stabkerzen; beim <b>Adventsmops</b> stehen die vier Kerzen im Quadrat auf dem breiten Rücken. Größe, Kerzen-Ø, Lochtiefe, Strickmuster und Bommel als eigenes Teil wie beim Dackel. Im Fenster lässt sich auch direkt zwischen Dackel und Mops umschalten.'],
   ]},
