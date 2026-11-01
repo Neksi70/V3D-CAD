@@ -39,6 +39,7 @@ th{font-size:12px;color:var(--mute);font-weight:600;background:#fafbfd;position:
 td.r,th.r{text-align:right}
 tr.klick{cursor:pointer} tr.klick:hover{background:#f2f6fd} tr.sel{background:#e7effc!important}
 .liste{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+.quer{overflow-x:auto;max-width:100%}
 .filter{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
 .filter input{max-width:280px}.filter select{max-width:200px}
 .kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
@@ -322,10 +323,11 @@ const MENUE = [
   ['Übersicht', [['#/start','Startseite']]],
   ['Verkauf', [['#/belege/VK','Verkaufsbelege']]],
   ['Einkauf', [['#/belege/EK','Einkaufsbelege']]],
-  ['Finanzen', [['#/op/debitor','Offene Posten Kunden'],['#/op/kreditor','Offene Posten Lieferanten'],['#/bank','Zahlungsabgleich'],['#/mahnwesen','Mahnwesen']]],
+  ['Finanzen', [['#/op/debitor','Offene Posten Kunden'],['#/op/kreditor','Offene Posten Lieferanten'],['#/bank','Zahlungsabgleich'],['#/mahnwesen','Mahnwesen'],['#/liquiditaet','Liquiditätsplanung'],['#/datev','DATEV-Export']]],
+  ['Auswertungen', [['#/umsatz','Umsatzauswertung']]],
   ['Projekte', [['#/projekte','Projekte & Zeitstrahl'],['#/werkstatt','Werkstatt-Ansicht']]],
   ['Produktion', [['#/produktion','Produktion (Paletten/Chargen)']]],
-  ['Lager', [['#/chargen','Chargen (Kundenmaterial)']]],
+  ['Lager', [['#/chargen','Chargen (Kundenmaterial)'],['#/inventur','Inventur']]],
   ['Stammdaten', [['#/adressen/kunde','Kunden'],['#/adressen/lieferant','Lieferanten'],['#/adressen/','Alle Adressen'],['#/artikel','Artikel & Lager']]],
   ['System', [['#/einstellungen','Firmendaten & Briefkopf'],['#/formulare','Formulare (Druck)'],['#/kennzeichen','Kennzeichen (Zusatzfelder)']]],
 ];
@@ -491,6 +493,10 @@ async function navigiere(){
     else if (teil==='chargen') await seiteChargen(a ? +a : null);
     else if (teil==='mahnwesen') await seiteMahnwesen();
     else if (teil==='bank') await seiteBank();
+    else if (teil==='liquiditaet') await seiteLiquiditaet();
+    else if (teil==='umsatz') await seiteUmsatz(Q.get('jahr'));
+    else if (teil==='datev') await seiteDatev();
+    else if (teil==='inventur') await seiteInventur(a ? +a : null);
     else if (teil==='kennzeichen') await seiteKennzeichen();
     else if (teil==='produktion') await seiteProduktion();
     else if (teil==='formulare') await seiteFormulare(a);
@@ -683,6 +689,169 @@ async function seiteBank(){
   await male();
 }
 
+// ================================================================ Liquiditätsplanung
+function liqDiagramm(wochen){
+  const W = 980, H = 240, L = 56, B = 26, T = 16, n = wochen.length, slot = (W - L - 8) / n;
+  const werte = wochen.map(w => w.stand); const max = sauberMax(Math.max(...werte, 0, 1)), min = Math.min(...werte, 0) < 0 ? -sauberMax(-Math.min(...werte)) : 0;
+  const y = v => T + (max - v) / (max - min) * (H - B - T); const bw = Math.min(30, slot - 8);
+  let g = '';
+  for (let i = 0; i <= 4; i++){ const v = min + (max - min) * i / 4, yy = y(v); g += `<line x1="${L}" x2="${W-6}" y1="${yy}" y2="${yy}" class="viz-grid"/><text x="${L-6}" y="${yy+4}" class="viz-achse" text-anchor="end">${kurzZahl(v)}</text>`; }
+  wochen.forEach((w, i) => { const x = L + i * slot + (slot - bw) / 2, y0 = y(0), yy = y(w.stand);
+    g += `<g class="viz-hit" data-t="KW ${w.kw} (${fmt(w.von)} – ${fmt(w.bis)})<br>Eingänge ${eur(w.ein)} € · Ausgänge ${eur(w.aus)} €<br>Kontostand danach: <b>${eur(w.stand)} €</b>">
+      <rect x="${L + i*slot}" y="${T}" width="${slot}" height="${H-B-T}" fill="transparent"/>
+      <rect x="${x}" y="${Math.min(y0, yy)}" width="${bw}" height="${Math.max(1, Math.abs(yy - y0))}" rx="3" fill="${w.stand < 0 ? 'var(--red)' : 'var(--blue)'}"/>
+      <text x="${L + i*slot + slot/2}" y="${H-8}" class="viz-achse" text-anchor="middle">KW ${w.kw}</text></g>`; });
+  g += `<line x1="${L}" x2="${W-6}" y1="${y(0)}" y2="${y(0)}" class="viz-basis"/>`;
+  return `<svg viewBox="0 0 ${W} ${H}" class="viz-svg" role="img" aria-label="Erwarteter Kontostand je Woche">${g}</svg>`;
+}
+async function seiteLiquiditaet(){
+  let wochen = 13, ueber = 'woche1';
+  M().innerHTML = `<div class="kopfzeile"><h1>Liquiditätsplanung</h1></div><div id="lqI"></div>`;
+  const RH = {einmalig:'einmalig', woechentlich:'wöchentlich', monatlich:'monatlich', quartal:'vierteljährlich', jaehrlich:'jährlich'};
+  const male = async () => {
+    const l = await api(`liquiditaet?wochen=${wochen}&ueberfaellige=${ueber}`);
+    const t = l.tiefststand;
+    $('#lqI').innerHTML = `<div class="card"><div class="werkz" style="flex-wrap:wrap;gap:8px">
+        <span>Kontostand</span><input id="lqB" class="zahl" value="${eur(l.kontostand)}" style="width:130px"><span>am</span><input type="date" id="lqD" value="${l.stand_datum || heute()}" style="width:auto">
+        <button class="btn pri" id="lqSp">Übernehmen</button><span class="sp"></span>
+        <select id="lqW" style="width:auto">${[8,13,26,52].map(n=>`<option value="${n}" ${n===wochen?'selected':''}>${n} Wochen</option>`).join('')}</select>
+        <select id="lqU" style="width:auto"><option value="woche1" ${ueber==='woche1'?'selected':''}>Überfällige in dieser Woche erwarten</option><option value="aus" ${ueber==='aus'?'selected':''}>Überfällige nicht einplanen</option></select></div>
+        <p class="hinweis" style="margin:6px 0 0">Kontostand aus dem Online-Banking eintragen. Die Vorschau rechnet ab heute mit allen offenen Posten (Kunden +, Lieferanten −) nach Fälligkeit und den festen Zahlungen unten.
+        ${l.ueberfaellig.anzahl ? `<b>${l.ueberfaellig.anzahl} überfällige Posten</b> (Eingänge ${eur(l.ueberfaellig.ein)} €, Ausgänge ${eur(l.ueberfaellig.aus)} €).` : ''}</p></div>
+      ${vizKarte('Erwarteter Kontostand', t ? `Tiefster Stand ${eur(t.stand)} € in KW ${t.kw}` : '', leg([['var(--blue)','Kontostand'],['var(--red)','im Minus']]), liqDiagramm(l.wochen),
+        tab(['Woche','Eingänge','Ausgänge','Saldo','Kontostand'], l.wochen.map(w => [`KW ${w.kw} · ${fmt(w.von)}`, eur(w.ein), eur(w.aus), eur(w.saldo), eur(w.stand)])))}
+      <div class="card"><b>Wochen im Einzelnen</b><div class="quer" style="margin-top:6px"><table><thead><tr><th>Woche</th><th class="r">Eingänge</th><th class="r">Ausgänge</th><th class="r">Kontostand danach</th><th></th></tr></thead><tbody>
+        ${l.wochen.map((w,i) => `<tr class="klick lqZ" data-i="${i}"><td>KW ${w.kw} <span class="hinweis">${fmt(w.von)} – ${fmt(w.bis)}</span></td><td class="r" style="color:var(--green)">${eur(w.ein)} €</td><td class="r" style="color:var(--red)">${eur(w.aus)} €</td>
+          <td class="r"><b style="color:${w.stand<0?'var(--red)':'inherit'}">${eur(w.stand)} €</b></td><td class="hinweis">${w.posten.length} Posten ▸</td></tr>
+          <tr class="lqD" data-i="${i}" hidden><td colspan="5"><table>${w.posten.map(p => `<tr><td style="width:100px">${fmt(p.datum)}</td><td>${p.beleg_id?`<a href="#/beleg/${p.beleg_id}">${esc(p.text)}</a>`:esc(p.text)}${p.ueberfaellig?' <span class="pill s-over">überfällig</span>':''}</td><td class="r" style="color:${p.betrag<0?'var(--red)':'var(--green)'}">${eur(p.betrag)} €</td></tr>`).join('') || '<tr><td class="hinweis">Keine Zahlungen.</td></tr>'}</table></td></tr>`).join('')}</tbody></table></div></div>
+      <div class="card"><b>Feste Zahlungen</b> <span class="hinweis">Miete, Löhne, Leasing, Steuern … (Auszahlung mit Minus)</span>
+        <div class="quer" style="margin-top:6px"><table><thead><tr><th>Text</th><th class="r">Betrag €</th><th>Rhythmus</th><th>erster Termin</th><th>bis (leer = offen)</th><th></th></tr></thead><tbody id="lqP">
+        ${l.posten.map(p => lqZeile(p)).join('')}</tbody></table></div>
+        <div class="fussreihe"><button class="btn" id="lqNeu">+ Zahlung</button><button class="btn pri" id="lqPSp">Speichern</button></div></div>`;
+    $('#lqSp').onclick = async () => { await api('liquiditaet/kontostand', {body:{betrag:num($('#lqB').value), datum:$('#lqD').value}}); toast('Kontostand übernommen.'); male(); };
+    $('#lqW').onchange = e => { wochen = +e.target.value; male(); };
+    $('#lqU').onchange = e => { ueber = e.target.value; male(); };
+    $$('.lqZ').forEach(tr => tr.onclick = () => { const d = $(`.lqD[data-i="${tr.dataset.i}"]`); d.hidden = !d.hidden; });
+    $('#lqNeu').onclick = () => { $('#lqP').insertAdjacentHTML('beforeend', lqZeile({text:'', betrag:0, rhythmus:'monatlich', erster:heute()})); };
+    $('#lqP').onclick = e => { if (e.target.classList.contains('lqX')) e.target.closest('tr').remove(); };
+    $('#lqPSp').onclick = async () => { await api('liquiditaet/posten', {body:{posten:[...$$('#lqP tr')].map(tr => ({text:tr.querySelector('.lqT').value, betrag:num(tr.querySelector('.lqB').value),
+      rhythmus:tr.querySelector('.lqR').value, erster:tr.querySelector('.lqE').value, letzter:tr.querySelector('.lqL').value || null}))}}); toast('Feste Zahlungen gespeichert.'); male(); };
+    vizBinden(M());
+  };
+  const lqZeile = p => `<tr><td><input class="lqT" value="${esc(p.text)}" placeholder="z. B. Miete Halle"></td><td><input class="lqB zahl" value="${eur(p.betrag)}" style="width:110px"></td>
+    <td><select class="lqR">${Object.entries(RH).map(([k,t])=>`<option value="${k}" ${k===p.rhythmus?'selected':''}>${t}</option>`).join('')}</select></td>
+    <td><input type="date" class="lqE" value="${p.erster}" style="width:auto"></td><td><input type="date" class="lqL" value="${p.letzter||''}" style="width:auto"></td><td><button class="btn rot lqX">✕</button></td></tr>`;
+  await male();
+}
+
+// ================================================================ Umsatzauswertung
+async function seiteUmsatz(jahr){
+  const u = await api('umsatz' + (jahr ? '?jahr=' + jahr : ''));
+  const pct = v => v == null ? '<span class="hinweis">neu</span>' : `<span style="color:${v<0?'var(--red)':'var(--green)'}">${v>0?'+':''}${String(v).replace('.',',')} %</span>`;
+  const liste = (titel, zeilen, name, ziel) => `<div class="card"><b>${titel}</b><div class="quer" style="margin-top:6px"><table><thead><tr><th>${name}</th><th class="r">${u.jahr}</th><th class="r">${u.jahr-1}</th><th class="r">Veränderung</th></tr></thead><tbody>
+    ${zeilen.map(z => `<tr ${ziel?`class="klick" onclick="location.hash='${ziel(z)}'"`:''}><td>${esc((z.artikelnr ? z.artikelnr + ' ' : '') + z.name)}</td><td class="r">${eur(z.jahr)} €</td><td class="r">${eur(z.vorjahr)} €</td><td class="r">${pct(z.diff_pct)}</td></tr>`).join('') || '<tr><td colspan="4" class="hinweis">Keine Umsätze.</td></tr>'}</tbody></table></div></div>`;
+  const vgl = u.summe_vorjahr ? Math.round((u.summe_jahr - u.vorjahr_gleicher_zeitraum) / Math.abs(u.vorjahr_gleicher_zeitraum || 1) * 1000) / 10 : null;
+  M().innerHTML = `<div class="kopfzeile"><h1>Umsatzauswertung</h1><span class="sp"></span><select id="umJ" style="width:auto">${[...new Set([String(new Date().getFullYear()), ...u.jahre])].map(j=>`<option ${+j===u.jahr?'selected':''}>${j}</option>`).join('')}</select></div>
+    <div class="card"><div style="display:flex;gap:32px;flex-wrap:wrap"><div><div class="hinweis">Umsatz ${u.jahr} (netto)</div><b style="font-size:22px">${eur(u.summe_jahr)} €</b></div>
+      <div><div class="hinweis">Vorjahr bis ${fmt(u.vorjahr_bis)}</div><b style="font-size:22px">${eur(u.vorjahr_gleicher_zeitraum)} €</b> ${u.vorjahr_gleicher_zeitraum ? pct(vgl) : ''}</div>
+      <div><div class="hinweis">Vorjahr gesamt</div><b style="font-size:22px">${eur(u.summe_vorjahr)} €</b></div></div>
+      <p class="hinweis" style="margin:8px 0 0">Netto aus verarbeiteten Rechnungen minus Gutschriften, nach Rechnungsdatum.</p></div>
+    ${vizKarte('Umsatz je Monat', `${u.jahr} gegen ${u.jahr-1}`, leg([['var(--blue)', String(u.jahr)],[VJ_FARBE, String(u.jahr-1)]]),
+      saeulenUmsatz(u.monate.map(m => ({monat:`${u.jahr}-${String(m.monat).padStart(2,'0')}`, netto:m.jahr, vorjahr:m.vorjahr}))),
+      tab(['Monat', String(u.jahr), String(u.jahr-1)], u.monate.map(m => [MONAT[m.monat-1], eur(m.jahr), eur(m.vorjahr)])))}
+    ${vizKarte('Umsatzvergleich Artikelgruppen', '', leg([['var(--blue)', String(u.jahr)],[VJ_FARBE, String(u.jahr-1)]]), gruppenBalken(u.gruppen.map(g => ({gruppe:g.name, jahr:g.jahr, vorjahr:g.vorjahr}))),
+      tab(['Gruppe', String(u.jahr), String(u.jahr-1)], u.gruppen.map(g => [esc(g.name), eur(g.jahr), eur(g.vorjahr)])))}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr));gap:12px">
+      ${liste('Kunden', u.kunden, 'Kunde', z => `#/adressen/kunde/${z.id}`)}${liste('Artikel', u.artikel, 'Artikel', z => `#/artikel/${z.id}`)}</div>`;
+  $('#umJ').onchange = e => location.hash = '#/umsatz?jahr=' + e.target.value;
+  vizBinden(M());
+}
+
+// ================================================================ DATEV-Export
+async function seiteDatev(){
+  const d = await api('datev');
+  const h = new Date(); const vm = new Date(h.getFullYear(), h.getMonth() - 1, 1), vmEnde = new Date(h.getFullYear(), h.getMonth(), 0);
+  M().innerHTML = `<div class="kopfzeile"><h1>DATEV-Export</h1></div>
+    <div class="card"><b>Buchungsstapel für den Steuerberater</b>
+      <div class="werkz" style="margin-top:8px;flex-wrap:wrap;gap:8px"><span>von</span><input type="date" id="dvV" value="${iso(vm)}" style="width:auto"><span>bis</span><input type="date" id="dvB" value="${iso(vmEnde)}" style="width:auto">
+        <button class="btn" id="dvVs">Prüfen</button><button class="btn pri" id="dvEx">⇩ Exportieren</button></div>
+      <p class="hinweis" style="margin:6px 0 0">Enthält alle verarbeiteten Rechnungen, Gutschriften und Eingangsrechnungen im Zeitraum (DATEV-Format EXTF, Buchungsstapel). Zahlungen bucht der Steuerberater aus dem Kontoauszug.</p>
+      <div id="dvErg"></div></div>
+    <div class="card"><b>Einstellungen</b>
+      <div class="raster" style="margin-top:8px"><div class="feld"><label>Beraternummer</label><input id="dvBe" value="${esc(d.berater)}"></div><div class="feld"><label>Mandantennummer</label><input id="dvMa" value="${esc(d.mandant)}"></div>
+        <div class="feld"><label>Kontenrahmen</label><select id="dvKr">${['SKR03','SKR04'].map(k=>`<option ${k===d.kontenrahmen?'selected':''}>${k}</option>`).join('')}</select></div></div>
+      <div class="quer" style="margin-top:8px"><table><thead><tr><th>Buchungsart</th><th>Konto</th><th class="hinweis">Standard</th></tr></thead><tbody>
+        ${d.konten.map(k => `<tr><td>${esc(k.name)}</td><td><input class="dvK" data-s="${k.schluessel}" value="${esc(k.konto)}" style="width:110px"></td><td class="hinweis">${esc(k.standard)}</td></tr>`).join('')}</tbody></table></div>
+      <p class="hinweis">Kundennummern werden als Debitorenkonto (10000–69999), Lieferantennummern als Kreditorenkonto (70000–99999) übergeben. Die Sachkonten sind Vorschläge – <b>vor dem ersten echten Export mit dem Steuerberater abstimmen</b> und eine Probedatei einspielen lassen.</p>
+      <div class="fussreihe"><button class="btn pri" id="dvSp">Speichern</button></div></div>
+    <div class="card"><b>Bisherige Exporte</b><div class="quer" style="margin-top:6px"><table><thead><tr><th>Exportiert</th><th>Zeitraum</th><th class="r">Zeilen</th><th>von</th></tr></thead><tbody>
+      ${d.exporte.map(x => `<tr><td>${fmt(x.zeit.slice(0,10))} ${x.zeit.slice(11,16)}</td><td>${fmt(x.von)} – ${fmt(x.bis)}</td><td class="r">${x.anzahl}</td><td>${esc(x.benutzer||'')}</td></tr>`).join('') || '<tr><td colspan="4" class="hinweis">Noch nichts exportiert.</td></tr>'}</tbody></table></div></div>`;
+  const pruefen = async () => { const v = await api(`datev/vorschau?von=${$('#dvV').value}&bis=${$('#dvB').value}`);
+    $('#dvErg').innerHTML = `${v.fehler.map(f => `<div class="info" style="margin-top:8px;border-color:var(--red);color:var(--red)">✕ ${esc(f)}</div>`).join('')}${v.hinweise.map(f => `<div class="info" style="margin-top:8px">⚠ ${esc(f)}</div>`).join('')}
+      <div class="liste" style="max-height:340px;margin-top:8px"><table><thead><tr><th>Datum</th><th>Beleg</th><th>Text</th><th class="r">Umsatz</th><th>S/H</th><th>Konto</th><th>Gegenkonto</th></tr></thead><tbody>
+      ${v.zeilen.map(z => `<tr><td>${fmt(z.datum)}</td><td><a href="#/beleg/${z.beleg_id}">${esc(z.belegfeld1)}</a></td><td>${esc(z.text)}</td><td class="r">${eur(z.umsatz)} €</td><td>${z.sh}</td><td>${z.konto}</td><td>${z.gegenkonto}</td></tr>`).join('') || '<tr><td colspan="7" class="hinweis">Keine Buchungen im Zeitraum.</td></tr>'}</tbody></table></div>
+      <p class="hinweis">${v.anzahl} Zeilen · Soll ${eur(v.summe_soll)} € · Haben ${eur(v.summe_haben)} €</p>`; return v; };
+  $('#dvVs').onclick = pruefen;
+  $('#dvEx').onclick = async () => { const v = await pruefen(); if (v.fehler.length) return toast('Bitte zuerst die Fehler beheben.', true);
+    if (v.hinweise.length && !confirm(v.hinweise.join('\n\n') + '\n\nTrotzdem exportieren?')) return;
+    await herunterladen(`datev/export?von=${$('#dvV').value}&bis=${$('#dvB').value}`, 'DATEV-Export'); seiteDatevNeu(); };
+  const seiteDatevNeu = async () => { const v = $('#dvV').value, b = $('#dvB').value; await seiteDatev(); $('#dvV').value = v; $('#dvB').value = b; };
+  $('#dvSp').onclick = async () => { await api('datev/einstellungen', {body:{berater:$('#dvBe').value, mandant:$('#dvMa').value, kontenrahmen:$('#dvKr').value,
+    konten:Object.fromEntries([...$$('.dvK')].map(i => [i.dataset.s, i.value]))}}); toast('DATEV-Einstellungen gespeichert.'); seiteDatevNeu(); };
+  $('#dvKr').onchange = async () => { if (!confirm('Kontenrahmen wechseln? Die Konten werden auf die Standardwerte des Rahmens gesetzt.')) return;
+    await api('datev/einstellungen', {body:{berater:$('#dvBe').value, mandant:$('#dvMa').value, kontenrahmen:$('#dvKr').value, konten:{}}}); seiteDatev(); };
+}
+
+// ================================================================ Inventur
+async function seiteInventur(id){
+  if (!id){
+    const l = await api('inventuren'); const offen = l.find(x => x.status === 'offen');
+    const gruppen = [...new Set((await api('artikel')).filter(a => a.lagerfuehrung && a.gruppe).map(a => a.gruppe))].sort();
+    M().innerHTML = `<div class="kopfzeile"><h1>Inventur</h1></div>
+      ${offen ? `<div class="card"><b>Offene Inventur:</b> <a href="#/inventur/${offen.id}">${esc(offen.bezeichnung)}</a> · Stichtag ${fmt(offen.stichtag)} · ${offen.gezaehlt} von ${offen.positionen} gezählt</div>` : `
+      <div class="card"><b>Neue Inventur eröffnen</b><div class="raster" style="margin-top:8px"><div class="feld"><label>Bezeichnung</label><input id="ivB" value="Inventur ${new Date().getFullYear()}"></div>
+        <div class="feld"><label>Stichtag</label><input type="date" id="ivS" value="${heute()}"></div>
+        <div class="feld"><label>Artikelgruppe</label><select id="ivG"><option value="">alle lagergeführten Artikel</option>${gruppen.map(g=>`<option>${esc(g)}</option>`).join('')}</select></div></div>
+        <p class="hinweis">Beim Eröffnen wird der Bestand jedes Artikels als Soll festgehalten. Gezählt wird das eigene Lager – Kundenmaterial läuft über die Chargen.</p>
+        <div class="fussreihe"><button class="btn pri" id="ivNeu">Inventur eröffnen</button></div></div>`}
+      <div class="card"><b>Inventuren</b><div class="quer" style="margin-top:6px"><table><thead><tr><th>Bezeichnung</th><th>Stichtag</th><th>Status</th><th class="r">gezählt</th></tr></thead><tbody>
+        ${l.map(x => `<tr class="klick" onclick="location.hash='#/inventur/${x.id}'"><td>${esc(x.bezeichnung)}</td><td>${fmt(x.stichtag)}</td><td><span class="pill ${x.status==='offen'?'s-risk':x.status==='abgeschlossen'?'s-ok':''}">${esc(x.status)}</span></td><td class="r">${x.gezaehlt} / ${x.positionen}</td></tr>`).join('') || '<tr><td colspan="4" class="hinweis">Noch keine Inventur.</td></tr>'}</tbody></table></div></div>`;
+    if ($('#ivNeu')) $('#ivNeu').onclick = async () => { const i = await api('inventuren', {body:{bezeichnung:$('#ivB').value, stichtag:$('#ivS').value, gruppe:$('#ivG').value}}); location.hash = '#/inventur/' + i.id; };
+    return;
+  }
+  const i = await api('inventuren/' + id); const offen = i.status === 'offen'; const s = i.summen;
+  M().innerHTML = `<div class="kopfzeile"><h1>${esc(i.bezeichnung)}</h1><span class="sp"></span><a class="btn" href="#/inventur">Alle Inventuren</a>
+      <button class="btn" id="ivDr">🖨 Zählliste</button>${offen ? '<button class="btn" id="ivAb">Abbrechen</button><button class="btn pri" id="ivFertig">Abschließen</button>' : ''}</div>
+    <div class="card"><div style="display:flex;gap:28px;flex-wrap:wrap"><div><div class="hinweis">Stichtag</div><b>${fmt(i.stichtag)}</b></div><div><div class="hinweis">Status</div><b>${esc(i.status)}</b></div>
+      <div><div class="hinweis">gezählt</div><b>${s.gezaehlt} / ${s.positionen}</b></div><div><div class="hinweis">Differenzen</div><b>${s.differenzen}</b></div>
+      <div><div class="hinweis">Wert Soll / Ist (EK)</div><b>${eur(s.wert_soll)} € / ${eur(s.wert_ist)} €</b></div><div><div class="hinweis">Wertdifferenz</div><b style="color:${s.wert_differenz<0?'var(--red)':'inherit'}">${eur(s.wert_differenz)} €</b></div></div></div>
+    <div class="card"><div class="filter"><input id="ivF" placeholder="Artikel suchen"></div>
+      <div class="liste" style="max-height:60vh"><table><thead><tr><th>Artikel</th><th>Bezeichnung</th><th class="r">Soll</th><th class="r" style="width:120px">gezählt</th><th>ME</th><th class="r">Differenz</th><th>Bemerkung</th></tr></thead><tbody id="ivL">
+      ${i.positionen.map(p => { const d = p.ist == null ? null : p.ist - p.soll;
+        return `<tr data-id="${p.id}" data-q="${esc((p.artikelnr+' '+p.kurz+' '+p.bezeichnung).toLowerCase())}"><td>${esc(p.artikelnr)}</td><td>${esc(p.bezeichnung)}</td><td class="r">${zahl(p.soll)}</td>
+        <td class="r">${offen ? `<input class="ivI zahl" value="${p.ist==null?'':zahl(p.ist)}" style="width:100px">` : (p.ist==null?'<span class="hinweis">–</span>':zahl(p.ist))}</td><td>${esc(p.me)}</td>
+        <td class="r ivD" style="color:${d<0?'var(--red)':d>0?'var(--green)':'inherit'}">${d==null||Math.abs(d)<1e-9?'':(d>0?'+':'')+zahl(d)}</td>
+        <td>${offen ? `<input class="ivM" value="${esc(p.bemerkung||'')}">` : esc(p.bemerkung||'')}</td></tr>`; }).join('')}</tbody></table></div>
+      ${offen ? '<div class="fussreihe"><button class="btn pri" id="ivSp" data-ak="s">Zählung speichern</button></div><p class="hinweis">Leeres Feld = noch nicht gezählt. Beim Abschließen bleibt der Bestand nicht gezählter Artikel unverändert; Differenzen werden zum Stichtag ins Lager gebucht.</p>' : ''}</div>`;
+  $('#ivF').oninput = e => { const q = e.target.value.toLowerCase(); $$('#ivL tr').forEach(tr => tr.hidden = !tr.dataset.q.includes(q)); };
+  const werte = () => [...$$('#ivL tr')].map(tr => ({id:+tr.dataset.id, ist:tr.querySelector('.ivI').value.trim() === '' ? null : num(tr.querySelector('.ivI').value), bemerkung:tr.querySelector('.ivM').value}));
+  if (offen){
+    $('#ivL').oninput = e => { if (!e.target.classList.contains('ivI')) return; const tr = e.target.closest('tr'); const p = i.positionen.find(x => x.id === +tr.dataset.id);
+      const d = e.target.value.trim() === '' ? null : num(e.target.value) - p.soll; const z = tr.querySelector('.ivD');
+      z.textContent = d==null||Math.abs(d)<1e-9 ? '' : (d>0?'+':'') + zahl(d); z.style.color = d<0?'var(--red)':d>0?'var(--green)':'inherit'; };
+    $('#ivSp').onclick = async () => { await api(`inventuren/${id}/zaehlen`, {body:{werte:werte()}}); toast('Zählung gespeichert.'); seiteInventur(id); };
+    $('#ivFertig').onclick = async () => { await api(`inventuren/${id}/zaehlen`, {body:{werte:werte()}}); const n = await api('inventuren/' + id);
+      if (!confirm(`Inventur abschließen?\n\n${n.summen.differenzen} Differenz(en) werden ins Lager gebucht (Wert ${eur(n.summen.wert_differenz)} €).\n${n.summen.positionen - n.summen.gezaehlt} Artikel sind nicht gezählt – ihr Bestand bleibt unverändert.\n\nDanach ist keine Änderung mehr möglich.`)) return;
+      const r = await api(`inventuren/${id}/abschliessen`, {body:{}}); toast(`Inventur abgeschlossen – ${r.gebucht} Differenz(en) gebucht.`); seiteInventur(id); };
+    $('#ivAb').onclick = async () => { if (!confirm('Inventur abbrechen? Es wird nichts gebucht.')) return; await api(`inventuren/${id}/abbrechen`, {body:{}}); seiteInventur(id); };
+  }
+  $('#ivDr').onclick = () => { const w = window.open('', '_blank'); if (!w) return toast('Bitte Pop-ups erlauben.', true);
+    w.document.write(`<html><head><title>Zählliste ${esc(i.bezeichnung)}</title><style>body{font:12px sans-serif;margin:24px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:5px 6px;text-align:left}td.z{width:110px}</style></head><body>
+      <h2>Zählliste – ${esc(i.bezeichnung)}</h2><p>Stichtag ${fmt(i.stichtag)} · ${esc(E.firma_name||'')}</p><table><thead><tr><th>Artikel</th><th>Bezeichnung</th><th>ME</th><th>gezählt</th><th>Bemerkung</th></tr></thead><tbody>
+      ${i.positionen.map(p => `<tr><td>${esc(p.artikelnr)}</td><td>${esc(p.bezeichnung)}</td><td>${esc(p.me)}</td><td class="z">${p.ist==null?'':zahl(p.ist)}</td><td></td></tr>`).join('')}</tbody></table>
+      <p style="margin-top:30px">Gezählt von: ______________________ &nbsp; Datum/Unterschrift: ______________________</p><script>print()<\/script></body></html>`); w.document.close(); };
+}
+
 // ================================================================ Belege
 async function seiteBelege(bereich, sel){
   const arten = G.belegarten.filter(x=>x.bereich===bereich);
@@ -745,6 +914,9 @@ async function belegMaske(b){
   const nrVon = a => vk ? a.kundennr : a.lieferantennr;
   let adresseId = b.adresse_id || null;
   const aktAdr = () => adr.find(x=>x.id===adresseId);
+  const steuerfallCode = () => { if (!vk || ['LS','WK'].includes(b.belegart)) return null; if (E.kleinunternehmer) return 'kleinunternehmer';
+    const e = $('#kSf'); if (!e) return b.steuerfall || null; return e.value === '__kunde' ? ((aktAdr()||{}).k_sf || null) : (e.value || null); };
+  const steuerfrei = () => !!steuerfallCode();
   const anschrift = a => a ? [a.name1, a.name2, a.strasse, [a.plz,a.ort].filter(Boolean).join(' '), a.land&&a.land!=='DE'?a.land:''].filter(Boolean).map(esc).join('<br>')
                            : `<span class="hinweis">${vk?'Kundennummer':'Lieferantennummer'} rechts eingeben oder mit ! suchen</span>`;
   const sysStatus = b.status==='verarbeitet' ? 'verarbeitet' : (b.id ? 'gespeichert' : 'neu');
@@ -775,6 +947,11 @@ async function belegMaske(b){
         <div class="bk-z"><span>Projekt</span>${gesperrt&&b.projektnr?`<span class="bk-wert"><a href="#/projekt/${b.projekt_id}">${esc(b.projektnr)}</a> ${esc(b.projekt_titel||'')}</span>`:''}<select id="kPro" ${dis} ${gesperrt&&b.projektnr?'style="display:none"':''}><option value="">–</option>${proj.map(p=>`<option value="${p.id}" ${p.id===b.projekt_id?'selected':''}>${esc(p.projektnr)} · ${esc(p.titel)}</option>`).join('')}</select></div>
         <div class="bk-z"><span>${istWK?'Ihr Lieferschein':vk?'Ihre Bestellung':'Unsere Referenz'}</span><input id="kRef" value="${esc(b.ihre_referenz||'')}" ${dis}></div>
         ${['RE','GS'].includes(b.belegart) ? `<div class="bk-z"><span>Leistungsdatum</span><input id="kLd" value="${esc(b.leistungsdatum||'')}" placeholder="leer = laut Lieferschein bzw. Rechnungsdatum" title="z. B. 15.10.2026 oder Oktober 2026 – leer: aus den Lieferscheinen, sonst Rechnungsdatum" ${dis}></div>` : ''}
+        ${vk && !['LS','WK'].includes(b.belegart) ? (E.kleinunternehmer ? `<div class="bk-z"><span>Umsatzsteuer</span><span class="bk-wert">Kleinunternehmer (§ 19 UStG)</span></div>`
+          : gesperrt ? (b.steuerfall_name ? `<div class="bk-z"><span>Umsatzsteuer</span><span class="bk-wert" title="${esc(b.steuerfall_hinweis||'')}">${esc(b.steuerfall_name)}</span></div>` : '')
+          : `<div class="bk-z"><span>Umsatzsteuer</span><select id="kSf" title="Steuerfall dieses Belegs – vorbelegt aus dem Kunden (Kunden-/Lieferantendaten)">
+              ${b.id ? '' : '<option value="__kunde">wie beim Kunden hinterlegt</option>'}<option value="" ${b.id&&!b.steuerfall?'selected':''}>Inland mit Umsatzsteuer</option>
+              ${G.steuerfaelle.filter(x=>x.code!=='kleinunternehmer').map(x=>`<option value="${x.code}" ${b.id&&b.steuerfall===x.code?'selected':''}>${esc(x.name)}</option>`).join('')}</select></div>`) : ''}
         <div class="bk-z"><span>Bearbeiter</span><span>${esc(b.angelegt_von||ICH.login)}</span></div>
       </div>
     </div>
@@ -782,7 +959,8 @@ async function belegMaske(b){
     ${istWK && !gesperrt ? `<div class="charge-alle noprint"><b>Charge für alle Positionen:</b><input id="chAlle" placeholder="z. B. Charge vom Lieferschein"><button class="btn pri" id="chAlleB">übernehmen</button><span class="hinweis">oder je Zeile eintragen · danach „Verarbeiten“ bucht den ganzen Wareneingang</span></div>` : ''}
     <table class="pos bk-pos"><thead><tr><th style="width:34px">Pos</th><th style="width:150px">Artikel</th><th>Bezeichnung</th>${mitCharge?'<th style="width:130px">Charge</th>':''}<th class="r" style="width:80px">Menge</th><th style="width:52px">ME</th><th class="r" style="width:100px">Einzelpreis</th><th class="r" style="width:66px">Rabatt %</th><th class="r" style="width:100px">Gesamtpreis</th><th class="noprint" style="width:58px"></th></tr></thead><tbody id="pt"></tbody></table>
     ${!gesperrt?'<button class="btn noprint" id="pNeu" style="margin-top:6px">+ Position</button>':''}
-    <div class="summe"><span>Zwischensumme netto</span><span class="r" id="sN"></span><span>zzgl. MwSt.</span><span class="r" id="sS"></span><b>Endsumme</b><b class="r" id="sB"></b></div>
+    <div class="summe"><span>Zwischensumme netto</span><span class="r" id="sN"></span><span id="sSl">zzgl. MwSt.</span><span class="r" id="sS"></span><b>Endsumme</b><b class="r" id="sB"></b></div>
+    <div class="hinweis" id="sfHinweis" style="margin:4px 0 0;text-align:right">${gesperrt && b.steuerfall_hinweis ? esc(b.steuerfall_hinweis) : ''}</div>
     ${b.belegart==='LS' ? '<div class="vp" id="vpBox"></div>' : ''}
     <div class="bk-z bk-zb"><span>Zahlungsbedingung</span><select id="kZb" ${dis}><option value="">–</option>${G.zahlungsbedingungen.map(z=>`<option value="${z.id}" ${z.id===b.zahlungsbed_id?'selected':''}>${esc(z.text)}</option>`).join('')}</select></div>
     <textarea id="kFt" class="bk-text" rows="2" ${gesperrt?'':'placeholder="Fußtext (z. B. „Für Rückfragen stehen wir Ihnen gern zur Verfügung.“)"'} ${dis}>${esc(b.fusstext||'')}</textarea>
@@ -818,7 +996,9 @@ async function belegMaske(b){
     let n=0,s=0;
     $$('#pt tr').forEach(tr=>{ const p=b.positionen[+tr.dataset.i];
       const g=Math.round(num(p.menge??1)*num(p.einzelpreis??0)*(1-num(p.rabatt_pct||0)/100)*100)/100;
-      tr.querySelector('.pG').textContent=eur(g); n+=g; s+=g*(p.steuer_pct??19)/100; });
+      tr.querySelector('.pG').textContent=eur(g); n+=g; s+=steuerfrei() ? 0 : g*(p.steuer_pct??19)/100; });
+    $('#sSl').textContent = steuerfrei() ? 'Umsatzsteuer' : 'zzgl. MwSt.';
+    if (!gesperrt){ const sf = steuerfallCode(); $('#sfHinweis').textContent = sf ? (G.steuerfaelle.find(x=>x.code===sf)||{}).hinweis||'' : ''; }
     $('#sN').textContent=eur(n)+' €'; $('#sS').textContent=eur(s)+' €'; $('#sB').textContent=eur(n+s)+' €';
   };
   const info = async aid => { if(!aid) return; const a = await api('artikel/'+aid);
@@ -834,6 +1014,7 @@ async function belegMaske(b){
     $('#anschrift').innerHTML = anschrift(a);
     if (a){ $('#kKnr').value = nrVon(a); const zb = vk?a.k_zb:a.l_zb; if (zb && !$('#kZb').value) $('#kZb').value = zb; }
     else if (v) toast('Nicht gefunden – Nummer oder Kurzbezeichnung eingeben.', true);
+    rechne();
   };
   if (!gesperrt){
     $('#kKnr').onchange = setzeAdresse;
@@ -884,10 +1065,11 @@ async function belegMaske(b){
     if (e.target.classList.contains('pD')) return details(+tr.dataset.i);
     if(e.target.classList.contains('pX')){ b.positionen.splice(+e.target.closest('tr').dataset.i,1); if(!b.positionen.length) b.positionen.push({}); zeichne(); } });
   if ($('#pNeu')) $('#pNeu').onclick = () => { b.positionen.push({}); zeichne(); };
-  const sammeln = () => ({id:b.id, belegart:b.belegart, adresse_id:adresseId, datum:$('#kDat').value, projekt_id:+$('#kPro').value||null,
+  const sammeln = () => ({...($('#kSf') && $('#kSf').value !== '__kunde' ? {steuerfall:$('#kSf').value} : {}), id:b.id, belegart:b.belegart, adresse_id:adresseId, datum:$('#kDat').value, projekt_id:+$('#kPro').value||null,
     betreff:$('#kBet').value, ihre_referenz:$('#kRef').value, zahlungsbed_id:+$('#kZb').value||null, kopftext:$('#kKt').value, fusstext:$('#kFt').value, memo:b.memo||null, leistungsdatum:$('#kLd') ? $('#kLd').value : null,
     positionen:b.positionen.filter(p=>p.text||p.artikel_id).map(p=>({artikel_id:p.artikel_id||null,text:p.text,menge:num(p.menge??1),me:p.me||'Stk',einzelpreis:num(p.einzelpreis??0),rabatt_pct:num(p.rabatt_pct||0),steuer_pct:p.steuer_pct??19,vorgaenger_pos_id:p.vorgaenger_pos_id||null,charge_nr:p.charge_nr||null,charge_id:p.charge_id||null,zusatz:p.zusatz||{}}))});
   const speichern = async () => { const n = await api('belege',{body:{...sammeln(), verpackung:b.verpackung||[]}}); b.id=n.id; return n; };
+  if ($('#kSf')) $('#kSf').onchange = rechne;
   if ($('#vpBox')){
     const arten = (E.verpackungen||'').split(';').map(x=>x.trim()).filter(Boolean);
     let tv; const merke = () => { if (gesperrt && b.id){ clearTimeout(tv); tv = setTimeout(async () => { await api(`belege/${b.id}/verpackung`, {body:{verpackung:b.verpackung}}); toast('Verpackung gespeichert.'); }, 600); } };
@@ -1091,7 +1273,8 @@ async function adresseDetail(id, rolle, neuLaden, gewaehlt, opt = {}){
         <div class="feld"><label>Zahlungskonditionen</label><select id="k_zb">${zb(a.kunde?.zahlungsbed_id)}</select></div>
         <div class="feld"><label>Rabatt %</label><input id="k_rb" value="${zahl(a.kunde?.rabatt_pct||0)}"></div>
         <div class="feld"><label>Kreditlimit €</label><input id="k_kl" value="${a.kunde?.kreditlimit??''}"></div>
-        <div class="feld"><label>Leitweg-ID (XRechnung)</label><input id="k_lw" value="${esc(a.kunde?.leitweg_id||'')}"></div></div></div>
+        <div class="feld"><label>Leitweg-ID (XRechnung)</label><input id="k_lw" value="${esc(a.kunde?.leitweg_id||'')}"></div>
+        <div class="feld"><label>Umsatzsteuer</label><select id="k_sf"><option value="">Inland mit Umsatzsteuer</option>${G.steuerfaelle.filter(x=>x.code!=='kleinunternehmer').map(x=>`<option value="${x.code}" ${a.kunde?.steuerfall===x.code?'selected':''}>${esc(x.name)}</option>`).join('')}</select></div></div></div>
       <div><label><input type="checkbox" id="rL" style="width:auto" ${a.lieferant?'checked':''}> <b>ist Lieferant</b></label><div class="raster" style="margin-top:8px">
         <div class="feld"><label>Lieferantennummer</label><input id="l_nr" value="${esc(a.lieferant?.lieferantennr||'')}" placeholder="automatisch"></div>
         <div class="feld"><label>Zahlungskonditionen</label><select id="l_zb">${zb(a.lieferant?.zahlungsbed_id)}</select></div>
@@ -1110,7 +1293,7 @@ async function adresseDetail(id, rolle, neuLaden, gewaehlt, opt = {}){
   };
   const merken = () => {
     ['kurz','name1','name2','strasse','plz','ort','land','telefon','email','ust_id'].forEach(k=>{ const e=$('#a_'+k); if(e) a[k]=e.value; });
-    if ($('#rK')) a.kunde = $('#rK').checked ? {kundennr:$('#k_nr').value||null, zahlungsbed_id:+$('#k_zb').value||null, rabatt_pct:num($('#k_rb').value), kreditlimit:$('#k_kl').value?num($('#k_kl').value):null, leitweg_id:$('#k_lw').value||null} : null;
+    if ($('#rK')) a.kunde = $('#rK').checked ? {kundennr:$('#k_nr').value||null, zahlungsbed_id:+$('#k_zb').value||null, rabatt_pct:num($('#k_rb').value), kreditlimit:$('#k_kl').value?num($('#k_kl').value):null, leitweg_id:$('#k_lw').value||null, steuerfall:$('#k_sf').value||null} : null;
     if ($('#rL')) a.lieferant = $('#rL').checked ? {lieferantennr:$('#l_nr').value||null, zahlungsbed_id:+$('#l_zb').value||null, unsere_kundennr:$('#l_uk').value||null, mindestbestellwert:$('#l_mb').value?num($('#l_mb').value):null} : null;
   };
   male();
@@ -1168,7 +1351,7 @@ async function artikelDetail(id, neuLaden, gewaehlt, opt = {}){
   const f = (k,l,cls='') => `<div class="feld"><label>${l}</label><input id="r_${k}" class="${cls}" value="${esc(cls?zahl(a[k]):a[k]??'')}"></div>`;
   const male = () => {
     $('#ard').innerHTML = `<div class="card"><div class="kopfzeile" style="margin-bottom:6px"><b style="font-size:16px">${a.id?esc(a.artikelnr+' '+a.kurz):'Neuer Artikel'}</b></div>
-      <div class="reiter">${[['grundlagen','Grundlagen'],['ekvk','Einkauf/Verkauf'],['kalk','Kalkulation'],['kpreise','Kundenpreise'],['kz','Kennzeichen'],['bestaende','Bestände']].map(([k,t])=>`<button data-r="${k}" class="${reiter===k?'on':''}">${t}</button>`).join('')}</div>
+      <div class="reiter">${[['grundlagen','Grundlagen'],['ekvk','Einkauf/Verkauf'],['aplan','Arbeitsplan'],['kalk','Kalkulation'],['kpreise','Kundenpreise'],['kz','Kennzeichen'],['bestaende','Bestände']].map(([k,t])=>`<button data-r="${k}" class="${reiter===k?'on':''}">${t}</button>`).join('')}</div>
       <div id="rR"></div>
       <div class="fussreihe"><button class="btn pri" id="rSp" data-ak="s">${ak('Speichern','S')}</button><button class="btn" id="rSchl" data-ak="c">S<u>c</u>hließen</button></div></div>`;
     const R = $('#rR');
@@ -1176,8 +1359,20 @@ async function artikelDetail(id, neuLaden, gewaehlt, opt = {}){
       <div class="feld"><label>Lagerführung</label><select id="r_lagerfuehrung"><option value="1" ${a.lagerfuehrung?'selected':''}>ja</option><option value="0" ${!a.lagerfuehrung?'selected':''}>nein (Dienstleistung)</option></select></div>
       <div class="feld"><label>Status</label><select id="r_inaktiv"><option value="0" ${!a.inaktiv?'selected':''}>aktiv</option><option value="1" ${a.inaktiv?'selected':''}>inaktiv</option></select></div></div>
       <div class="feld" style="margin-top:10px;max-width:260px"><label>Gewicht je ${esc(a.me||'Stk')} in kg (für den Lieferschein)</label><input id="r_gewicht_kg" class="zahl" value="${a.gewicht_kg!=null?zahl(a.gewicht_kg):''}" placeholder="z. B. 0,02"></div>
-      <div class="feld" style="margin-top:10px"><label>Arbeitsplan (Arbeitsgänge in Reihenfolge, mit ; getrennt)</label><input id="r_arbeitsplan" value="${esc(a.arbeitsplan||'')}" placeholder="leer = allgemeine Liste: ${esc(E.arbeitsgaenge||'')}"></div>
-      <p class="hinweis">Die Werkstatt sieht beim Starten nur diese Arbeitsgänge; der Fortschritt je Charge rechnet damit.</p>`;
+      <p class="hinweis">Arbeitsgänge mit Toleranzen pflegst du im Reiter „Arbeitsplan“.</p>`;
+    if (reiter==='aplan'){ a.arbeitsplan_liste = a.arbeitsplan_liste || [];
+      const zeile = (x,i) => `<tr data-i="${i}"><td style="width:110px"><input class="apNr" value="${esc(x.nr||'')}" placeholder="AG000019"></td><td><input class="apT" value="${esc(x.text||'')}" placeholder="z. B. Nut fräsen"></td>
+        <td><input class="apTol" value="${esc(x.toleranz||'')}" placeholder="z. B. 12 mm ±0,1"></td><td style="text-align:center"><input type="checkbox" class="apP" style="width:auto" ${x.pruef?'checked':''}></td>
+        <td style="white-space:nowrap"><button class="btn apHoch" title="nach oben" ${i?'':'disabled'}>↑</button><button class="btn rot apX" title="entfernen">✕</button></td></tr>`;
+      R.innerHTML = `<table><thead><tr><th>Nr.</th><th>Arbeitsgang</th><th>Maß / Toleranz / Hinweis</th><th>Prüfschritt</th><th></th></tr></thead><tbody id="apL">${a.arbeitsplan_liste.map(zeile).join('')}</tbody></table>
+        <button class="btn" id="apNeu" style="margin-top:6px">+ Arbeitsgang</button>
+        <p class="hinweis">Reihenfolge = Ablauf in der Werkstatt. Leer = allgemeine Liste aus den Einstellungen (${esc(E.arbeitsgaenge||'')}). Die Werkstatt sieht beim Starten nur diese Arbeitsgänge; der Fortschritt je Charge rechnet damit.
+        Auf Auftragsbestätigung und Lieferschein erscheint der Arbeitsplan als Unterzeilen, wenn er im Formular-Baukasten eingeschaltet ist.</p>`;
+      const nimm = () => { a.arbeitsplan_liste = [...$$('#apL tr')].map(tr => ({nr:tr.querySelector('.apNr').value.trim(), text:tr.querySelector('.apT').value.trim(), toleranz:tr.querySelector('.apTol').value.trim(), pruef:tr.querySelector('.apP').checked})); };
+      $('#apNeu').onclick = () => { nimm(); a.arbeitsplan_liste.push({}); male(); setTimeout(() => { const l = $$('#apL .apT'); if (l.length) l[l.length-1].focus(); }); };
+      $('#apL').onclick = e => { const tr = e.target.closest('tr'); if (!tr) return; const i = +tr.dataset.i;
+        if (e.target.classList.contains('apX')){ nimm(); a.arbeitsplan_liste.splice(i,1); male(); }
+        if (e.target.classList.contains('apHoch') && i){ nimm(); const l = a.arbeitsplan_liste; [l[i-1], l[i]] = [l[i], l[i-1]]; male(); } }; }
     if (reiter==='ekvk') R.innerHTML = `<div class="raster">${f('vk_preis','VK-Preis €','zahl')}${f('ek_preis','EK-Preis €','zahl')}${f('steuer_pct','MwSt. %','zahl')}
       <div class="feld"><label>Hauptlieferant</label><select id="r_hauptlieferant_id"><option value="">–</option>${lief.map(l=>`<option value="${l.id}" ${l.id===a.hauptlieferant_id?'selected':''}>${esc(l.lieferantennr)} · ${esc(l.kurz)}</option>`).join('')}</select></div></div>
       ${a.vk_preis?`<p class="hinweis">Rohertrag ${eur(a.vk_preis-a.ek_preis)} € (${Math.round((a.vk_preis-a.ek_preis)/a.vk_preis*100)} %)</p>`:''}`;
@@ -1203,7 +1398,9 @@ async function artikelDetail(id, neuLaden, gewaehlt, opt = {}){
     $('#rSchl').onclick = () => schliesseReiter(TABS.indexOf(AKT));
   };
   const merken = () => {
-    ['artikelnr','kurz','bezeichnung','gruppe','me','arbeitsplan'].forEach(k => { const e = $('#r_'+k); if (e) a[k] = e.value || null; });
+    ['artikelnr','kurz','bezeichnung','gruppe','me'].forEach(k => { const e = $('#r_'+k); if (e) a[k] = e.value || null; });
+    if ($('#apL')){ a.arbeitsplan_liste = [...$$('#apL tr')].map(tr => ({nr:tr.querySelector('.apNr').value.trim(), text:tr.querySelector('.apT').value.trim(), toleranz:tr.querySelector('.apTol').value.trim(), pruef:tr.querySelector('.apP').checked})).filter(x => x.text);
+      a.arbeitsplan = a.arbeitsplan_liste; }
     ['vk_preis','ek_preis','steuer_pct','meldebestand'].forEach(k => { const e = $('#r_'+k); if (e) a[k] = num(e.value); });
     if ($('#r_gewicht_kg')) a.gewicht_kg = $('#r_gewicht_kg').value.trim() ? num($('#r_gewicht_kg').value) : null;
     if ($('#r_lagerfuehrung')) a.lagerfuehrung = +$('#r_lagerfuehrung').value;
@@ -1338,7 +1535,9 @@ async function seiteEinstellungen(){
       <label class="btn">Bild wählen…<input type="file" id="eLogo" accept="image/png,image/jpeg,image/svg+xml" style="display:none"></label>
       <button class="btn rot" id="eLogoX">Entfernen</button></div>
       <p class="hinweis">PNG/JPG werden automatisch auf max. 600 px Breite verkleinert. Ohne Logo erscheint der Firmenname als Schriftzug.</p></div>
-    <div class="card"><b>Pflichtangaben & Bank (Fußzeile)</b><div class="raster" style="margin-top:8px">${f('geschaeftsfuehrer','Geschäftsführer')}${f('handelsregister','Handelsregister','Amtsgericht … HRB …')}${f('ust_id','USt-IdNr.')}${f('steuernr','Steuernummer')}${f('bank_name','Bank')}${f('iban','IBAN')}${f('bic','BIC')}</div></div>
+    <div class="card"><b>Pflichtangaben & Bank (Fußzeile)</b><div class="raster" style="margin-top:8px">${f('geschaeftsfuehrer','Geschäftsführer')}${f('handelsregister','Handelsregister','Amtsgericht … HRB …')}${f('ust_id','USt-IdNr.')}${f('steuernr','Steuernummer')}${f('bank_name','Bank')}${f('iban','IBAN')}${f('bic','BIC')}</div>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" data-k="kleinunternehmer" ${e.kleinunternehmer ? 'checked' : ''} style="width:auto"> Kleinunternehmer nach § 19 UStG (keine Umsatzsteuer auf Verkaufsbelegen, Hinweis auf der Rechnung)</label>
+      <p class="hinweis" style="margin:4px 0 0">Steuerfreie Kunden (EU, Drittland, § 13b) stellst du am Kunden ein: Adresse → Kunden-/Lieferantendaten → Umsatzsteuer.</p></div>
     <div class="card"><b>Darstellung</b><div class="raster" style="margin-top:8px">
       <div class="feld"><label>Hauptfarbe</label><input type="color" data-k="farbe_haupt" value="${esc(e.farbe_haupt||'#004aad')}" style="height:36px;padding:2px"></div>
       <div class="feld"><label>Akzentfarbe</label><input type="color" data-k="farbe_akzent" value="${esc(e.farbe_akzent||'#f39200')}" style="height:36px;padding:2px"></div>
@@ -1573,7 +1772,7 @@ function mengenAbgleich(wk, abw){
 // ================================================================ Formular-Baukasten (Druck je Belegart)
 const FO_ARTEN = [['LS','Lieferschein'],['RE','Rechnung'],['AB','Auftragsbestätigung'],['AN','Angebot'],['GS','Gutschrift'],['WK','Wareneingang Kundenmaterial'],['BE','Bestellung'],['PA','Preisanfrage']];
 const FO_BLOECKE = {betreff:'Betreff', referenz:'Ihre Bestellung / Referenz', kopftext:'Kopftext', fusstext:'Fußtext', zahlungsbed:'Zahlungsbedingung', bank:'Bankverbindung (Rechnung)',
-  charge:'Charge unter der Position', zusatzfelder:'Eigene Positionsfelder', verpackung:'Verpackung / Ladungsträger', quittung:'Unterschriftszeilen', gewicht:'Gewicht unter der Menge'};
+  charge:'Charge unter der Position', zusatzfelder:'Eigene Positionsfelder', verpackung:'Verpackung / Ladungsträger', quittung:'Unterschriftszeilen', gewicht:'Gewicht unter der Menge', arbeitsplan:'Arbeitsplan als Unterzeilen'};
 async function seiteFormulare(art){
   art = FO_ARTEN.some(x => x[0] === art) ? art : 'LS';
   const d = await api('formular/' + art); let fo = d.formular;

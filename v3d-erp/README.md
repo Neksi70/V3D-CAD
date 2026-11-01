@@ -15,7 +15,7 @@ Dienst: `systemctl --user {start|stop|restart} v3d-erp` (Unit: `v3d-erp.service`
 
 ## Tests
 ```
-python3 -m unittest test_erp test_import -v
+.venv/bin/python -m unittest $(ls test_*.py | sed 's/.py//')    # alle (mit KoSIT-Prüfung, falls ~/tools/kosit da ist)
 ```
 
 ## Datenübernahme aus myfactory
@@ -33,6 +33,15 @@ Das Protokoll enthält nie Inhalte, nur Spalten, Anzahlen und Zeilennummern. Der
 - `erp.py` – Geschäftslogik (Belegkette, Lager, OP, Projekte)
 - `server.py` – Webserver + JSON-API (nur Standardbibliothek)
 - `app.html` – Oberfläche
+- `datev.py` – DATEV-Export (Buchungsstapel EXTF, SKR03/SKR04, Konten in den Einstellungen)
+- `auswertung.py` – Liquiditätsplanung (Wochenvorschau) und Umsatzauswertung (Jahr gegen Vorjahr)
+- `inventur.py` – Inventur: eröffnen → zählen → abschließen (Differenzen zum Stichtag ins Lager)
 - `seed.py` – erfundene Testdaten
 - `import_myfactory.py` – Datenübernahme
 - `docs/` – Datenmodell, Server-Vorschlag für GSB
+
+## Umsatzsteuer-Sonderfälle
+Am Kunden (Kunden-/Lieferantendaten → Umsatzsteuer): EU-Lieferung, EU-Leistung (Reverse Charge), § 13b, Drittland.
+Am Beleg wird der Steuerfall eingefroren und lässt sich im Entwurf ändern. Kleinunternehmer (§ 19) ist ein Schalter in den Einstellungen.
+Wirkung: 0 % auf allen Positionen, Pflichthinweis auf AN/AB/RE/GS, E-Rechnung mit Kategorie K/AE/G/E und Befreiungsgrund.
+Beim Verarbeiten einer Rechnung wird geprüft, ob USt-IdNr. und Land passen. `test_steuerfall` lässt jede Variante vom KoSIT-Prüfer validieren.

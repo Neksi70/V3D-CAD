@@ -425,3 +425,51 @@ CREATE INDEX IF NOT EXISTS ix_beleg_projekt ON beleg(projekt_id);
 CREATE INDEX IF NOT EXISTS ix_pos_beleg ON beleg_position(beleg_id);
 CREATE INDEX IF NOT EXISTS ix_lb_artikel ON lagerbewegung(artikel_id);
 CREATE INDEX IF NOT EXISTS ix_ms_projekt ON meilenstein(projekt_id);
+
+-- ---------- Inventur (Stichtag: Soll bei Eröffnung, Differenz beim Abschluss ins Lager) ----------
+CREATE TABLE IF NOT EXISTS inventur (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  bezeichnung   TEXT NOT NULL,
+  stichtag      TEXT NOT NULL,
+  lager_id      INTEGER NOT NULL DEFAULT 1 REFERENCES lager(id),
+  filter_gruppe TEXT,
+  status        TEXT NOT NULL DEFAULT 'offen',   -- offen | abgeschlossen | abgebrochen
+  eroeffnet     TEXT NOT NULL,
+  eroeffnet_von TEXT,
+  abgeschlossen TEXT,
+  abgeschlossen_von TEXT
+);
+CREATE TABLE IF NOT EXISTS inventur_position (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  inventur_id INTEGER NOT NULL REFERENCES inventur(id) ON DELETE CASCADE,
+  artikel_id  INTEGER NOT NULL REFERENCES artikel(id),
+  soll        REAL NOT NULL,                     -- Bestand bei Eröffnung
+  ist         REAL,                              -- NULL = noch nicht gezählt
+  wert        REAL NOT NULL DEFAULT 0,           -- Bewertung (EK-Preis bei Eröffnung)
+  bemerkung   TEXT,
+  gezaehlt    TEXT,
+  gezaehlt_von TEXT,
+  UNIQUE (inventur_id, artikel_id)
+);
+
+-- ---------- Liquiditätsplanung: wiederkehrende Ein-/Auszahlungen (Miete, Löhne, Leasing …) ----------
+CREATE TABLE IF NOT EXISTS liq_posten (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  text      TEXT NOT NULL,
+  betrag    REAL NOT NULL,                       -- + Einzahlung, − Auszahlung
+  rhythmus  TEXT NOT NULL DEFAULT 'monatlich',   -- einmalig | woechentlich | monatlich | quartal | jaehrlich
+  erster    TEXT NOT NULL,
+  letzter   TEXT
+);
+
+-- ---------- DATEV-Exporte (gegen doppelte Übergabe) ----------
+CREATE TABLE IF NOT EXISTS datev_export (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  zeit     TEXT NOT NULL,
+  von      TEXT NOT NULL,
+  bis      TEXT NOT NULL,
+  anzahl   INTEGER NOT NULL,
+  summe    REAL NOT NULL,
+  sha256   TEXT NOT NULL,
+  benutzer TEXT
+);

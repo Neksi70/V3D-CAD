@@ -39,7 +39,7 @@ def schema_anlegen(db):
                          ("artikel", "arbeitsplan", "TEXT"), ("fertigung", "freigabe", "INTEGER NOT NULL DEFAULT 0"),
                          ("beleg", "verpackung", "TEXT"), ("beleg_position", "zusatz", "TEXT"),
                          ("artikel", "gewicht_kg", "REAL"), ("benutzer", "email", "TEXT"), ("benutzer", "telefon", "TEXT"),
-                         ("beleg", "leistungsdatum", "TEXT")]:
+                         ("beleg", "leistungsdatum", "TEXT"), ("kunde", "steuerfall", "TEXT"), ("beleg", "steuerfall", "TEXT")]:
         if sp not in [r["name"] for r in db.execute(f"PRAGMA table_info({tab})")]:
             db.execute(f"ALTER TABLE {tab} ADD COLUMN {sp} {typ}")
     if not db.execute("SELECT 1 FROM mahnstufe LIMIT 1").fetchone():
@@ -131,7 +131,9 @@ EINSTELLUNGEN = ["firma_name", "firma_zusatz", "strasse", "plz", "ort", "telefon
                  "handelsregister", "geschaeftsfuehrer", "bank_name", "iban", "bic", "logo",
                  "kopftext_vk", "fusstext_vk", "kopftext_ek", "fusstext_ek", "farbe_haupt", "farbe_akzent", "betriebsstaette",
                  "arbeitsgaenge", "maschinen", "ls_nur_freigegeben",
-                 "verpackungen", "formular", "positionsfelder", "briefpapier_bild", "nummernformat"]
+                 "verpackungen", "formular", "positionsfelder", "briefpapier_bild", "nummernformat",
+                 "kleinunternehmer", "datev_berater", "datev_mandant", "datev_kontenrahmen", "datev_konten",
+                 "liq_kontostand", "liq_stand_datum"]
 STANDARD_EINSTELLUNGEN = dict(
     firma_name="Muster Fertigung GmbH", firma_zusatz="Sondermaschinen · Vorrichtungen · Serienteile",
     strasse="Beispielstraße 1", plz="58089", ort="Hagen", telefon="02331 000000", email="info@muster-fertigung.example",
@@ -142,7 +144,29 @@ STANDARD_EINSTELLUNGEN = dict(
     logo="", kopftext_vk="Vielen Dank für Ihre Anfrage. Gerne bieten wir Ihnen an:",
     fusstext_vk="Für Rückfragen stehen wir Ihnen gern zur Verfügung.", kopftext_ek="Wir bestellen zu den vereinbarten Bedingungen:",
     fusstext_ek="Bitte bestätigen Sie uns Liefertermin und Preis.",
-    farbe_haupt="#004aad", farbe_akzent="#f39200", betriebsstaette="1 - Zentrale")
+    farbe_haupt="#004aad", farbe_akzent="#f39200", betriebsstaette="1 - Zentrale", datev_kontenrahmen="SKR03")
+
+
+# ---------------------------------------------------------------- Umsatzsteuer-Sonderfälle
+# Steuerfall am Kunden (vorbelegt) bzw. am Beleg (eingefroren). Leer = Inland mit Umsatzsteuer.
+# kategorie/vatex = EN 16931 (E-Rechnung), hinweis = Pflichtangabe auf der Rechnung (§ 14a UStG bzw. § 19 UStG).
+STEUERFAELLE = {
+    "eu_lieferung": dict(name="Innergemeinschaftliche Lieferung (EU)", kategorie="K", vatex="VATEX-EU-IC", ust_id=True, ausland=True,
+                         hinweis="Steuerfreie innergemeinschaftliche Lieferung (§ 4 Nr. 1b i. V. m. § 6a UStG)."),
+    "eu_leistung": dict(name="Leistung an Unternehmer im EU-Ausland (Reverse Charge)", kategorie="AE", vatex="VATEX-EU-AE", ust_id=True, ausland=True,
+                        hinweis="Steuerschuldnerschaft des Leistungsempfängers (Reverse Charge, Art. 196 MwStSystRL)."),
+    "13b": dict(name="Inland § 13b UStG (Leistungsempfänger schuldet die Steuer)", kategorie="AE", vatex="VATEX-EU-AE", ust_id=True, ausland=False,
+                hinweis="Steuerschuldnerschaft des Leistungsempfängers (§ 13b UStG)."),
+    "drittland": dict(name="Ausfuhr in ein Drittland", kategorie="G", vatex="VATEX-EU-G", ust_id=False, ausland=True,
+                      hinweis="Steuerfreie Ausfuhrlieferung (§ 4 Nr. 1a i. V. m. § 6 UStG)."),
+    "kleinunternehmer": dict(name="Kleinunternehmer (§ 19 UStG)", kategorie="E", vatex="", ust_id=False, ausland=False,
+                             hinweis="Gemäß § 19 UStG wird keine Umsatzsteuer berechnet."),
+}
+
+
+def steuerfall(code):
+    """Angaben zum Steuerfall eines Belegs; None = Inland regulär."""
+    return STEUERFAELLE.get(code or "")
 
 
 def einstellungen(db):
@@ -152,12 +176,13 @@ def einstellungen(db):
 
 SPALTEN = [("pos", "Pos"), ("artikelnr", "Artikel"), ("text", "Bezeichnung"), ("menge", "Menge"), ("me", "ME"),
            ("einzelpreis", "Einzelpreis €"), ("rabatt", "Rabatt %"), ("gesamt", "Gesamt €"), ("ausschuss", "Ausschuss")]
-BLOECKE = ["betreff", "referenz", "kopftext", "fusstext", "zahlungsbed", "bank", "quittung", "zusatzfelder", "charge", "verpackung", "gewicht"]
+BLOECKE = ["betreff", "referenz", "kopftext", "fusstext", "zahlungsbed", "bank", "quittung", "zusatzfelder", "charge", "verpackung", "gewicht",
+           "arbeitsplan"]
 FORMULAR_STANDARD = {
     "preise": True, "titel": "", "zusatztext": "", "schrift": 9.0, "briefpapier": False, "rand_oben": 45, "rand_unten": 25,
     "kopf": "rechts", "unterschriften": "", "hintergrund": True,
     "spalten": [{"key": k, "titel": t, "an": k not in ("artikelnr", "rabatt", "ausschuss")} for k, t in SPALTEN],
-    "bloecke": {k: k not in ("quittung", "verpackung", "gewicht") for k in BLOECKE},
+    "bloecke": {k: k not in ("quittung", "verpackung", "gewicht", "arbeitsplan") for k in BLOECKE},
 }
 FORMULAR_JE_ART = {
     "LS": {"preise": False, "bloecke": {"verpackung": True, "quittung": True, "gewicht": True},
@@ -365,12 +390,15 @@ def adresse_speichern(db, daten, benutzer=None):
         if k is not None:
             alt = db.execute("SELECT kundennr FROM kunde WHERE adresse_id=?", (aid,)).fetchone()
             nr = k.get("kundennr") or (alt["kundennr"] if alt else naechste_stammnr(db, "kunde", "kundennr", 10000))
-            db.execute("""INSERT INTO kunde(adresse_id,kundennr,zahlungsbed_id,rabatt_pct,kreditlimit,leitweg_id,liefersperre)
-                          VALUES(?,?,?,?,?,?,?) ON CONFLICT(adresse_id) DO UPDATE SET kundennr=excluded.kundennr,
+            sf = k.get("steuerfall") or None
+            if sf and (sf not in STEUERFAELLE or sf == "kleinunternehmer"):
+                raise Fehler("Unbekannter Steuerfall.")
+            db.execute("""INSERT INTO kunde(adresse_id,kundennr,zahlungsbed_id,rabatt_pct,kreditlimit,leitweg_id,liefersperre,steuerfall)
+                          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(adresse_id) DO UPDATE SET kundennr=excluded.kundennr,
                           zahlungsbed_id=excluded.zahlungsbed_id, rabatt_pct=excluded.rabatt_pct, kreditlimit=excluded.kreditlimit,
-                          leitweg_id=excluded.leitweg_id, liefersperre=excluded.liefersperre""",
+                          leitweg_id=excluded.leitweg_id, liefersperre=excluded.liefersperre, steuerfall=excluded.steuerfall""",
                        (aid, nr, k.get("zahlungsbed_id"), k.get("rabatt_pct") or 0, k.get("kreditlimit"),
-                        k.get("leitweg_id"), 1 if k.get("liefersperre") else 0))
+                        k.get("leitweg_id"), 1 if k.get("liefersperre") else 0, sf))
         lf = daten.get("lieferant")
         if lf is not None:
             alt = db.execute("SELECT lieferantennr FROM lieferant WHERE adresse_id=?", (aid,)).fetchone()
@@ -434,7 +462,7 @@ def suche(db, q):
 
 def adressen_liste(db, suche="", rolle=""):
     sql = """SELECT a.id,a.adressnr,a.kurz,a.name1,a.name2,a.strasse,a.plz,a.ort,a.land,a.telefon,a.email,
-                    k.kundennr, l.lieferantennr, k.zahlungsbed_id k_zb, k.rabatt_pct k_rabatt, l.zahlungsbed_id l_zb
+                    k.kundennr, l.lieferantennr, k.zahlungsbed_id k_zb, k.rabatt_pct k_rabatt, k.steuerfall k_sf, l.zahlungsbed_id l_zb
              FROM adresse a LEFT JOIN kunde k ON k.adresse_id=a.id LEFT JOIN lieferant l ON l.adresse_id=a.id WHERE 1=1"""
     p = []
     if suche:
@@ -452,9 +480,42 @@ ARTIKEL_FELDER = ["artikelnr", "kurz", "bezeichnung", "me", "gruppe", "vk_preis"
                   "lagerfuehrung", "meldebestand", "hauptlieferant_id", "inaktiv", "memo", "kalk", "arbeitsplan", "gewicht_kg"]
 
 
+def arbeitsplan(wert):
+    """Arbeitsplan als Liste von Arbeitsgängen {nr, text, toleranz, pruef}.
+    Gespeichert als JSON-Liste; ältere Form „Bohren; Gewinde schneiden“ wird ebenfalls gelesen."""
+    if isinstance(wert, list):
+        roh = wert
+    else:
+        t = (wert or "").strip()
+        if t.startswith("["):
+            try:
+                roh = json.loads(t)
+            except ValueError:
+                roh = []
+        else:
+            roh = [{"text": x.strip()} for x in t.split(";") if x.strip()]
+    out = []
+    for x in roh:
+        if isinstance(x, str):
+            x = {"text": x}
+        if not isinstance(x, dict) or not str(x.get("text") or "").strip():
+            continue
+        out.append({"nr": str(x.get("nr") or "").strip()[:20], "text": str(x["text"]).strip()[:120],
+                    "toleranz": str(x.get("toleranz") or "").strip()[:200], "pruef": bool(x.get("pruef"))})
+    return out[:40]
+
+
+def arbeitsplan_zeile(ag):
+    """Eine Druckzeile: „AG000019 Nut fräsen – 12 mm ±0,1 (Prüfschritt)“."""
+    return " ".join(x for x in [ag["nr"], ag["text"]] if x) + (f" – {ag['toleranz']}" if ag["toleranz"] else "") + (" (Prüfschritt)" if ag["pruef"] else "")
+
+
 def artikel_speichern(db, d, benutzer=None):
     if not (d.get("bezeichnung") or "").strip():
         raise Fehler("Bezeichnung fehlt.")
+    if "arbeitsplan" in d:
+        ap = arbeitsplan(d["arbeitsplan"])
+        d["arbeitsplan"] = json.dumps(ap, ensure_ascii=False) if ap else None
     d.setdefault("kurz", d["bezeichnung"][:30])
     with transaktion(db):
         if not d.get("artikelnr"):
@@ -504,6 +565,7 @@ def artikel_lesen(db, aid):
         a["kalk"] = json.loads(a["kalk"]) if a.get("kalk") else None
     except ValueError:
         a["kalk"] = None
+    a["arbeitsplan_liste"] = arbeitsplan(a.get("arbeitsplan"))
     a["bestand"] = bestand(db, aid)
     a["reserviert"] = reserviert(db, aid)
     a["verfuegbar"] = a["bestand"] - a["reserviert"]
@@ -565,6 +627,23 @@ def beleg_speichern(db, d, benutzer=None):
         p.setdefault("einzelpreis", 0)
         p.setdefault("steuer_pct", 19)
         p.setdefault("me", "Stk")
+    sf = None
+    if art["bereich"] == "VK":
+        if einstellungen(db).get("kleinunternehmer"):
+            sf = "kleinunternehmer"
+        elif "steuerfall" in d:
+            sf = d.get("steuerfall") or None
+        elif d.get("id"):
+            alt = db.execute("SELECT steuerfall FROM beleg WHERE id=?", (d["id"],)).fetchone()
+            sf = alt["steuerfall"] if alt else None
+        else:
+            k = db.execute("SELECT steuerfall FROM kunde WHERE adresse_id=?", (d["adresse_id"],)).fetchone()
+            sf = k["steuerfall"] if k else None
+        if sf and sf not in STEUERFAELLE:
+            raise Fehler("Unbekannter Steuerfall.")
+        if sf:
+            for p in pos:                      # steuerfrei bzw. Steuer schuldet der Kunde → 0 % auf jeder Position
+                p["steuer_pct"] = 0
     netto, steuer, brutto = _summen(pos)
     if not d.get("zahlungsbed_id"):            # Zahlungsbedingung des Kunden/Lieferanten vorbelegen
         zb = db.execute(f"SELECT zahlungsbed_id FROM {rolle} WHERE adresse_id=?", (d["adresse_id"],)).fetchone()
@@ -573,7 +652,7 @@ def beleg_speichern(db, d, benutzer=None):
                   projekt_id=d.get("projekt_id") or None, betreff=d.get("betreff"), ihre_referenz=d.get("ihre_referenz"),
                   kopftext=d.get("kopftext"), fusstext=d.get("fusstext"), zahlungsbed_id=d.get("zahlungsbed_id") or None,
                   lager_id=d.get("lager_id") or 1, netto=netto, steuer=steuer, brutto=brutto, memo=d.get("memo"),
-                  leistungsdatum=(d.get("leistungsdatum") or "").strip()[:60] or None,
+                  leistungsdatum=(d.get("leistungsdatum") or "").strip()[:60] or None, steuerfall=sf,
                   verpackung=json.dumps(_verpackung_pruefen(d.get("verpackung")), ensure_ascii=False) if d.get("verpackung") else None)
     with transaktion(db):
         bid = d.get("id")
@@ -658,6 +737,8 @@ def beleg_lesen(db, bid):
     except ValueError:
         b["verpackung"] = []
     b["formular"] = formular(db, b["belegart"])
+    sf = steuerfall(b.get("steuerfall"))
+    b["steuerfall_name"], b["steuerfall_hinweis"] = (sf["name"], sf["hinweis"]) if sf else (None, None)
     b["archiv"] = zeilen(db.execute("SELECT id, version, art, erstellt, benutzer, anlass, sha256, groesse FROM beleg_archiv WHERE beleg_id=? ORDER BY version, art", (bid,)))
     b["folgearten"] = [dict(r) for r in db.execute(
         "SELECT f.nach code, ba.name FROM belegart_folge f JOIN belegart ba ON ba.code=f.nach WHERE f.von=? ORDER BY ba.reihenfolge", (b["belegart"],))]
@@ -716,6 +797,13 @@ def beleg_verarbeiten(db, bid, benutzer=None):
         if not pos:
             raise Fehler("Der Beleg hat keine Positionen.")
         art = _belegart(db, b["belegart"])
+        sf = steuerfall(b.get("steuerfall"))
+        if sf and b["belegart"] in ("RE", "GS"):
+            a = db.execute("SELECT ust_id, land FROM adresse WHERE id=?", (b["adresse_id"],)).fetchone()
+            if sf["ust_id"] and not (a["ust_id"] or "").strip():
+                raise Fehler(f"{sf['name']}: Für die steuerfreie Rechnung fehlt die USt-IdNr. des Kunden (Adresse → USt-IdNr.).")
+            if sf["ausland"] and (a["land"] or "DE").strip().upper()[:2] == "DE":
+                raise Fehler(f"{sf['name']}: Das Land der Kundenadresse ist Deutschland – bitte Land bzw. Steuerfall prüfen.")
         nummer = naechste_nummer(db, art["praefix"], b["datum"])
         db.execute("UPDATE beleg SET nummer=?, status='verarbeitet', verarbeitet=?, verarbeitet_von=? WHERE id=?",
                    (nummer, jetzt(), benutzer, bid))
@@ -887,7 +975,8 @@ def beleg_weiterverarbeiten(db, bid, zielart, benutzer=None):
         _ausschuss_vorbelegen(db, pos)
     neu = beleg_speichern(db, dict(belegart=zielart, adresse_id=b["adresse_id"], projekt_id=b["projekt_id"], betreff=betreff,
                                    ihre_referenz=b["ihre_referenz"], zahlungsbed_id=b["zahlungsbed_id"], lager_id=b["lager_id"],
-                                   kopftext=b["kopftext"], fusstext=b["fusstext"], positionen=pos), benutzer)
+                                   kopftext=b["kopftext"], fusstext=b["fusstext"], positionen=pos,
+                                   steuerfall=b.get("steuerfall")), benutzer)
     with transaktion(db):
         db.execute("INSERT INTO beleg_verknuepfung(vorgaenger_id,nachfolger_id) VALUES(?,?)", (bid, neu["id"]))
     return beleg_lesen(db, neu["id"])

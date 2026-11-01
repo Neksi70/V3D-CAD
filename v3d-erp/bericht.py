@@ -556,9 +556,11 @@ def beleg_pdf(db, bid, pdfa=False, fo=None):
     oben = bh - fo["rand_oben"] * mm if fo["briefpapier"] else bh - 40
     unten = fo["rand_unten"] * mm if fo["briefpapier"] else 110
     seite = [1]
-    artnr, gewicht = {}, {}
-    for x in db.execute("SELECT id, artikelnr, gewicht_kg FROM artikel"):
+    artnr, gewicht, aplan = {}, {}, {}
+    for x in db.execute("SELECT id, artikelnr, gewicht_kg, arbeitsplan FROM artikel"):
         artnr[x["id"]], gewicht[x["id"]] = x["artikelnr"], x["gewicht_kg"]
+        if bl.get("arbeitsplan") and x["arbeitsplan"]:
+            aplan[x["id"]] = [erp.arbeitsplan_zeile(ag) for ag in erp.arbeitsplan(x["arbeitsplan"])]
     bild = None                                              # Briefpapier als Hintergrundbild (wie myfactory)
     if fo["briefpapier"] and (e.get("briefpapier_bild") or "").startswith("data:image/") and fo.get("hintergrund", True):
         try:
@@ -798,6 +800,7 @@ def beleg_pdf(db, bid, pdfa=False, fo=None):
             nebenzeilen.append(f"Charge: {p['charge_nr']}")
         if bl["zusatzfelder"]:
             nebenzeilen += [f"{k}: {v}" for k, v in (p.get("zusatz") or {}).items() if k != "Ausschuss"]
+        nebenzeilen += [f"{lfd + 1}.{i} {t}" for i, t in enumerate(aplan.get(p.get("artikel_id")) or [], 1)]
         hoehe = (gs + 3) * len(zeilen_) + (gs + 2) * len(nebenzeilen) + 6
         if y - hoehe < unten:
             y = neue_seite()
@@ -843,7 +846,11 @@ def beleg_pdf(db, bid, pdfa=False, fo=None):
         c.setFont(N, 9.5)
         c.drawString(bw - r - 220, y, "Summe netto")
         c.drawRightString(bw - r - 4, y, eur(b["netto"]) + " €")
-        for st, basis in sorted(saetze.items(), reverse=True):
+        if b.get("steuerfall"):
+            y -= 14
+            c.drawString(bw - r - 220, y, "Umsatzsteuer")
+            c.drawRightString(bw - r - 4, y, "0,00 €")
+        for st, basis in ([] if b.get("steuerfall") else sorted(saetze.items(), reverse=True)):
             y -= 14
             c.drawString(bw - r - 220, y, f"zzgl. {st:g} % USt. auf {eur(basis)} €")
             c.drawRightString(bw - r - 4, y, eur(round(basis * st / 100 + 1e-9, 2)) + " €")
@@ -872,6 +879,9 @@ def beleg_pdf(db, bid, pdfa=False, fo=None):
         y = absatz(f"Zahlungsbedingung: {b['zahlungsbed']}" + (f" – fällig am {_de(op['faellig'])}" if op else ""), y)
     if b["belegart"] == "RE" and e.get("iban") and bl["bank"]:
         y = absatz(f"Bitte überweisen Sie unter Angabe der Rechnungsnummer {b['nummer']} auf: IBAN {e['iban']}" + (f", BIC {e['bic']}" if e.get("bic") else ""), y)
+    if b.get("steuerfall_hinweis") and b["belegart"] in ("AN", "AB", "RE", "GS"):
+        c.setFillColor(TEXT)
+        y = absatz(b["steuerfall_hinweis"], y, 9.5, F)
     if b["belegart"] in ("RE", "GS") and b.get("datum"):
         y = absatz(leistungstext(db, b), y, 8.5)
     if b.get("fusstext") and bl["fusstext"]:

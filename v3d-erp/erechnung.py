@@ -53,7 +53,9 @@ def _daten(db, bid):
     e = erp.einstellungen(db)
     a = erp.adresse_lesen(db, b["adresse_id"])
     fehlt = []
-    for k, t in [("firma_name", "Firmenname"), ("strasse", "Straße"), ("plz", "PLZ"), ("ort", "Ort"), ("ust_id", "USt-IdNr."),
+    klein = b.get("steuerfall") == "kleinunternehmer"
+    for k, t in [("firma_name", "Firmenname"), ("strasse", "Straße"), ("plz", "PLZ"), ("ort", "Ort"),
+                 ("steuernr", "Steuernummer") if klein and not (e.get("ust_id") or "").strip() else ("ust_id", "USt-IdNr."),
                  ("iban", "IBAN"), ("email", "E-Mail"), ("telefon", "Telefon")]:
         if not (e.get(k) or "").strip():
             fehlt.append(f"Firmendaten: {t}")
@@ -91,7 +93,14 @@ def cii_xml(db, bid, profil="xrechnung"):
     steuer = round(sum(s[2] for s in steuern), 2)
     brutto = round(netto + steuer, 2)
     kunde_ref = (a.get("kunde") or {}).get("leitweg_id") or b.get("ihre_referenz") or (a.get("kunde") or {}).get("kundennr") or "n/a"
-    kat = lambda s: "S" if s > 0 else "Z"
+    sf = erp.steuerfall(b.get("steuerfall"))
+    kat = lambda s: sf["kategorie"] if sf else ("S" if s > 0 else "Z")
+    befreiung = (f"<ram:ExemptionReason>{_x(sf['hinweis'])}</ram:ExemptionReason>" if sf else "")
+    befreiung_code = (f"<ram:ExemptionReasonCode>{sf['vatex']}</ram:ExemptionReasonCode>" if sf and sf["vatex"] else "")
+    if (e.get("ust_id") or "").strip():
+        steuer_verkaeufer = f"<ram:SpecifiedTaxRegistration><ram:ID schemeID=\"VA\">{_x(e['ust_id'].replace(' ', ''))}</ram:ID></ram:SpecifiedTaxRegistration>"
+    else:
+        steuer_verkaeufer = f"<ram:SpecifiedTaxRegistration><ram:ID schemeID=\"FC\">{_x(e['steuernr'])}</ram:ID></ram:SpecifiedTaxRegistration>"
 
     def adresse(x):
         return (f"<ram:PostalTradeAddress><ram:PostcodeCode>{_x(x['plz'])}</ram:PostcodeCode><ram:LineOne>{_x(x['strasse'])}</ram:LineOne>"
@@ -122,7 +131,9 @@ def cii_xml(db, bid, profil="xrechnung"):
                f"<ram:TelephoneUniversalCommunication><ram:CompleteNumber>{_x(e['telefon'])}</ram:CompleteNumber></ram:TelephoneUniversalCommunication>"
                f"<ram:EmailURIUniversalCommunication><ram:URIID>{_x(e['email'])}</ram:URIID></ram:EmailURIUniversalCommunication></ram:DefinedTradeContact>")
     hr = f"<ram:SpecifiedLegalOrganization><ram:ID>{_x(e['handelsregister'])}</ram:ID></ram:SpecifiedLegalOrganization>" if e.get("handelsregister") else ""
-    ust_kunde = f"<ram:SpecifiedTaxRegistration><ram:ID schemeID=\"VA\">{_x(a['ust_id'])}</ram:ID></ram:SpecifiedTaxRegistration>" if a.get("ust_id") else ""
+    ust_kunde = f"<ram:SpecifiedTaxRegistration><ram:ID schemeID=\"VA\">{_x(a['ust_id'].replace(' ', ''))}</ram:ID></ram:SpecifiedTaxRegistration>" if a.get("ust_id") else ""
+    # Innergemeinschaftliche Lieferung: Lieferland ist Pflicht (BR-IC-12)
+    lieferort = f"<ram:ShipToTradeParty><ram:Name>{_x(a['name1'])}</ram:Name>{adresse(a)}</ram:ShipToTradeParty>" if sf and sf["kategorie"] == "K" else ""
     bestellung = f"<ram:BuyerOrderReferencedDocument><ram:IssuerAssignedID>{_x(b['ihre_referenz'])}</ram:IssuerAssignedID></ram:BuyerOrderReferencedDocument>" if b.get("ihre_referenz") else ""
     vorgaenger = (f"<ram:InvoiceReferencedDocument><ram:IssuerAssignedID>{_x(vorg['nummer'])}</ram:IssuerAssignedID>"
                   f"<ram:FormattedIssueDateTime><qdt:DateTimeString format=\"102\">{_d102(vorg['datum'])}</qdt:DateTimeString></ram:FormattedIssueDateTime></ram:InvoiceReferencedDocument>") if gutschrift and vorg else ""
@@ -142,12 +153,12 @@ def cii_xml(db, bid, profil="xrechnung"):
 <ram:BuyerReference>{_x(kunde_ref)}</ram:BuyerReference>
 <ram:SellerTradeParty><ram:Name>{_x(e['firma_name'])}</ram:Name>{hr}{kontakt}{adresse(e)}
 <ram:URIUniversalCommunication><ram:URIID schemeID="EM">{_x(e['email'])}</ram:URIID></ram:URIUniversalCommunication>
-<ram:SpecifiedTaxRegistration><ram:ID schemeID="VA">{_x(e['ust_id'].replace(' ', ''))}</ram:ID></ram:SpecifiedTaxRegistration></ram:SellerTradeParty>
+{steuer_verkaeufer}</ram:SellerTradeParty>
 <ram:BuyerTradeParty>{f"<ram:ID>{_x((a.get('kunde') or {}).get('kundennr') or '')}</ram:ID>" if (a.get('kunde') or {}).get('kundennr') else ''}<ram:Name>{_x(a['name1'])}</ram:Name>{adresse(a)}
 <ram:URIUniversalCommunication><ram:URIID schemeID="EM">{_x(a['email'])}</ram:URIID></ram:URIUniversalCommunication>{ust_kunde}</ram:BuyerTradeParty>
 {bestellung}
 </ram:ApplicableHeaderTradeAgreement>
-<ram:ApplicableHeaderTradeDelivery><ram:ActualDeliverySupplyChainEvent><ram:OccurrenceDateTime><udt:DateTimeString format="102">{_d102(lieferdatum)}</udt:DateTimeString></ram:OccurrenceDateTime></ram:ActualDeliverySupplyChainEvent></ram:ApplicableHeaderTradeDelivery>
+<ram:ApplicableHeaderTradeDelivery>{lieferort}<ram:ActualDeliverySupplyChainEvent><ram:OccurrenceDateTime><udt:DateTimeString format="102">{_d102(lieferdatum)}</udt:DateTimeString></ram:OccurrenceDateTime></ram:ActualDeliverySupplyChainEvent></ram:ApplicableHeaderTradeDelivery>
 <ram:ApplicableHeaderTradeSettlement>
 <ram:PaymentReference>{_x(b['nummer'])}</ram:PaymentReference>
 <ram:InvoiceCurrencyCode>EUR</ram:InvoiceCurrencyCode>
@@ -155,7 +166,7 @@ def cii_xml(db, bid, profil="xrechnung"):
 <ram:PayeePartyCreditorFinancialAccount><ram:IBANID>{_x(e['iban'].replace(' ', ''))}</ram:IBANID><ram:AccountName>{_x(e['firma_name'])}</ram:AccountName></ram:PayeePartyCreditorFinancialAccount>
 {f"<ram:PayeeSpecifiedCreditorFinancialInstitution><ram:BICID>{_x(e['bic'].replace(' ', ''))}</ram:BICID></ram:PayeeSpecifiedCreditorFinancialInstitution>" if e.get('bic') else ''}
 </ram:SpecifiedTradeSettlementPaymentMeans>
-{''.join(f"<ram:ApplicableTradeTax><ram:CalculatedAmount>{_b(st)}</ram:CalculatedAmount><ram:TypeCode>VAT</ram:TypeCode><ram:BasisAmount>{_b(ba)}</ram:BasisAmount><ram:CategoryCode>{kat(s)}</ram:CategoryCode><ram:RateApplicablePercent>{_b(s)}</ram:RateApplicablePercent></ram:ApplicableTradeTax>" for s, ba, st in steuern)}
+{''.join(f"<ram:ApplicableTradeTax><ram:CalculatedAmount>{_b(st)}</ram:CalculatedAmount><ram:TypeCode>VAT</ram:TypeCode>{befreiung}<ram:BasisAmount>{_b(ba)}</ram:BasisAmount><ram:CategoryCode>{kat(s)}</ram:CategoryCode>{befreiung_code}<ram:RateApplicablePercent>{_b(s)}</ram:RateApplicablePercent></ram:ApplicableTradeTax>" for s, ba, st in steuern)}
 <ram:SpecifiedTradePaymentTerms><ram:Description>{_x(bedingung)}</ram:Description>{f'<ram:DueDateDateTime><udt:DateTimeString format="102">{_d102(faellig)}</udt:DateTimeString></ram:DueDateDateTime>' if faellig else ''}</ram:SpecifiedTradePaymentTerms>
 <ram:SpecifiedTradeSettlementHeaderMonetarySummation><ram:LineTotalAmount>{_b(netto)}</ram:LineTotalAmount><ram:TaxBasisTotalAmount>{_b(netto)}</ram:TaxBasisTotalAmount>
 <ram:TaxTotalAmount currencyID="EUR">{_b(steuer)}</ram:TaxTotalAmount><ram:GrandTotalAmount>{_b(brutto)}</ram:GrandTotalAmount><ram:DuePayableAmount>{_b(brutto)}</ram:DuePayableAmount></ram:SpecifiedTradeSettlementHeaderMonetarySummation>

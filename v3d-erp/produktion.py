@@ -14,8 +14,9 @@ def arbeitsgaenge(db, artikel_id=None):
     """Arbeitsplan des Artikels, sonst die allgemeine Liste aus den Einstellungen."""
     if artikel_id:
         a = db.execute("SELECT arbeitsplan FROM artikel WHERE id=?", (artikel_id,)).fetchone()
-        if a and _liste(a["arbeitsplan"]):
-            return _liste(a["arbeitsplan"])
+        ap = erp.arbeitsplan(a["arbeitsplan"]) if a else []
+        if ap:
+            return [x["text"] for x in ap]
     return _liste(erp.einstellungen(db).get("arbeitsgaenge")) or ["Bearbeitung"]
 
 

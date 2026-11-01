@@ -24,9 +24,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bericht
 import archiv
+import auswertung
+import datev
 import erechnung
 import erp
 import finanzen
+import inventur
 import produktion
 import seed
 import zusatz
@@ -214,6 +217,7 @@ def r_grundlagen(**_):
                 folgen=erp.zeilen(DB.execute("SELECT * FROM belegart_folge")),
                 zahlungsbedingungen=erp.zeilen(DB.execute("SELECT * FROM zahlungsbedingung")),
                 lager=erp.zeilen(DB.execute("SELECT * FROM lager")),
+                steuerfaelle=[dict(code=k, name=v["name"], hinweis=v["hinweis"]) for k, v in erp.STEUERFAELLE.items()],
                 gruende=["Lieferant liefert später", "Freigabe Kunde verzögert", "Änderungswunsch Kunde", "Kapazität Fertigung",
                          "Nacharbeit / Qualität", "Krankheit / Urlaub", "Sonstiges"])
 
@@ -733,6 +737,80 @@ def r_ms_neu(pid, body, benutzer, **_):
         DB.execute("INSERT INTO projekt_verlauf(projekt_id,zeit,benutzer,text) VALUES(?,?,?,?)",
                    (pid, erp.jetzt(), benutzer, f"Schritt „{body['titel']}“ hinzugefügt"))
     return erp.projekt_lesen(DB, pid)
+
+
+# ---------------------------------------------------------------- Liquidität / Umsatz
+@route("GET", "/api/liquiditaet")
+def r_liquiditaet(q, **_):
+    return auswertung.liquiditaet(DB, int(q.get("wochen") or 13), None, q.get("ueberfaellige") or "woche1")
+
+
+@route("POST", "/api/liquiditaet/kontostand")
+def r_liq_stand(body, benutzer, **_):
+    return auswertung.kontostand_speichern(DB, body.get("betrag"), body.get("datum"), benutzer)
+
+
+@route("POST", "/api/liquiditaet/posten")
+def r_liq_posten(body, benutzer, **_):
+    return auswertung.liq_posten_speichern(DB, body.get("posten") or [], benutzer)
+
+
+@route("GET", "/api/umsatz")
+def r_umsatz(q, **_):
+    return auswertung.umsatz(DB, int(q["jahr"]) if (q.get("jahr") or "").isdigit() else None)
+
+
+# ---------------------------------------------------------------- DATEV
+@route("GET", "/api/datev")
+def r_datev(**_):
+    return dict(datev.einstellungen(DB), exporte=datev.exporte(DB))
+
+
+@route("POST", "/api/datev/einstellungen")
+def r_datev_einst(body, benutzer, **_):
+    return datev.einstellungen_speichern(DB, body, benutzer)
+
+
+@route("GET", "/api/datev/vorschau")
+def r_datev_vorschau(q, **_):
+    return datev.vorschau(DB, q.get("von") or "", q.get("bis") or "")
+
+
+@route("GET", "/api/datev/export")
+def r_datev_export(q, benutzer, **_):
+    daten, name = datev.export(DB, q.get("von") or "", q.get("bis") or "", benutzer)
+    return {"__datei": daten, "typ": "text/csv; charset=windows-1252", "name": name, "anhang": True}
+
+
+# ---------------------------------------------------------------- Inventur
+@route("GET", "/api/inventuren")
+def r_inventuren(**_):
+    return inventur.liste(DB)
+
+
+@route("POST", "/api/inventuren")
+def r_inventur_neu(body, benutzer, **_):
+    return inventur.eroeffnen(DB, body.get("bezeichnung"), body.get("stichtag") or None, body.get("gruppe") or None, benutzer)
+
+
+@route("GET", "/api/inventuren/(?P<iid>\\d+)")
+def r_inventur(iid, **_):
+    return inventur.lesen(DB, iid)
+
+
+@route("POST", "/api/inventuren/(?P<iid>\\d+)/zaehlen")
+def r_inventur_zaehlen(iid, body, benutzer, **_):
+    return inventur.zaehlen(DB, iid, body.get("werte") or [], benutzer)
+
+
+@route("POST", "/api/inventuren/(?P<iid>\\d+)/abschliessen")
+def r_inventur_abschluss(iid, body, benutzer, **_):
+    return inventur.abschliessen(DB, iid, body.get("nicht_gezaehlt") or "soll", benutzer)
+
+
+@route("POST", "/api/inventuren/(?P<iid>\\d+)/abbrechen")
+def r_inventur_abbruch(iid, benutzer, **_):
+    return inventur.abbrechen(DB, iid, benutzer)
 
 
 def main():
