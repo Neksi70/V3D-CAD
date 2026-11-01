@@ -116,7 +116,39 @@ function Set-CustomDir($p) {
         } elseif (Test-Path -LiteralPath $CFGFILE) { Remove-Item -LiteralPath $CFGFILE -Force }
     } catch {}
 }
-function Get-RootDir { $c = Get-CustomDir; if ($c) { return $c } return (Get-LibDir) }
+# --- Netzwerkplatte (ab v14): steht in %APPDATA%\Volme3D\helper-netdir.txt ein Pfad
+# (z. B. \\v3da.tailf05fe9.ts.net\stl), landen neue Downloads dort statt in Dokumente.
+# Ist die Platte nicht erreichbar, bleiben die Dateien in Downloads liegen und werden
+# beim naechsten Durchlauf mit Verbindung verschoben. Ohne Eintrag: alles wie bisher. ---
+$NETFILE = Join-Path $CFGDIR 'helper-netdir.txt'
+$script:NetCache = @{ at = [datetime]::MinValue; path = $null; ok = $false }
+function Get-NetDirSetting {
+    $p = $env:VOLME3D_NETDIR
+    if (-not $p) { try { if (Test-Path -LiteralPath $NETFILE) { $p = (Get-Content -LiteralPath $NETFILE -Raw -ErrorAction Stop).Trim() } } catch {} }
+    if ($p) { return $p.TrimEnd('\') }
+    return $null
+}
+function Test-HostPort($h, $port, $ms) {
+    $c = New-Object System.Net.Sockets.TcpClient
+    try { $ar = $c.BeginConnect($h, $port, $null, $null); if (-not $ar.AsyncWaitHandle.WaitOne($ms)) { return $false }; $c.EndConnect($ar); return $true }
+    catch { return $false } finally { $c.Close() }
+}
+# Netzwerk-Ordner, wenn eingetragen UND erreichbar (Ergebnis 20 s gemerkt; erst kurzer
+# Port-445-Test, damit ein nicht erreichbarer Server den Helfer nicht lange blockiert).
+function Get-NetLib {
+    $p = Get-NetDirSetting; if (-not $p) { return $null }
+    $c = $script:NetCache
+    if ($c.path -eq $p -and ((Get-Date) - $c.at).TotalSeconds -lt 20) { if ($c.ok) { return $p }; return $null }
+    $ok = $true
+    if ($p -match '^\\\\([^\\]+)\\') { $ok = Test-HostPort $Matches[1] 445 1500 }
+    if ($ok) { $ok = [bool](Test-Path -LiteralPath $p -PathType Container -ErrorAction SilentlyContinue) }
+    $script:NetCache = @{ at = (Get-Date); path = $p; ok = $ok }
+    if ($ok) { return $p }
+    return $null
+}
+# Ziel fuers Einsammeln: Netzwerk-Ordner (oder $null = warten) bzw. die lokale Bibliothek.
+function Get-CollectDir { if (Get-NetDirSetting) { return (Get-NetLib) }; return (Get-LibDir) }
+function Get-RootDir { $c = Get-CustomDir; if ($c) { return $c }; $n = Get-NetLib; if ($n) { return $n }; return (Get-LibDir) }
 function Show-FolderDialog($initial) {
     try {
         Add-Type -AssemblyName System.Windows.Forms | Out-Null
@@ -152,8 +184,10 @@ function Get-CollectTarget($dst, $srcRoot, $f) {
     if (-not (Test-Path -LiteralPath $tdir)) { New-Item -ItemType Directory -Path $tdir -Force | Out-Null }
     return (Join-Path $tdir $f.Name)
 }
-function Invoke-Collect($move) {
-    $srcs = Get-DownloadCandidates; $dst = Get-LibDir; $dstLow = $dst.TrimEnd('\').ToLower(); $copied = 0; $skipped = 0
+function Invoke-Collect($move, $countIt = $true) {
+    $srcs = Get-DownloadCandidates; $dst = Get-CollectDir
+    if (-not $dst) { return [ordered]@{ ok = $true; copied = 0; skipped = 0; waiting = $true; netDir = (Get-NetDirSetting); dir = $null; source = ($srcs -join '; '); count = 0 } }
+    $dstLow = $dst.TrimEnd('\').ToLower(); $copied = 0; $skipped = 0
     # gewaehlten Anzeige-Ordner nie leerraeumen (falls er in den Downloads liegt)
     $cust = Get-CustomDir; $custLow = if ($cust) { $cust.TrimEnd('\').ToLower() } else { $null }
     foreach ($src in $srcs) {
@@ -168,7 +202,7 @@ function Invoke-Collect($move) {
             } catch {}
         }
     }
-    $count = (Get-ChildItem -LiteralPath $dst -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() }).Count
+    $count = 0; if ($countIt) { $count = (Get-ChildItem -LiteralPath $dst -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() }).Count }
     return [ordered]@{ ok = $true; copied = $copied; skipped = $skipped; dir = $dst; source = ($srcs -join '; '); count = $count }
 }
 function Get-LibList {
@@ -238,7 +272,13 @@ function Stream-Collect($stream, $origin, $move) {
     foreach ($k in $cors.Keys) { [void]$sb.Append("$k`: $($cors[$k])`r`n") }
     [void]$sb.Append("`r`n")
     $h = [System.Text.Encoding]::ASCII.GetBytes($sb.ToString()); $stream.Write($h, 0, $h.Length); $stream.Flush()
-    $srcs = Get-DownloadCandidates; $dst = Get-LibDir; $dstLow = $dst.TrimEnd('\').ToLower()
+    $srcs = Get-DownloadCandidates; $dst = Get-CollectDir
+    if (-not $dst) {   # Netzwerkplatte eingetragen, aber nicht erreichbar: Downloads bleiben liegen
+        $rc = (Get-LibList).Count
+        Write-Line $stream (([ordered]@{ done = $true; ok = $true; copied = 0; skipped = 0; waiting = $true; netDir = (Get-NetDirSetting); dir = $null; source = ($srcs -join '; '); count = $rc }) | ConvertTo-Json -Compress)
+        return
+    }
+    $dstLow = $dst.TrimEnd('\').ToLower()
     $cust = Get-CustomDir; $custLow = if ($cust) { $cust.TrimEnd('\').ToLower() } else { $null }
     $pairs = @()
     foreach ($src in $srcs) { Get-ChildItem -LiteralPath $src -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() -and -not $_.FullName.ToLower().StartsWith($dstLow) -and (-not $custLow -or -not $_.FullName.ToLower().StartsWith($custLow)) } | ForEach-Object { $pairs += [pscustomobject]@{ f = $_; src = $src } } }
@@ -457,7 +497,7 @@ function Handle-Client($client) {
     for ($i = 1; $i -lt $lines.Count; $i++) { $ln = $lines[$i]; $idx = $ln.IndexOf(':'); if ($idx -gt 0) { $headers[$ln.Substring(0, $idx).Trim().ToLower()] = $ln.Substring($idx + 1).Trim() } }
     $origin = $headers['origin']; $cors = New-Cors $origin
     if ($method -eq 'OPTIONS') { Send-Bytes $stream '204 No Content' $cors 'text/plain' (New-Object byte[] 0); return }
-    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 13; assistant = $true; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir); dir = (Get-RootDir); custom = [bool](Get-CustomDir) }) $origin; return }
+    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 14; assistant = $true; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir); netDir = (Get-NetDirSetting); netOk = [bool](Get-NetLib); dir = (Get-RootDir); custom = [bool](Get-CustomDir) }) $origin; return }
     if ($path -like '/slicer/*') {
         # Druck-Assistent: alles nur fuer erlaubte Web-Adressen (Projektdateien, Tastendruecke, Profile)
         if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = "origin not allowed: $origin" }) $origin; return }
@@ -664,6 +704,6 @@ while ($true) {
     }
     if (((Get-Date) - $lastAuto).TotalSeconds -ge $autoSec) {
         $lastAuto = Get-Date
-        try { Invoke-Collect $true | Out-Null } catch {}   # automatisch: VERSCHIEBEN
+        try { Invoke-Collect $true $false | Out-Null } catch {}   # automatisch: VERSCHIEBEN
     }
 }
