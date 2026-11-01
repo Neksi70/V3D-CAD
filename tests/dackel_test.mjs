@@ -97,8 +97,10 @@ for (const v of varianten) {
 }
 
 // ✂️ Halbiert mit Steckstiften: Hälften je 1 Stück, liegen flach, Stifte passen, weniger Überhang
-for (const [name, P] of [['Dackel 4 Kerzen', {}], ['Dackel 1 Kerze Mini', { kerzen: 1, groesse: 100, kerzeD: 14 }], ['Mops 4 Kerzen', { rasse: 'mops' }], ['Mops 3 Kerzen Groß', { rasse: 'mops', kerzen: 3, groesse: 260 }]]) {
-  const r = await pg.evaluate(P => {
+for (const [name0, P] of [['Dackel 4 Kerzen', {}], ['Dackel 1 Kerze Mini', { kerzen: 1, groesse: 100, kerzeD: 14 }], ['Mops 4 Kerzen', { rasse: 'mops' }], ['Mops 3 Kerzen Groß', { rasse: 'mops', kerzen: 3, groesse: 260 }]])
+for (const modus of [2, 1]) {
+  const name = name0 + (modus === 2 ? ' Rücken/Bauch' : ' längs');
+  const r = await pg.evaluate(({ P, modus }) => {
     const w = _mfWasm, M = w.Manifold;
     // Stützvolumen (mm³, Schätzung wie Baum-/Normalstützen): 1-mm-Raster von oben; in jeder Säule zählt
     // die Luft zwischen Bett bzw. nach oben zeigender Fläche und der nächsten steil (> 45°) nach unten
@@ -122,24 +124,26 @@ for (const [name, P] of [['Dackel 4 Kerzen', {}], ['Dackel 1 Kerze Mini', { kerz
       return vol; };
     Object.assign(_dklP, _DKL_DEF, P);
     const R0 = _dklBuild(w, _dklP, 'vorschau'), aGanz = ueber(R0.hund); R0.hund.delete(); if (R0.bommel) R0.bommel.delete();
-    Object.assign(_dklP, { teilen: 1 });
-    const R = _dklBuild(w, _dklP, 'vorschau'), pin = R.pin;
-    const a = R.plus.rotate([-90, 0, 0]), b = R.minus.rotate([90, 0, 0]);
+    Object.assign(_dklP, { teilen: modus });
+    const R = _dklBuild(w, _dklP, 'vorschau'), pin = R.pin, cut = R.cut;
+    let a, b;                                                                 // Drucklage wie in _dklCreate
+    if (cut.ax === 'z') { a = R.a.rotate([-90, 0, 0]); b = R.b.rotate([90, 0, 0]); }
+    else { a = R.a.translate([0, -cut.c, 0]); const t = R.b.rotate([180, 0, 0]); b = t.translate([0, cut.c, 0]); t.delete(); }
     const flach = m => { const s = m.trimByPlane([0, -1, 0], -0.3), bb = s.boundingBox(), v = s.volume(); s.delete(); return Math.round(v / 0.3); };   // Auflagefläche ≈ Volumen der untersten 0,3 mm / 0,3
-    const res = { pins: R.pins.length, parts: [R.plus.decompose().length, R.minus.decompose().length], ymin: [a.boundingBox().min[1], b.boundingBox().min[1]].map(v => +v.toFixed(3)),
+    const res = { pins: R.pins.length, parts: [R.a.decompose().length, R.b.decompose().length], ymin: [a.boundingBox().min[1], b.boundingBox().min[1]].map(v => +v.toFixed(3)),
       flaeche: [flach(a), flach(b)], ueberGanz: Math.round(aGanz), ueberHalb: Math.round(ueber(a) + ueber(b)) };
     // Stifte (volle Länge 2L) an ihren Plätzen im zusammengesetzten Hund: keine Überschneidung
-    const asm = M.union([R.plus, R.minus]); let hit = 0;
-    for (const [x, y] of R.pins) { const c = M.cylinder(2 * pin.L, pin.r, pin.r, 40).translate([x, y, -pin.L]), i = c.intersect(asm); hit += i.volume(); i.delete(); c.delete(); }
+    const asm = M.union([R.a, R.b]); let hit = 0;
+    for (const q of R.pins) { const c = _dklStiftZyl(M, cut, q, 2 * pin.L, pin.r, 40), i = c.intersect(asm); hit += i.volume(); i.delete(); c.delete(); }
     res.hit = +hit.toFixed(3);
     const sb = R.stifte.boundingBox(); res.stifte = { n: R.stifte.decompose().length, ymin: +sb.min[1].toFixed(3), len: +(sb.max[0] - sb.min[0]).toFixed(2), L2: 2 * pin.L, dp: pin.dp };
-    [a, b, asm, R.plus, R.minus, R.stifte].forEach(m => m.delete()); if (R.bommel) R.bommel.delete();
+    [a, b, asm, R.a, R.b, R.stifte].forEach(m => m.delete()); if (R.bommel) R.bommel.delete();
     return res;
-  }, P);
+  }, { P, modus });
   console.log('✂️ ' + name, JSON.stringify(r));
   ok('✂️ ' + name + ': mind. 3 Steckstifte', r.pins >= 3, r.pins);
   ok('✂️ ' + name + ': Hälften je ein Stück, liegen auf y = 0', r.parts.every(n => n === 1) && r.ymin.every(v => Math.abs(v) < 0.01), [r.parts, r.ymin]);
-  ok('✂️ ' + name + ': große Auflagefläche', r.flaeche.every(v => v > 1000), r.flaeche);
+  ok('✂️ ' + name + ': große Auflagefläche', r.flaeche.every(v => v > (modus === 2 ? 400 : 1000)), r.flaeche);
   ok('✂️ ' + name + ': Stifte passen in die Löcher', r.hit < 0.5, r.hit);
   ok('✂️ ' + name + ': Stifte liegen flach, Länge 2L', r.stifte.n === r.pins && Math.abs(r.stifte.ymin) < 0.01 && Math.abs(r.stifte.len - r.stifte.L2) < 0.01, r.stifte);
   ok('✂️ ' + name + ': deutlich weniger Stützvolumen (< 50 %)', r.ueberHalb < 0.5 * r.ueberGanz, [r.ueberGanz, r.ueberHalb]);
@@ -170,12 +174,12 @@ for (const k of [1, 4]) {
   });
   const teil = await pg.evaluate(async () => {
     objects.slice().forEach(o => { scene.remove(o); }); objects.length = 0;
-    Object.assign(_dklP, _DKL_DEF, { rasse: 'mops', teilen: 1 }); await _dklCreate();
+    Object.assign(_dklP, _DKL_DEF, { rasse: 'mops', teilen: 2 }); await _dklCreate();
     const boxes = objects.map(o => { const b = new THREE.Box3().setFromObject(o); return [o.userData.name, +b.min.y.toFixed(3), +b.min.z.toFixed(1), +b.max.z.toFixed(1)]; });
     return boxes;
   });
-  ok('✂️ Erstellen halbiert: Hälften, Stifte, Bommel auf der Platte, ohne Überlappung', teil.length === 4 && teil.every(b => Math.abs(b[1]) < 0.01) &&
-     teil.filter(b => /Hälfte|Steckstifte/.test(b[0])).sort((a, b) => a[2] - b[2]).every((b, i, A) => i === 0 || b[2] >= A[i - 1][3]), teil);
+  ok('✂️ Erstellen Rücken/Bauch: Ober-/Unterteil, Stifte, Bommel auf der Platte, ohne Überlappung', teil.length === 4 && teil.every(b => Math.abs(b[1]) < 0.01) &&
+     teil.filter(b => /Oberteil|Unterteil|Steckstifte/.test(b[0])).sort((a, b) => a[2] - b[2]).every((b, i, A) => i === 0 || b[2] >= A[i - 1][3]), teil);
   await pg.screenshot({ path: '/tmp/dkl_szene_teil.png' });
   ok('Mops über den Katalog: Titel, Umschalter, Teilenamen', /Mops/.test(info.titel) && info.on === 'mops' && info.namen.length === 2 && info.namen.every(n => /^Mops/.test(n)) && info.rasse === 'mops', info);
   await pg.evaluate(() => _dklOpen('dackel'));
