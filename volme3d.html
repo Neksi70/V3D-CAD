@@ -6407,6 +6407,15 @@ Patrick</textarea>
           <button class="vtb" data-v="laterne" title="Vier Seiten mit runden Ecken – jede Seite kann ein eigenes Bild tragen" onclick="_lithoForm('laterne')">⬜ Laterne</button>
           <button class="vtb" data-v="bogen" title="Gebogene Platte – steht von allein und wirkt räumlich" onclick="_lithoForm('bogen')">◠ Bogen</button>
         </div>
+        <div class="vtbrow" id="litho-umriss-bg" style="display:flex;gap:4px;margin:-3px 0 7px;flex-wrap:wrap">
+          <button class="vtb on" data-v="rechteck" title="Rechteckige Platte im Bildformat" onclick="_lithoStr('umriss','rechteck')">▭ Rechteck</button>
+          <button class="vtb" data-v="abgerundet" title="Rechteck mit runden Ecken" onclick="_lithoStr('umriss','abgerundet')">▢ Abgerundet</button>
+          <button class="vtb" data-v="kreis" title="Runde Scheibe" onclick="_lithoStr('umriss','kreis')">● Kreis</button>
+          <button class="vtb" data-v="oval" title="Oval im Bildformat" onclick="_lithoStr('umriss','oval')">⬭ Oval</button>
+          <button class="vtb" data-v="herz" title="Herzform" onclick="_lithoStr('umriss','herz')">♥ Herz</button>
+          <button class="vtb" data-v="stern" title="Fünfzackiger Stern" onclick="_lithoStr('umriss','stern')">★ Stern</button>
+          <button class="vtb" data-v="sechseck" title="Sechseck" onclick="_lithoStr('umriss','sechseck')">⬡ Sechseck</button>
+        </div>
         <div id="litho-mantel-box" style="display:none">
         <div class="vrow"><label id="litho-lbl-mD" title="Außenmaß">Durchmesser</label> <input type="range" id="lp-mD" min="30" max="250" value="80" step="1" oninput="document.getElementById('lv-mD').textContent=this.value;_lithoSet('mD',this.value)"><span class="vv" id="lv-mD">80</span><span class="vu">mm</span></div>
         <div class="vrow"><label>Höhe</label> <input type="range" id="lp-mH" min="20" max="250" value="100" step="1" oninput="document.getElementById('lv-mH').textContent=this.value;_lithoSet('mH',this.value)"><span class="vv" id="lv-mH">100</span><span class="vu">mm</span></div>
@@ -66682,7 +66691,7 @@ const _litho = { img:null, lum:null, cols:0, rows:0, aspect:1,
        form:'flach', kD:80, kUnten:30, kOben:0, kVon:-45, kBis:60, kWinkel:360, kWdh:1,
        kRand:3, kFit:'einpassen', kInnen:false, kOese:true, kDeckel:true, kDeckelForm:'flach', tlD:38, tlSpiel:0.4,
        kFarbe:false, kFarbN:4, kFarbTiefe:0.8, kPalette:[],
-       mD:80, mH:100, mOben:70, mEcke:12, mBogen:120, mRand:3 } };
+       mD:80, mH:100, mOben:70, mEcke:12, mBogen:120, mRand:3, umriss:'rechteck' } };
 function _lithoSampleIn(T){
   if(!T.img) return;
   // Der Deckel lag bei 360 Spalten — damit blieb das Relief auch am Reglerende
@@ -66731,6 +66740,7 @@ const _LITHO_MANTEL=['zylinder','kegel','laterne','bogen'];
 function _buildLithoGeo(vorschau){
   if(_litho.p.form==='kugel') return _buildLithoKugelGeo(vorschau);
   if(_LITHO_MANTEL.includes(_litho.p.form)) return _buildLithoMantelGeo(vorschau);
+  if(_litho.p.umriss && _litho.p.umriss!=='rechteck' && _litho.lum) return _buildLithoUmrissGeo(vorschau);
   if(!_litho.lum) return new THREE.BoxGeometry(8,0.4,5);   // Platzhalter
   const src=(vorschau && _litho.prev) ? _litho.prev : _litho;
   const lum=src.lum, nx=src.cols, nz=src.rows, P=_litho.p;
@@ -66753,27 +66763,110 @@ function _buildLithoGeo(vorschau){
         const x=ix/(nx-1)*wU - wU/2, z=iz/(nz-1)*hU - hU/2;
         pos.push(x, layer===0?thick(ix,iz):0, z);
       }
-  for(let iz=0;iz<nz-1;iz++)for(let ix=0;ix<nx-1;ix++){    // Oberseite (Relief)
-    const a=vid(0,ix,iz),b=vid(0,ix+1,iz),c=vid(0,ix+1,iz+1),d=vid(0,ix,iz+1);
-    idx.push(a,d,c, a,c,b);
-  }
-  for(let iz=0;iz<nz-1;iz++)for(let ix=0;ix<nx-1;ix++){    // Rückseite (flach, umgekehrt)
-    const a=vid(1,ix,iz),b=vid(1,ix+1,iz),c=vid(1,ix+1,iz+1),d=vid(1,ix,iz+1);
-    idx.push(a,b,c, a,c,d);
-  }
-  const wall=(aT,aB,bT,bB)=>{ idx.push(aT,aB,bB, aT,bB,bT); };   // Seitenwände
-  for(let ix=0;ix<nx-1;ix++){
-    wall(vid(0,ix,0),vid(1,ix,0),vid(0,ix+1,0),vid(1,ix+1,0));
-    wall(vid(0,ix+1,nz-1),vid(1,ix+1,nz-1),vid(0,ix,nz-1),vid(1,ix,nz-1));
-  }
-  for(let iz=0;iz<nz-1;iz++){
-    wall(vid(0,0,iz+1),vid(1,0,iz+1),vid(0,0,iz),vid(1,0,iz));
-    wall(vid(0,nx-1,iz),vid(1,nx-1,iz),vid(0,nx-1,iz+1),vid(1,nx-1,iz+1));
-  }
+  _lithoPlattenFlaechen(pos, idx, nx, nz, vid);              // Relief, Boden, Seitenwände (richtig ausgerichtet)
   const g=new THREE.BufferGeometry();
   g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
   g.setIndex(idx);
   if(_geoSignedVolume(g)<0){ const a=g.index.array; for(let i=0;i<a.length;i+=3){ const tmp=a[i+1];a[i+1]=a[i+2];a[i+2]=tmp; } g.index.needsUpdate=true; }
+  g.computeVertexNormals(); g.computeBoundingBox();
+  return g;
+}
+
+// ── Flaches Lithophane mit Umriss: Herz, Stern, Kreis, Oval, Sechseck … (Achim 1.11.26) ──
+// Relief-Raster über die Fläche des Umrisses; das Foto füllt ihn ohne Verzerrung (was
+// übersteht, wird abgeschnitten). Danach mit Manifold am Umriss ausgeschnitten → glatte
+// Kante statt Treppen. Rahmen läuft am Umriss entlang (Abstand zur Kontur < Rahmen).
+// Umriss in App-Einheiten, y nach oben (Bildoberkante = oben).
+function _lithoUmrissPoly(art, w, h){
+  const pts=[], N=180;
+  if(art==='kreis'||art==='oval'){ for(let i=0;i<N;i++){ const t=i/N*2*Math.PI; pts.push([w/2*Math.cos(t), h/2*Math.sin(t)]); } }
+  else if(art==='herz'){
+    const roh=[]; for(let i=0;i<N;i++){ const t=i/N*2*Math.PI; roh.push([16*Math.pow(Math.sin(t),3), 13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t)]); }
+    let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9; for(const q of roh){ x0=Math.min(x0,q[0]);x1=Math.max(x1,q[0]);y0=Math.min(y0,q[1]);y1=Math.max(y1,q[1]); }
+    for(const q of roh) pts.push([(q[0]-(x0+x1)/2)/(x1-x0)*w, (q[1]-(y0+y1)/2)/(y1-y0)*h]);
+  } else if(art==='stern'){
+    // Spitzen oben; 5 Zacken, Innenradius 45 %, auf die Box gestreckt
+    const roh=[]; for(let i=0;i<10;i++){ const r=i%2?0.45:1, t=Math.PI/2+i*Math.PI/5; roh.push([r*Math.cos(t), r*Math.sin(t)]); }
+    let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9; for(const q of roh){ x0=Math.min(x0,q[0]);x1=Math.max(x1,q[0]);y0=Math.min(y0,q[1]);y1=Math.max(y1,q[1]); }
+    for(const q of roh) pts.push([(q[0]-(x0+x1)/2)/(x1-x0)*w, (q[1]-(y0+y1)/2)/(y1-y0)*h]);
+  } else if(art==='sechseck'){ for(let i=0;i<6;i++){ const t=i*Math.PI/3; pts.push([w/2*Math.cos(t), h/2/Math.sin(Math.PI/3)*Math.sin(t)]); } }   // Box-Höhe = Kante zu Kante
+  else { // abgerundet
+    const r=Math.min(w,h)*0.12, cx=w/2-r, cy=h/2-r, eck=[[cx,cy,0],[-cx,cy,Math.PI/2],[-cx,-cy,Math.PI],[cx,-cy,Math.PI*1.5]];
+    for(const [x,y,a0] of eck) for(let k=0;k<=12;k++){ const a=a0+k/12*Math.PI/2; pts.push([x+r*Math.cos(a), y+r*Math.sin(a)]); }
+  }
+  return pts;
+}
+// Seitenverhältnis Breite/Höhe des Umrisses (Kreis/Herz/Stern fest, Oval/Abgerundet wie das Bild)
+function _lithoUmrissAspekt(art){ return art==='kreis'?1 : art==='herz'?1.1 : art==='stern'?1.05 : art==='sechseck'?1.155 : _litho.aspect; }
+// Ober-/Unterseite + Seitenwände eines Platten-Rasters (zwei Lagen: 0 = Relief, 1 = Boden),
+// jedes Dreieck nach seiner Soll-Normale ausgerichtet. Vorher waren zwei der vier Wände
+// falsch herum (Kante zweimal in derselben Richtung) — das flache Lithophane war damit
+// nicht „manifold“; Slicer flickten es still, Manifold (Ausschneiden am Umriss) lehnte ab.
+function _lithoPlattenFlaechen(pos, idx, nx, nz, vid){
+  const P3=k=>[pos[k*3],pos[k*3+1],pos[k*3+2]];
+  const tri=(a,b,c,soll)=>{ const A=P3(a),B=P3(b),C=P3(c);
+    const ux=B[0]-A[0],uy=B[1]-A[1],uz=B[2]-A[2],vx=C[0]-A[0],vy=C[1]-A[1],vz=C[2]-A[2];
+    const nx2=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz2=ux*vy-uy*vx;
+    if(nx2*soll[0]+ny*soll[1]+nz2*soll[2]>=0) idx.push(a,b,c); else idx.push(a,c,b); };
+  const quad=(a,b,c,d,soll)=>{ tri(a,b,c,soll); tri(a,c,d,soll); };
+  for(let j=0;j<nz-1;j++) for(let i=0;i<nx-1;i++){
+    quad(vid(0,i,j),vid(0,i+1,j),vid(0,i+1,j+1),vid(0,i,j+1),[0,1,0]);     // Relief oben
+    quad(vid(1,i,j),vid(1,i+1,j),vid(1,i+1,j+1),vid(1,i,j+1),[0,-1,0]);    // Boden
+  }
+  const sz=Math.sign(pos[vid(0,0,nz-1)*3+2]-pos[vid(0,0,0)*3+2])||1, sx=Math.sign(pos[vid(0,nx-1,0)*3]-pos[vid(0,0,0)*3])||1;
+  for(let i=0;i<nx-1;i++){
+    quad(vid(0,i,0),vid(0,i+1,0),vid(1,i+1,0),vid(1,i,0),[0,0,-sz]);
+    quad(vid(0,i,nz-1),vid(0,i+1,nz-1),vid(1,i+1,nz-1),vid(1,i,nz-1),[0,0,sz]);
+  }
+  for(let j=0;j<nz-1;j++){
+    quad(vid(0,0,j),vid(0,0,j+1),vid(1,0,j+1),vid(1,0,j),[-sx,0,0]);
+    quad(vid(0,nx-1,j),vid(0,nx-1,j+1),vid(1,nx-1,j+1),vid(1,nx-1,j),[sx,0,0]);
+  }
+}
+function _buildLithoUmrissGeo(vorschau){
+  const P=_litho.p, art=P.umriss, src=(vorschau && _litho.prev) ? _litho.prev : _litho;
+  const lum=src.lum, ix=src.cols, iz=src.rows, a=_litho.aspect, aS=_lithoUmrissAspekt(art);
+  const wU=Math.max(2,P.width)/10, hU=wU/aS;
+  const maxT=Math.max(0.2,P.maxT)/10, minT=Math.max(0.1,Math.min(P.minT,P.maxT-0.1))/10, fr=Math.max(0,P.frame)/10;
+  const poly=_lithoUmrissPoly(art, wU, hU);
+  // Abstand zur Kontur (für den Rahmen)
+  const randAbst=(x,y)=>{ let d=1e9; for(let i=0,j=poly.length-1;i<poly.length;j=i++){ const ax=poly[j][0],ay=poly[j][1],bx=poly[i][0],by=poly[i][1];
+    const ux=bx-ax,uy=by-ay,l2=ux*ux+uy*uy, t=l2>0?Math.max(0,Math.min(1,((x-ax)*ux+(y-ay)*uy)/l2)):0; d=Math.min(d,Math.hypot(x-ax-t*ux,y-ay-t*uy)); } return d; };
+  const lumAt=(u,v)=>{ const x=Math.max(0,Math.min(ix-1,u*(ix-1))), z=Math.max(0,Math.min(iz-1,v*(iz-1))), x0=Math.floor(x), z0=Math.floor(z), x1=Math.min(ix-1,x0+1), z1=Math.min(iz-1,z0+1), fx=x-x0, fz=z-z0;
+    return (lum[z0*ix+x0]*(1-fx)+lum[z0*ix+x1]*fx)*(1-fz)+(lum[z1*ix+x0]*(1-fx)+lum[z1*ix+x1]*fx)*fz; };
+  // Raster über die Box, etwas größer (Ausschnitt schneidet sauber)
+  const nx=Math.max(40,Math.min(vorschau?240:Math.max(ix,iz), Math.round(Math.max(ix,iz)*(aS>=1?1:aS)))), nz=Math.max(20,Math.round(nx/aS));
+  const W=wU*1.04, Hh=hU*1.04;
+  const dick=(x,y)=>{   // x/y in Einheiten, y oben
+    if(fr>0 && randAbst(x,y)<fr) return maxT;
+    let u=x/wU+0.5, v=0.5-y/hU;                    // Foto füllt die Box (Ausschnitt mittig)
+    if(a>aS) u=0.5+(u-0.5)*aS/a; else v=0.5+(v-0.5)*a/aS;
+    if(u<0||u>1||v<0||v>1) return maxT;
+    const l=lumAt(u,v), level=P.invert? l : (1-l);
+    return minT+(maxT-minT)*level;
+  };
+  const pos=[], idx=[], vid=(L,i,j)=>L*nx*nz+j*nx+i;
+  for(let L=0;L<2;L++) for(let j=0;j<nz;j++) for(let i=0;i<nx;i++){
+    const x=i/(nx-1)*W-W/2, y=Hh/2-j/(nz-1)*Hh;
+    pos.push(x, L===0?dick(x,y):0, -y);
+  }
+  _lithoPlattenFlaechen(pos, idx, nx, nz, vid);
+  let g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3)); g.setIndex(idx);
+  // Ausschneiden am Umriss (Manifold). Ist die Engine noch nicht geladen, zeigt die
+  // Vorschau einmal die ganze Box und baut nach dem Laden neu.
+  const w=_mfWasm;
+  if(!w){ _mfInit().then(()=>{ if(_gpv['litho']) _gpvUpdate('litho'); }).catch(()=>{}); g.computeVertexNormals(); g.computeBoundingBox(); return g; }
+  const tris=new Float32Array(idx.length*3);
+  for(let k=0;k<idx.length;k++){ const v=idx[k]; tris[k*3]=pos[v*3]*10; tris[k*3+1]=-pos[v*3+2]*10; tris[k*3+2]=pos[v*3+1]*10; }   // (x,y,z) → (x,−z,y) mm: Umriss liegt in XY
+  const platte=_mfFromSoup(w,tris);
+  const cs=new w.CrossSection([poly.map(q=>[q[0]*10,q[1]*10])],'NonZero');
+  const prisma=cs.extrude(maxT*10+2).translate([0,0,-1]);
+  const erg=w.Manifold.intersection(platte,prisma);
+  const m=erg.getMesh(), vp=m.vertProperties, np=m.numProp, tv=m.triVerts;
+  const P2=new Float32Array(m.numVert*3);
+  for(let k=0;k<m.numVert;k++){ P2[k*3]=vp[k*np]/10; P2[k*3+1]=vp[k*np+2]/10; P2[k*3+2]=-vp[k*np+1]/10; }   // zurück: (X,Y,Z) → (X,Z,−Y)
+  try{ platte.delete(); cs.delete(); prisma.delete(); erg.delete(); }catch(_){}
+  g.dispose(); g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(P2,3)); g.setIndex(new THREE.BufferAttribute(new Uint32Array(tv),1));
   g.computeVertexNormals(); g.computeBoundingBox();
   return g;
 }
@@ -67436,11 +67529,11 @@ function _lithoSyncUI(){
     if(u){ u.disabled=!!P.kDeckel; }
     if(P.kDeckel && uv) uv.textContent=(Math.round(_lithoDeckelMasse().Rh*200)/10).toString(); }
   const bg=(id,v)=>document.querySelectorAll('#'+id+' .vtb').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
-  bg('litho-form-bg',P.form); bg('litho-form2-bg',P.form); bg('litho-fit-bg',P.kFit); bg('litho-mfit-bg',P.kFit); bg('litho-dform-bg',P.kDeckelForm||'flach');
+  bg('litho-form-bg',P.form); bg('litho-form2-bg',P.form); bg('litho-umriss-bg',P.umriss||'rechteck'); bg('litho-fit-bg',P.kFit); bg('litho-mfit-bg',P.kFit); bg('litho-dform-bg',P.kDeckelForm||'flach');
   const show=(id,on)=>{ const e=document.getElementById(id); if(e) e.style.display=on?'':'none'; };
   const mantel=_LITHO_MANTEL.includes(P.form);
   for(const k of ['mD','mH','mOben','mEcke','mBogen','mRand']) set('lp-'+k,'lv-'+k,P[k]);
-  show('litho-kugel-box',kugel); show('litho-mantel-box',mantel); show('litho-row-width',!kugel&&!mantel); show('litho-row-frame',!kugel&&!mantel);
+  show('litho-kugel-box',kugel); show('litho-mantel-box',mantel); show('litho-umriss-bg',!kugel&&!mantel); show('litho-row-width',!kugel&&!mantel); show('litho-row-frame',!kugel&&!mantel);
   show('litho-row-mOben',P.form==='kegel'||P.form==='laterne'); show('litho-row-mEcke',P.form==='laterne'); show('litho-row-mBogen',P.form==='bogen');
   { const l=document.getElementById('litho-lbl-mD'); if(l) l.textContent=P.form==='laterne'?'Breite':P.form==='bogen'?'Breite (Bogen)':'Durchmesser'; }
   const ms=document.getElementById('litho-mass-sec'); if(ms) ms.textContent=(kugel||mantel)?'Wand':'Maße';
@@ -67539,6 +67632,7 @@ function _lithoBilderUI(){
 }
 async function _createLitho(){
   if(!_litho.lum){ notify('Erst ein Bild wählen','w'); return; }
+  if(_litho.p.form==='flach' && _litho.p.umriss && _litho.p.umriss!=='rechteck'){ try{ await _mfInit(); }catch(e){ notify('Ausschneide-Engine nicht geladen – Rechteck wird erstellt','w'); } }
   const kugel=_litho.p.form==='kugel';
   let geo; try{ geo=_buildLithoGeo(); }catch(e){ console.error('Lithophane:',e); notify('Fehler beim Erstellen','w'); return; }
   let deckelGeo=null;
@@ -67586,7 +67680,8 @@ async function _createLitho(){
   mesh.quaternion.copy(_wpMakeQuat(workplaneNormal)); mesh.position.copy(workplanePoint);
   typeCounts['litho']=(typeCounts['litho']||0)+1;
   const _fn={zylinder:'Lithophane-Zylinder Ø',kegel:'Lithophane-Tüte Ø',laterne:'Lithophane-Laterne ',bogen:'Lithophane-Bogen '};
-  const lbl=kugel? 'Lithophane-Kugel Ø'+_litho.p.kD+'mm' : _fn[_litho.p.form] ? _fn[_litho.p.form]+_litho.p.mD+'mm' : 'Lithophane '+_litho.p.width+'mm';
+  const _un={abgerundet:'abgerundet',kreis:'Kreis',oval:'Oval',herz:'Herz',stern:'Stern',sechseck:'Sechseck'}[_litho.p.umriss];
+  const lbl=kugel? 'Lithophane-Kugel Ø'+_litho.p.kD+'mm' : _fn[_litho.p.form] ? _fn[_litho.p.form]+_litho.p.mD+'mm' : 'Lithophane '+(_un?_un+' ':'')+_litho.p.width+'mm';
   mesh.userData={id:idCtr++,type:'litho',shapeType:'custom',name:lbl+' #'+typeCounts['litho'],
     color,isHole:false,fillet:0,chamfer:0};
   let farbHinweis='';
@@ -75212,8 +75307,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.290';
+const VOLME3D_VERSION = '1.18.291';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.291', date:'2026-11-01', changes:[
+    ['♥','<b>Lithophane als Herz, Stern, Kreis …</b> Beim flachen Lithophane wählst du jetzt den Umriss: <b>Rechteck</b>, <b>Abgerundet</b>, <b>Kreis</b>, <b>Oval</b>, <b>Herz</b>, <b>Stern</b> oder <b>Sechseck</b>. Das Foto füllt die Form ohne Verzerrung, die Kante ist glatt geschnitten und der <b>Rahmen</b> läuft am Umriss entlang. Nebenbei repariert: Das flache Lithophane war an zwei Seitenwänden falsch herum vernetzt – Slicer haben das still geflickt, jetzt ist es von Haus aus sauber (danke Achim).'],
+  ]},
   { version:'1.18.290', date:'2026-11-01', changes:[
     ['🖼️','<b>Lithophane in neuen Formen.</b> Neben Flach und Kugel gibt es jetzt <b>◯ Zylinder</b> (Lampenschirm, Teelicht-Hülle), <b>🔺 Kegel / Tüte</b> (oben schmaler oder breiter), <b>⬜ Laterne</b> (vier Seiten mit runden Ecken – mit 4 Bildern je eine Seite) und <b>◠ Bogen</b> (gebogene Platte, steht von allein). Mehrere Bilder liegen nebeneinander rundherum, innen ist die Wand glatt, oben und unten gibt ein voller Rand Halt. Gedruckt wird aufrecht (danke Achim).'],
   ]},

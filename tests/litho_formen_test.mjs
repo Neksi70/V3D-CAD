@@ -32,6 +32,18 @@ const r = await pg.evaluate(async () => {
     if (y < 1.5 || y > 4.5) continue; const d = Math.hypot(xo - xi, zo - zi) * 10, ang = Math.atan2(xo, zo);
     if (ang > -Math.PI * 0.45 && ang < -0.1) { links += d; nl++; } if (ang > 0.1 && ang < Math.PI * 0.45) { rechts += d; nr++; } }
   out.praegung = { links: +(links / nl).toFixed(2), rechts: +(rechts / nr).toFixed(2) };
+  // Flach mit Umriss
+  out.umriss = {};
+  for (const um of ['rechteck', 'abgerundet', 'kreis', 'oval', 'herz', 'stern', 'sechseck']) {
+    Object.assign(_litho.p, { form: 'flach', umriss: um, width: 80, frame: 2, maxT: 3, minT: 0.8 });
+    const g = _buildLithoGeo(false); g.computeBoundingBox();
+    const P = g.attributes.position, I = g.index.array, t = new Float32Array(I.length * 3);
+    for (let i = 0; i < I.length; i++) { t[i * 3] = P.getX(I[i]) * 10; t[i * 3 + 1] = P.getY(I[i]) * 10; t[i * 3 + 2] = P.getZ(I[i]) * 10; }
+    let vol = 0, dicht = true; try { vol = _mfFromSoup(w, t).volume(); } catch (e) { dicht = false; }
+    const bb = g.boundingBox;
+    out.umriss[um] = { dicht, vol: Math.round(vol), b: +((bb.max.x - bb.min.x) * 10).toFixed(1), t: +((bb.max.z - bb.min.z) * 10).toFixed(1), d: +((bb.max.y - bb.min.y) * 10).toFixed(2) };
+  }
+  _litho.p.umriss = 'rechteck';
   // Erstellen in der Szene
   objects.slice().forEach(o => scene.remove(o)); objects.length = 0;
   _lithoForm('laterne'); out.laterneOben = _litho.p.mOben; _lithoForm('kegel'); out.kegelOben = _litho.p.mOben;
@@ -48,4 +60,8 @@ ok('Kegel unten 80 (oben schmaler)', Math.abs(r.kegel.b - 80) < 1.5, r.kegel);
 ok('Bild prägt die Wand: schwarz (links) dick ≈ 3, weiß (rechts) dünn ≈ 0,8', r.praegung.links > 2.5 && r.praegung.rechts < 1.2, r.praegung);
 ok('Laterne startet gerade (100 %), Kegel verjüngt (70 %)', r.laterneOben === 100 && r.kegelOben === 70, [r.laterneOben, r.kegelOben]);
 ok('Erstellen legt „Lithophane-Tüte“ (Typ litho) an', r.erstellt.length === 1 && /Lithophane-Tüte/.test(r.erstellt[0]) && /\|litho$/.test(r.erstellt[0]), r.erstellt);
+for (const [um, x] of Object.entries(r.umriss)) ok(`Umriss ${um}: dicht (Manifold), 80 mm breit, höchstens 3 mm dick`, x.dicht && x.vol > 1000 && Math.abs(x.b - 80) < 1 && x.d <= 3.01, x);
+ok('Kreis ist rund (80 × 80)', Math.abs(r.umriss.kreis.t - 80) < 1, r.umriss.kreis);
+ok('Sechseck regelmäßig (80 × 69,3)', Math.abs(r.umriss.sechseck.t - 69.3) < 1, r.umriss.sechseck);
+ok('Herz/Stern füllen weniger als der Kreis (echter Umriss)', r.umriss.herz.vol < r.umriss.kreis.vol && r.umriss.stern.vol < r.umriss.herz.vol, [r.umriss.kreis.vol, r.umriss.herz.vol, r.umriss.stern.vol]);
 console.log(fehler ? fehler + ' Fehler' : 'OK', errs); await b.close(); process.exit(fehler || errs.length ? 1 : 0);
