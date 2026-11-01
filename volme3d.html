@@ -5319,6 +5319,7 @@ Patrick</textarea>
         <div class="vrow"><label>Breite</label> <input type="range" id="ltt-breite" min="40" max="220" value="90" step="1" oninput="_lttSet('breite',this.value)"><span class="vv" id="lttv-breite">90</span><span class="vu">mm</span></div>
         <div class="vrow"><label>Tiefe</label> <input type="range" id="ltt-tiefe" min="30" max="200" value="60" step="1" oninput="_lttSet('tiefe',this.value)"><span class="vv" id="lttv-tiefe">60</span><span class="vu">mm</span></div>
         <div class="vrow"><label title="Höhe bis zu den Zackenspitzen">Höhe</label> <input type="range" id="ltt-hoehe" min="40" max="250" value="115" step="1" oninput="_lttSet('hoehe',this.value)"><span class="vv" id="lttv-hoehe">115</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Wie weit die Seitenwände in der Mitte nach innen geknickt sind — wie bei einer echten Papiertüte. 0 = gerade Seiten">Knick innen</label> <input type="range" id="ltt-knick" min="0" max="40" value="12" step="0.5" oninput="_lttSet('knick',this.value)"><span class="vv" id="lttv-knick">12</span><span class="vu">mm</span></div>
         <div class="vtbrow" id="ltt-rand-bg" style="display:flex;gap:4px;margin-bottom:7px">
           <button class="vtb" data-v="zacken" title="Oberkante im Zickzack wie mit der Zackenschere geschnitten" onclick="_lttStr('rand','zacken')">⩘ Zackenrand</button>
           <button class="vtb" data-v="gerade" title="Gerade Oberkante" onclick="_lttStr('rand','gerade')">Gerade</button>
@@ -5328,7 +5329,7 @@ Patrick</textarea>
           <div class="vrow"><label>Zacken-Tiefe</label> <input type="range" id="ltt-zackT" min="2" max="40" value="10" step="0.5" oninput="_lttSet('zackT',this.value)"><span class="vv" id="lttv-zackT">10</span><span class="vu">mm</span></div>
         </div>
         <div class="vtbrow" id="ltt-falten-bg" style="display:flex;gap:4px;margin-bottom:7px">
-          <button class="vtb" data-v="1" title="Falzlinien an den Seiten wie bei einer gefalteten Papiertüte" onclick="_lttSet('falten',1)">Falzlinien</button>
+          <button class="vtb" data-v="1" title="Falzlinien an geraden Seiten (Knick 0) wie bei einer gefalteten Papiertüte" onclick="_lttSet('falten',1)">Falzlinien</button>
           <button class="vtb" data-v="0" onclick="_lttSet('falten',0)">Glatt</button>
         </div>
         <div class="vtbrow" id="ltt-boden-bg" style="display:flex;gap:4px;margin-bottom:7px">
@@ -60204,7 +60205,7 @@ async function _mtlCreate(){
 // Ecken innen: Die Front-Platte endet Wand + 0,1 mm vor der Seitenwand (Manifold-
 // Eckenfalle aus dem Motivlicht, siehe _mtlBuild).
 const _lttP = { breite: 90, tiefe: 60, hoehe: 115, wand: 0.8, relief: 1.0, art: 'innen', boden: 1, rand: 'zacken', zackB: 30, zackT: 10,
-  falten: 1, kranz: 'doppelt', kranzD: 74, kranzW: 1.2, lage: 0, text1: 'Advents', font1: 'greatvibes_local', h1: 18,
+  falten: 1, knick: 12, kranz: 'doppelt', kranzD: 74, kranzW: 1.2, lage: 0, text1: 'Advents', font1: 'greatvibes_local', h1: 18,
   text2: 'ZAUBER', font2: 'sniglet_local', h2: 10, motiv: 'haeuser', motivH: 20, sternchen: 1, rueck: 'leer', svg: '', svgName: '', vorlage: 'advent' };
 const _LTT_DEF = JSON.parse(JSON.stringify(_lttP));
 const _LTT_COL = '#f3eee4';
@@ -60245,12 +60246,24 @@ function _lttDims(p){
   const W = p.breite, D = p.tiefe, H = p.hoehe, t = p.wand, zT = p.rand === 'gerade' ? 0 : p.zackT;
   const bt = p.boden ? 1 : 0;                                                // Bodenstärke fest 1 mm
   const zLo = Math.max(bt + 2, 4), zHi = H - zT - 3;                         // Dekor-Fläche vorne
-  const clr = p.art === 'innen' ? t + 0.1 : 0.6;                             // Abstand zur Seitenwand
+  // Seitenwand nach innen geknickt (Tütenfalz): V von der vorderen Ecke zur Mitte k mm nach innen
+  const k = Math.max(0, Math.min(+p.knick || 0, W / 2 - 10, D)), m = k / (D / 2);
+  const rz = Math.max(0.2, p.relief);
+  // Innen-Relief vorne muss vor der schrägen Seitenwand enden: deren Innenfläche liegt in der
+  // Tiefe s bei x = W/2 − m·s − t·√(1+m²)
+  const clr = p.art === 'innen' ? m * (t + rz) + t * Math.sqrt(1 + m * m) + 0.1 : 0.6 + m * 0.6;
   const R = Math.min(p.kranzD / 2, W / 2 - clr - 0.5, (zHi - zLo) / 2);
   const cz = Math.min(zHi - R, Math.max(zLo + R, (zLo + zHi) / 2 + (+p.lage || 0)));
   const nz = s => p.rand === 'gerade' ? 0 : Math.max(1, Math.round(s / Math.max(5, p.zackB)));
-  return { W, D, H, t, zT, bt, zLo, zHi, clr, R, cz, nF: nz(W), nS: nz(D),
-    sides: [{ w: W, hd: D / 2 }, { w: D, hd: W / 2 }, { w: W, hd: D / 2 }, { w: D, hd: W / 2 }] };
+  // Außenumriss gegen den Uhrzeigersinn (von oben), Wandstücke = Kanten; außen liegt rechts
+  const F0 = [-W / 2, -D / 2], F1 = [W / 2, -D / 2], B1 = [W / 2, D / 2], B0 = [-W / 2, D / 2];
+  const umriss = k > 0 ? [F0, F1, [W / 2 - k, 0], B1, B0, [-W / 2 + k, 0]] : [F0, F1, B1, B0];
+  const panels = umriss.map((A, i) => {
+    const B = umriss[(i + 1) % umriss.length], L = Math.hypot(B[0] - A[0], B[1] - A[1]);
+    return { A, B, L, ang: Math.atan2(B[1] - A[1], B[0] - A[0]) * 180 / Math.PI, mx: (A[0] + B[0]) / 2, my: (A[1] + B[1]) / 2, n: nz(L) };
+  });
+  const iBack = k > 0 ? 3 : 2;
+  return { W, D, H, t, zT, bt, zLo, zHi, clr, R, cz, k, m, umriss, panels, iBack, nF: panels[0].n, nS: panels[1].n };
 }
 // Dekor der Vorderseite in Seiten-Koordinaten (x quer, z hoch): { cs, warn }
 function _lttDeko(w, p, d, keep){
@@ -60318,54 +60331,56 @@ function _lttBuild(w, p, q){
   const keep = x => { tmp.push(x); return x; };
   const vorschau = q === 'vorschau';
   const res = { d, geo: null, deco: [], warn: [] };
-  // 2D-Fläche → Platte an Seite k: Tiefe dep, Außenfläche bei y = ty (Platte reicht nach −y)
-  const plate = (cs, k, dep, ty) => {
-    let pc = keep(keep(keep(cs.extrude(dep)).rotate([90, 0, 0])).translate([0, ty, 0]));
-    return k ? keep(pc.rotate([0, 0, 90 * k])) : pc;
+  // 2D-Fläche (x längs der Wand um deren Mitte, z hoch) → Platte an Wandstück i, die von
+  // inLo bis inHi nach innen reicht (gemessen ab der Außenfläche, negativ = außen davor)
+  const plate = (cs, i, inLo, inHi) => {
+    const P = d.panels[i];
+    let pc = keep(keep(keep(cs.extrude(inHi - inLo)).rotate([90, 0, 0])).translate([0, inHi, 0]));
+    if (P.ang) pc = keep(pc.rotate([0, 0, P.ang]));
+    return keep(pc.translate([P.mx, P.my, 0]));
   };
   try {
-    let body = keep(M.cube([d.W, d.D, d.H], false).translate([-d.W / 2, -d.D / 2, 0]));
-    body = keep(body.subtract(keep(M.cube([d.W - 2 * d.t, d.D - 2 * d.t, d.H + 2], false).translate([-d.W / 2 + d.t, -d.D / 2 + d.t, d.bt > 0 ? d.bt : -1]))));
+    const aussen = keep(new CS([d.umriss], 'Positive')), innen = keep(aussen.offset(-d.t, 'Miter', 4));
+    let body = keep(keep(aussen.extrude(d.H)).subtract(keep(keep(innen.extrude(d.H + 2)).translate([0, 0, d.bt > 0 ? d.bt : -1]))));
     const add = [], sub = [];
     const deko = _lttDeko(w, p, d, keep);
     res.warn.push(...deko.warn);
     if (deko.cs) {
       const rz = Math.max(0.2, p.relief), ovl = 0.05;
-      for (const k of (p.rueck === 'gleich' ? [0, 2] : [0])) {
-        const hd = d.sides[k].hd;
-        if (p.art === 'innen') add.push(plate(deko.cs, k, rz + ovl, -hd + d.t + rz));
-        else if (p.art === 'aussen') add.push(plate(deko.cs, k, rz + ovl, -hd + ovl));
-        else { const gd = Math.max(0.1, Math.min(rz, d.t - 0.4)); sub.push(plate(deko.cs, k, gd + 1, -hd + gd)); }
+      for (const i of (p.rueck === 'gleich' ? [0, d.iBack] : [0])) {
+        if (p.art === 'innen') add.push(plate(deko.cs, i, d.t - ovl, d.t + rz));
+        else if (p.art === 'aussen') add.push(plate(deko.cs, i, -rz, ovl));
+        else { const gd = Math.max(0.1, Math.min(rz, d.t - 0.4)); sub.push(plate(deko.cs, i, -1, gd)); }
         if (vorschau) {                                                     // Leucht-Vorschau: Schatten außen aufgemalt
           const out = p.art === 'aussen' ? rz : 0;
-          res.deco.push([plate(deko.cs, k, 0.12, -hd - out - 0.06), p.art === 'gravur' ? '#fff1b8' : '#9a8160']);
+          res.deco.push([plate(deko.cs, i, -out - 0.18, -out - 0.06), p.art === 'gravur' ? '#fff1b8' : '#9a8160']);
         }
       }
       if (p.art === 'gravur' && d.t - 0.4 < rz) res.warn.push('Gravur auf ' + String(Math.max(0, d.t - 0.4)).replace('.', ',') + ' mm begrenzt, damit 0,4 mm Wand stehen bleiben.');
     }
-    if (p.falten) {                                                          // Rillen an den Seiten: Mittelfalz + Bodenzwickel
+    if (p.falten && !d.k) {                                                  // gerade Seiten: Rillen Mittelfalz + Bodenzwickel
       const g = Math.min(0.35, d.t * 0.45), bw = 0.8;
-      for (const k of [1, 3]) {
-        const S = d.sides[k], zk = Math.min(S.w / 2, d.H * 0.4), out = [];
+      for (const i of [1, 3]) {
+        const L = d.panels[i].L, zk = Math.min(L / 2, d.H * 0.4), out = [];
         _mtlStroke(out, [[0, d.H + 1], [0, zk]], bw);
-        _mtlStroke(out, [[-S.w / 2 - 1, -1], [0, zk]], bw);
-        _mtlStroke(out, [[S.w / 2 + 1, -1], [0, zk]], bw);
+        _mtlStroke(out, [[-L / 2 - 1, -1], [0, zk]], bw);
+        _mtlStroke(out, [[L / 2 + 1, -1], [0, zk]], bw);
         const cs = keep(CS.union(out.map(P => keep(new CS(P, 'Positive')))));
-        sub.push(plate(cs, k, g + 1, -S.hd + g));
+        sub.push(plate(cs, i, -1, g));
       }
     }
-    if (d.zT > 0) {                                                          // Zackenrand
-      for (let k = 0; k < 4; k++) {
-        const S = d.sides[k], n = (k & 1) ? d.nS : d.nF, P = [[-S.w / 2 - 2, d.H + 2]];
-        for (let i = 0; i <= n; i++) {
-          const x = -S.w / 2 + i * S.w / n;
+    if (d.zT > 0) {                                                          // Zackenrand: Spitzen an allen Ecken und im Knick
+      d.panels.forEach((S, i) => {
+        const n = S.n, P = [[-S.L / 2 - 2, d.H + 2]];
+        for (let j = 0; j <= n; j++) {
+          const x = -S.L / 2 + j * S.L / n;
           P.push([x, d.H]);
-          if (i < n) P.push([x + S.w / (2 * n), d.H - d.zT]);
+          if (j < n) P.push([x + S.L / (2 * n), d.H - d.zT]);
         }
         P[1][0] -= 2; P[P.length - 1][0] += 2;
-        P.push([S.w / 2 + 2, d.H + 2]);
-        sub.push(plate(keep(new CS([P], 'Positive')), k, d.t + 2, -S.hd + d.t + 1));
-      }
+        P.push([S.L / 2 + 2, d.H + 2]);
+        sub.push(plate(keep(new CS([P], 'Positive')), i, -1, d.t + 1));
+      });
     }
     if (add.length) body = keep(M.union([body, ...add]));
     if (sub.length) body = keep(body.subtract(keep(M.union(sub))));
@@ -60465,7 +60480,7 @@ function _lttSvgFile(ev){
 
 function _lttSync(tippen){
   const d = _lttDims(_lttP);
-  for (const k of ['breite','tiefe','hoehe','wand','relief','zackB','zackT','kranzD','kranzW','lage','h1','h2','motivH']) {
+  for (const k of ['breite','tiefe','hoehe','knick','wand','relief','zackB','zackT','kranzD','kranzW','lage','h1','h2','motivH']) {
     const s = document.getElementById('ltt-' + k), t = document.getElementById('lttv-' + k);
     if (s) s.value = _lttP[k];
     if (t) t.textContent = _lttP[k];
@@ -60479,11 +60494,12 @@ function _lttSync(tippen){
   mark('#ltt-kranz-bg', _lttP.kranz); mark('#ltt-boden-bg', _lttP.boden); mark('#ltt-falten-bg', _lttP.falten);
   mark('#ltt-sternchen-bg', _lttP.sternchen); mark('#ltt-rueck-bg', _lttP.rueck);
   const zb = document.getElementById('ltt-zackbox'); if (zb) zb.style.opacity = _lttP.rand === 'gerade' ? '0.45' : '';
+  const fb = document.getElementById('ltt-falten-bg'); if (fb) fb.style.opacity = d.k ? '0.45' : '';
   const el = document.getElementById('ltt-info');
   if (!el) return;
   const f = v => (Math.round(v * 10) / 10).toString().replace('.', ',');
   const t = _lttP.wand, rz = _lttP.relief;
-  let s = 'Tüte <b>' + f(d.W) + ' × ' + f(d.D) + ' × ' + f(d.H) + ' mm</b>' + (d.zT ? ' (Zacken ' + d.nF + ' vorne / ' + d.nS + ' seitlich, ' + f(d.zT) + ' mm tief)' : '') + ', ' + (d.bt ? 'mit Boden' : 'unten offen') + '.';
+  let s = 'Tüte <b>' + f(d.W) + ' × ' + f(d.D) + ' × ' + f(d.H) + ' mm</b>' + (d.zT ? ' (Zacken ' + d.nF + ' vorne / ' + d.nS + ' je Seiten' + (d.k ? 'hälfte' : 'wand') + ', ' + f(d.zT) + ' mm tief)' : '') + (d.k ? ', Seiten ' + f(d.k) + ' mm nach innen geknickt' : '') + ', ' + (d.bt ? 'mit Boden' : 'unten offen') + '.';
   s += '<br>Wand ' + f(t) + ' mm' + (_lttP.art === 'innen' ? ', Kranz/Schrift/Motiv innen ' + f(t + rz) + ' mm — außen glatt, erscheint erst im Licht dunkel.'
     : _lttP.art === 'aussen' ? ', Kranz/Schrift/Motiv stehen außen ' + f(rz) + ' mm hervor.'
     : ', Kranz/Schrift/Motiv ' + f(Math.min(rz, t - 0.4)) + ' mm eingraviert — leuchten heller.');

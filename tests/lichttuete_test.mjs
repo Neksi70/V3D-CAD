@@ -35,6 +35,8 @@ const varianten = [
   { name: 'Weihnachten, gerade, ohne Boden, glatt', p: { text1: 'Frohe', text2: 'WEIHNACHTEN', motiv: 'tanne', rand: 'gerade', boden: 0, falten: 0, kranz: 'kreis' } },
   { name: 'Name ohne Kranz, kleine Tüte', p: { text1: 'Lena', text2: '', motiv: 'sterne', kranz: 'keiner', breite: 50, tiefe: 40, hoehe: 70, sternchen: 0 } },
   { name: 'Riesentext schrumpft, Hirsch', p: { h1: 50, h2: 40, motiv: 'hirsch', motivH: 60 } },
+  { name: 'gerade Seiten mit Falzlinien (Knick 0)', p: { knick: 0 } },
+  { name: 'tiefer Knick 25, Hirsch, hinten dasselbe', p: { knick: 25, motiv: 'hirsch', rueck: 'gleich' } },
   { name: 'nur Kranz, keine Schrift, kein Motiv', p: { text1: '', text2: '', motiv: 'keins', sternchen: 0 } },
 ];
 for (const v of varianten) {
@@ -46,17 +48,19 @@ for (const v of varianten) {
     const pos = res.geo.toNonIndexed().attributes.position.array, mf = _mfFromSoup(_mfWasm, pos);
     res.geo.computeBoundingBox(); const bb = res.geo.boundingBox;
     // Y oben, Vorderseite bei z = +D/2 (nach −90° um X)
-    let frontIn = -1e9, nahSeite = 0, topMin = 1e9, topMax = -1e9;
+    let knickPkt = 0, frontIn = -1e9, nahSeite = 0, topMin = 1e9, topMax = -1e9;
     for (let i = 0; i < pos.length; i += 3) {
       const x = pos[i], y = pos[i + 1], z = pos[i + 2];
       if (y > d.zLo && y < d.zHi && z > 0 && Math.abs(x) < d.W / 2 - d.t - 0.01) frontIn = Math.max(frontIn, d.D / 2 - z);  // wie weit reicht die Front nach innen
-      if (y > d.zLo && y < d.zHi && z > 0 && d.D / 2 - z > d.t + 0.05 && d.D / 2 - z < d.t + 3.5 && Math.abs(Math.abs(x) - (d.W / 2 - d.t)) < 0.05) nahSeite++;
+      const rz = Math.max(0.2, _lttP.relief), xin = d.W / 2 - d.m * (d.t + rz) - d.t * Math.sqrt(1 + d.m * d.m);
+      if (_lttP.art === 'innen' && y > d.zLo && y < d.zHi && z > 0 && Math.abs(d.D / 2 - z - (d.t + rz)) < 0.005 && Math.abs(x) > xin - 0.05) nahSeite++;
+      if (Math.abs(z) < 0.01 && Math.abs(Math.abs(x) - (d.W / 2 - d.k)) < 0.01) knickPkt++;
     }
     // Oberkante entlang der Front-Außenseite
     for (let i = 0; i < pos.length; i += 3) if (Math.abs(pos[i + 2] - d.D / 2) < 0.01 && pos[i + 1] > d.H - d.zT - 1) { topMin = Math.min(topMin, pos[i + 1]); topMax = Math.max(topMax, pos[i + 1]); }
     return { ms, warn: res.warn, genus: mf.genus(), vol: mf.volume(), parts: mf.decompose().length,
       bb: [bb.min.x, bb.min.y, bb.min.z, bb.max.x, bb.max.y, bb.max.z].map(x => Math.round(x * 100) / 100),
-      d: { W: d.W, D: d.D, H: d.H, t: d.t, zT: d.zT }, frontIn, nahSeite, topMin, topMax };
+      d: { W: d.W, D: d.D, H: d.H, t: d.t, zT: d.zT, k: d.k }, frontIn, nahSeite, knickPkt, topMin, topMax };
   }, v.p);
   console.log('— ' + v.name + ' (' + r.ms + ' ms)' + (r.warn.length ? ' warn: ' + r.warn.join(' | ') : ''));
   const d = r.d, art = v.p.art || 'innen', rz = v.p.relief || 1;
@@ -65,6 +69,7 @@ for (const v of varianten) {
   ok('Maße', Math.abs(r.bb[3] - r.bb[0] - d.W) < 0.02 && Math.abs(r.bb[4] - r.bb[1] - d.H) < 0.02 && Math.abs(r.bb[5] - r.bb[2] - d.D - ex) < 0.05, r.bb);
   if (art === 'innen' && !(v.p.text1 === '' && v.p.motiv === 'keins' && !v.p.kranz)) ok('Front innen dicker (Wand+Relief)', Math.abs(r.frontIn - (d.t + rz)) < 0.02, r.frontIn);
   ok('Relief berührt Seitenwand nicht', r.nahSeite === 0, r.nahSeite);
+  ok('Seiten nach innen geknickt (' + d.k + ' mm)', r.knickPkt > 0, r.knickPkt);
   if (d.zT) ok('Zacken: Spitze H, Tal H−Tiefe', Math.abs(r.topMax - d.H) < 0.02 && Math.abs(r.topMin - (d.H - d.zT)) < 0.05, [r.topMin, r.topMax]);
   else ok('gerade Oberkante', Math.abs(r.topMin - d.H) < 0.02, [r.topMin, r.topMax]);
 }
