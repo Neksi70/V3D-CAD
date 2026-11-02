@@ -38,7 +38,7 @@ try {
 
   // A. Vor dem ersten Abgleich wird nichts hochgeladen
   const a = await pg.evaluate(async () => {
-    _fsSyncDone = false;
+    _fsSyncDone = false; _fsSyncLauft = true;   // Abgleich läuft gerade
     addShape('box'); _autoSaveSigLast = null; _doAutoSave();
     await new Promise(r => setTimeout(r, 1500));
     return { n: __fs.size, st: _dsCloudGet(currentDesignId), chip: document.getElementById('cloud-st').textContent, id: currentDesignId };
@@ -49,6 +49,7 @@ try {
 
   // B. Abgleich lädt hoch, mit Gerätekennung, kein Dialog auf dem eigenen Gerät
   const b = await pg.evaluate(async () => {
+    _fsSyncLauft = false;
     await _fsLoadAllToCache();
     const d = __fs.get(currentDesignId);
     return { da: !!d, dev: d && d.device === _DS_DEVICE, modal: document.getElementById('resume-modal').classList.contains('show'), chip: document.getElementById('cloud-st').textContent };
@@ -124,6 +125,18 @@ try {
   await pg.evaluate(() => _dsCloudSet(currentDesignId, 'big', '1.4'));
   await pg.screenshot({ path: '/tmp/cloud_status_gross.png', clip: { x: 0, y: 200, width: 900, height: 50 } });
   await pg.evaluate(() => _dsCloudSet(currentDesignId, 'ok'));
+
+  // G. Login war schneller als das Skript: Abgleich lief nie → wird beim Speichern nachgeholt
+  const g = await pg.evaluate(async () => {
+    // Cloud-Stand aus E/F („anderes Gerät“, Zeit in der Zukunft) auf normal zurücksetzen
+    const alt = __fs.get(currentDesignId); alt.device = _DS_DEVICE; alt.updated = Date.now() - 60000;
+    _fsSyncDone = false; _fsSyncLauft = false;
+    addShape('box'); _autoSaveSigLast = null; _doAutoSave();
+    await new Promise(r => setTimeout(r, 2500));
+    const d = __fs.get(currentDesignId);
+    return { done: _fsSyncDone, st: _dsCloudGet(currentDesignId), n: d ? JSON.parse(_dsDecompress(d.data)).objects.length : 0, lokal: objects.length, chip: document.getElementById('cloud-st').textContent };
+  });
+  check(g.done && g.st === 'ok' && g.n === g.lokal, 'G: Abgleich nachgeholt, Design hochgeladen (' + g.n + '/' + g.lokal + ' Körper, „' + g.chip + '“)');
 
   check(fehler.length === 0, 'keine Seitenfehler' + (fehler.length ? ': ' + fehler.join(' | ') : ''));
 } catch (err) { console.log('✗ Abbruch:', err.message); ok = false; }

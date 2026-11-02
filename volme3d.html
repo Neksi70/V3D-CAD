@@ -43614,7 +43614,8 @@ const _DS_DEVICE = (() => {
     return d;
   } catch (_) { return 'g-unbekannt'; }
 })();
-let _fsSyncDone = false;   // vor dem ersten Abgleich nach dem Login nichts hochladen (sonst überschreibt ein alter Stand)
+let _fsSyncDone = false;
+let _fsSyncLauft = false;  // Abgleich läuft gerade (nicht doppelt starten)   // vor dem ersten Abgleich nach dem Login nichts hochladen (sonst überschreibt ein alter Stand)
 let _dsHold = false;       // Auto-Speichern ruht, solange der Neuer-Stand-Dialog offen ist
 let _cloudStTimer = null;
 
@@ -43673,7 +43674,12 @@ function _cloudStInfo() {
 async function _fsSaveDesign(id, data, thumb, name, silent, packedIn, force) {
   const ref = _fsDesignsRef();
   if (!ref) return;
-  if (!_fsSyncDone && !force) { _dsCloudSet(id, 'wait'); return; }   // nach dem Abgleich holt das Auto-Speichern es nach
+  if (!_fsSyncDone && !force) {   // nach dem Abgleich holt das Auto-Speichern es nach
+    _dsCloudSet(id, 'wait');
+    // Login kam vor dem Laden dieses Skripts → der Abgleich wurde nie gestartet. Jetzt nachholen.
+    if (!_fsSyncLauft) setTimeout(() => { if (!_fsSyncDone && !_fsSyncLauft) _fsLoadAllToCache(); }, 0);
+    return;
+  }
   try {
     const meta = _dsIdx().find(d => d.id === id);
     const now  = Date.now();
@@ -43717,6 +43723,8 @@ async function _fsRenameDesign(id, name) {
 async function _fsLoadAllToCache() {
   const ref = _fsDesignsRef();
   if (!ref) return;
+  if (_fsSyncLauft) return;
+  _fsSyncLauft = true;
   const _vorher = new Map(_dsIdx().map(e => [e.id, e]));   // lokaler Stand VOR dem Abgleich
   const _anderswo = [];                                      // auf einem anderen Gerät geändert
   try {
@@ -43757,9 +43765,10 @@ async function _fsLoadAllToCache() {
     _dsSetIdx(idx);
     if (document.getElementById('ds-modal')?.classList.contains('show')) _renderGallery();
   } catch(e) { console.warn('[Firestore] sync:', e); }
-  _fsSyncDone = true;
+  _fsSyncDone = true; _fsSyncLauft = false;
   try { _autoSaveSigLast = null; } catch (_) {}   // aufgeschobene Uploads beim nächsten Auto-Speichern nachholen
   try { _cloudStRender(); _tabsSync(); } catch (_) {}
+  setTimeout(() => { try { _doAutoSave(); } catch (_) {} }, 800);   // Wartendes gleich hochladen, nicht erst nach 30 s
   try { _resumeOffer(_anderswo); } catch (e) { console.warn('[Weitermachen]', e); }
 }
 
@@ -75933,8 +75942,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.300';
+const VOLME3D_VERSION = '1.18.301';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.301', date:'2026-11-02', changes:[
+    ['☁','<b>Behoben: „Wartet auf Internet“ blieb stehen.</b> War man schon angemeldet, startete der Abgleich mit der Cloud manchmal nicht, und neue Designs wurden nicht hochgeladen. Jetzt wird der Abgleich nachgeholt und alles Wartende sofort hochgeladen.'],
+  ]},
   { version:'1.18.300', date:'2026-11-02', changes:[
     ['☁','<b>Im Kurs anfangen, zu Hause weitermachen.</b> Oben neben „Meine Designs“ steht jetzt, ob dein Design in der Cloud liegt: <b>☁ In der Cloud</b> heißt, nach der Anmeldung mit derselben E-Mail ist es an jedem Rechner da. Ist ein Design zu groß für die Cloud (z. B. ein feiner Scan), steht dort orange <b>⚠ Nur auf diesem Gerät</b> — ein Klick erklärt, wie du es als Datei mitnimmst. In „Meine Designs“ tragen solche Designs den Hinweis „nur hier“.'],
     ['▶','<b>Weitermachen, wo du aufgehört hast.</b> Meldest du dich an einem anderen Rechner an, fragt V3D CAD: „Willkommen zurück! Hier hast du zuletzt gearbeitet“ — ein Klick auf <b>Weiterarbeiten</b> öffnet das Design.'],
@@ -81844,6 +81856,8 @@ function _initDesigns() {
   _startAutoSave();
   _resumeDiskAutosave();
   _tabsSync();   // offene Tabs vom letzten Besuch anzeigen (auch ohne wiederhergestelltes Design)
+  // Firebase meldete den Login schon, bevor dieses Skript geladen war? Dann Abgleich jetzt starten.
+  if (window._fbUser && !_fsSyncDone && !_fsSyncLauft) setTimeout(() => { if (!_fsSyncDone && !_fsSyncLauft) _fsLoadAllToCache(); }, 0);
 }
 
 // ═══ FLOATING PROPERTY PANEL ════════════════════════════════════════════
