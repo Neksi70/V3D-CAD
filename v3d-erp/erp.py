@@ -516,7 +516,8 @@ def artikel_speichern(db, d, benutzer=None):
     if "arbeitsplan" in d:
         ap = arbeitsplan(d["arbeitsplan"])
         d["arbeitsplan"] = json.dumps(ap, ensure_ascii=False) if ap else None
-    d.setdefault("kurz", d["bezeichnung"][:30])
+    if not (d.get("kurz") or "").strip():        # Oberfläche schickt leer/None → aus der Bezeichnung (BUG-001)
+        d["kurz"] = d["bezeichnung"].strip()[:30]
     with transaktion(db):
         if not d.get("artikelnr"):
             d["artikelnr"] = naechste_stammnr(db, "artikel", "artikelnr", 100000)

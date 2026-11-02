@@ -160,6 +160,13 @@ class TestInventur(Basis):
         inventur.eroeffnen(self.db, "neu")                     # nach Abbruch wieder möglich
 
 
+class TestBugs(Basis):
+    def test_bug001_artikel_ohne_kurzbezeichnung(self):
+        """BUG-001: Oberfläche schickt kurz=None → früher NOT-NULL-Fehler (HTTP 500)."""
+        a = erp.artikel_speichern(self.db, dict(bezeichnung="Ventilgehäuse ohne Kurz", kurz=None, artikelnr=None))
+        self.assertEqual(a["kurz"], "Ventilgehäuse ohne Kurz")
+
+
 class TestArbeitsplan(Basis):
     def test_alt_und_neu(self):
         self.assertEqual([x["text"] for x in erp.arbeitsplan("Bohren; Gewinde schneiden")], ["Bohren", "Gewinde schneiden"])

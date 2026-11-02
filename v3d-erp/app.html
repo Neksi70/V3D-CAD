@@ -207,6 +207,8 @@ main{padding:0!important;min-width:0;display:flex;flex-direction:column}
 .artzelle{display:flex;gap:3px}
 .hilfe kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:12px;background:#fafbfd}
 @media (max-width:820px){.seitenkopf{grid-template-columns:1fr auto}.badge-bs{display:none}.seite{padding:10px}}
+/* Handy: breite Tabellen scrollen in sich statt die ganze Seite zu verbreitern (BUG-004). Belegblatt (.blatt) behält sein Druckbild. */
+@media (max-width:820px){.card table:not(.bk-pos){display:block;overflow-x:auto;max-width:100%}.card table:not(.bk-pos) table{display:table}}
 .ws-kopf{display:flex;align-items:center;gap:14px;background:color-mix(in srgb,var(--blue) 22%,#0e1320);color:#fff;padding:10px 18px}
 .ws-modus{display:flex;gap:6px;margin-left:10px}.ws-modus .btn{font-size:16px;padding:9px 14px}
 .ws-kopf img{height:40px;border-radius:3px}.ws-titel{font-size:22px;font-weight:600}
@@ -505,9 +507,21 @@ async function navigiere(){
     const h1 = t.body.querySelector('.kopfzeile h1');
     if (h1 && t.key !== 'beleg') setTitel(h1.textContent.trim());
     zeigeReiter(t);
-  }catch(e){ if (e.message!=='login') console.error(e); }
+  }catch(e){ if (e.message!=='login' && !e.gezeigt) console.error(e); }   // fachliche Fehler stehen schon im Toast (BUG-003)
 }
 const M = () => AKT.body;
+// Barrierefreiheit (BUG-002): Beschriftungen den Feldern zuordnen, egal welche Seite sie gerade gezeichnet hat.
+// .feld: <label> + ein Eingabefeld → label[for]; Beleg-Kopf .bk-z: <span>Text</span> + Feld → aria-label.
+let _lblNr = 0;
+function beschriftungen(wurzel){
+  wurzel.querySelectorAll('.feld').forEach(f => { const l = f.querySelector(':scope > label'); const i = f.querySelectorAll('input:not([type=hidden]),select,textarea');
+    if (!l || l.htmlFor || i.length !== 1 || l.contains(i[0])) return; if (!i[0].id) i[0].id = 'fld' + (++_lblNr); l.htmlFor = i[0].id; });
+  wurzel.querySelectorAll('.bk-z').forEach(z => { const t = z.querySelector(':scope > span'); const i = z.querySelector('input:not([type=hidden]),select,textarea');
+    if (t && i && !i.getAttribute('aria-label')) i.setAttribute('aria-label', t.textContent.trim()); });
+}
+let _lblPlan = 0;     // höchstens einmal je Bildaufbau
+new MutationObserver(ms => { if (!_lblPlan && ms.some(m => m.addedNodes.length)) _lblPlan = requestAnimationFrame(() => { _lblPlan = 0; beschriftungen(document.body); }); })
+  .observe(document.documentElement, {childList:true, subtree:true});
 const ba = code => G.belegarten.find(x=>x.code===code) || {name:code};
 
 // ================================================================ Briefkopf aus Einstellungen
@@ -1159,10 +1173,10 @@ async function seiteOP(art){
   <div class="card"><div class="liste" style="max-height:none"><table><thead><tr><th>Beleg</th><th>${art==='debitor'?'Kunde':'Lieferant'}</th><th>Datum</th><th>Fällig</th><th class="r">Betrag</th><th class="r">Offen</th><th>Status</th>${art==='debitor'?'<th>Mahnung</th>':''}<th></th></tr></thead><tbody>
   ${l.map(o=>`<tr><td><a href="#/beleg/${o.beleg_id}">${esc(o.nummer)}</a></td><td>${esc(o.adresse_kurz)}</td><td>${fmt(o.datum)}</td><td>${fmt(o.faellig)}</td><td class="r">${eur(o.betrag)}</td><td class="r"><b>${eur(o.offen)}</b></td>
   <td>${o.tage_ueber>0?`<span class="pill s-over">${o.tage_ueber} Tage überfällig</span>`:`<span class="pill s-open">fällig in ${-o.tage_ueber} T.</span>`}</td>
-  ${art==='debitor'?`<td style="white-space:nowrap">${o.mahnstufe?`Stufe ${o.mahnstufe} <span class="hinweis">${fmt(o.letzte_mahnung)}</span>`:'–'} <label class="hinweis" title="Nicht mahnen (z. B. Reklamation, Absprache)"><input type="checkbox" class="ms" data-id="${o.id}" style="width:auto" ${o.mahnsperre?'checked':''}> Sperre</label></td>`:''}
+  ${art==='debitor'?`<td style="white-space:nowrap">${o.mahnstufe?`Stufe ${o.mahnstufe} <span class="hinweis">${fmt(o.letzte_mahnung)}</span>`:'–'} <label class="hinweis" title="Nicht mahnen (z. B. Reklamation, Absprache)"><input type="checkbox" class="mSperre" data-id="${o.id}" style="width:auto" ${o.mahnsperre?'checked':''}> Sperre</label></td>`:''}
   <td><button class="btn zb" data-id="${o.id}" data-o="${o.offen}">Zahlung</button></td></tr>`).join('') || '<tr><td colspan="9" class="hinweis">Nichts offen.</td></tr>'}
   </tbody></table></div></div>`;
-  M().querySelectorAll('.ms').forEach(c => c.onchange = async () => { await api(`op/${c.dataset.id}/mahnsperre`, {body:{an:c.checked}}); toast(c.checked ? 'Mahnsperre gesetzt.' : 'Mahnsperre aufgehoben.'); });
+  M().querySelectorAll('.mSperre').forEach(c => c.onchange = async () => { await api(`op/${c.dataset.id}/mahnsperre`, {body:{an:c.checked}}); toast(c.checked ? 'Mahnsperre gesetzt.' : 'Mahnsperre aufgehoben.'); });
   M().querySelectorAll('.zb').forEach(btn => btn.onclick = async () => {
     const v = prompt('Zahlbetrag (€):', eur(btn.dataset.o)); if (v===null) return;
     await api(`op/${btn.dataset.id}/zahlung`,{body:{betrag:num(v)}}); toast('Zahlung gebucht.'); seiteOP(art); });
