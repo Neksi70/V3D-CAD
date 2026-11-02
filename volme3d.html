@@ -1089,6 +1089,22 @@ body.devmode .dev-only{display:flex!important}
 #cur-design-lbl:hover{color:var(--acc)}
 #as-dot{width:6px;height:6px;border-radius:50%;background:var(--grn);flex-shrink:0;opacity:0;transition:opacity .3s}
 #as-dot.active{opacity:1}
+#cloud-st{display:none;align-items:center;gap:4px;flex-shrink:0;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;margin-left:4px;cursor:default;white-space:nowrap;border:1px solid transparent}
+#cloud-st.ok{color:var(--grn);background:transparent}
+#cloud-st.wait{color:var(--dim)}
+#cloud-st.big,#cloud-st.err{cursor:pointer;color:#fff;background:#E8590C;border-color:#E8590C}
+#cloud-st.err{background:var(--red);border-color:var(--red)}
+.ds-local-badge{position:absolute;left:6px;bottom:6px;background:#E8590C;color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:8px}
+#resume-modal{position:fixed;inset:0;background:rgba(17,12,28,.62);z-index:3700;display:none;align-items:center;justify-content:center;backdrop-filter:blur(3px)}
+#resume-modal.show{display:flex}
+#resume-box{background:var(--panel,#fff);color:var(--txt,#222);border-radius:14px;box-shadow:0 18px 60px rgba(0,0,0,.35);padding:22px 24px;width:min(440px,calc(100vw - 32px))}
+#resume-title{font-size:18px;font-weight:800;margin-bottom:6px}
+#resume-text{font-size:13px;color:var(--dim);margin-bottom:14px;line-height:1.45}
+#resume-card{display:flex;gap:12px;align-items:center;border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:16px}
+#resume-thumb{width:120px;height:90px;object-fit:cover;border-radius:6px;background:var(--border);flex-shrink:0}
+#resume-name{font-weight:800;font-size:14px;word-break:break-word}
+#resume-date{font-size:12px;color:var(--dim);margin-top:3px}
+#resume-acts{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
 /* Projekt-Tabs (wie Silhouette Studio): jeder Tab = ein geöffnetes Design */
 #tb-r2>#dtabs{display:flex;align-items:center;gap:3px;overflow-x:auto;scrollbar-width:thin;min-width:70px;max-width:480px;flex-shrink:1;padding:2px 0}
 .dtab{display:flex;align-items:center;gap:5px;padding:4px 6px 4px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px 6px 0 0;border-bottom:2px solid transparent;font-size:11px;font-weight:600;color:var(--mid);cursor:pointer;white-space:nowrap;user-select:none;flex-shrink:0;max-width:150px}
@@ -1585,6 +1601,7 @@ const firebaseConfig = {
       <!-- unsichtbar, aber lebendig: Exporte lesen den Design-Namen aus diesem Span -->
       <span id="cur-design-lbl" style="display:none">Unbenannt</span>
     </div>
+    <span id="cloud-st" onclick="_cloudStInfo()"></span>
     <div id="dtabs"></div>
     <input type="file" id="fload" accept=".v3d,.json" style="display:none" onchange="handleLoad(event)">
     <div id="tbr">
@@ -7323,6 +7340,14 @@ Patrick</textarea>
   </div>
 </div>
 
+<div id="resume-modal" onclick="if(event.target===this&&_resumeState&&_resumeState.mode!=='newer')_resumeClose()">
+  <div id="resume-box">
+    <div id="resume-title"></div>
+    <div id="resume-text"></div>
+    <div id="resume-card"><img id="resume-thumb" alt=""><div><div id="resume-name"></div><div id="resume-date"></div></div></div>
+    <div id="resume-acts"></div>
+  </div>
+</div>
 <div id="ds-modal" onclick="if(event.target===this)hideDesigns()">
   <div id="ds-box">
     <div id="ds-hdr">
@@ -43570,30 +43595,110 @@ async function _resizeThumb(base64, w, h) {
   });
 }
 
-async function _fsSaveDesign(id, data, thumb, name, silent, packedIn) {
+// ── Cloud-Status je Design + Weitermachen auf anderem Gerät (1.18.299) ────
+// Volker 02.11.: Im Kurs mit der E-Mail anmelden, zu Hause mit derselben E-Mail
+// weitermachen. Firestore konnte das schon. Aber ein zu großes Design blieb still
+// nur im Browser, und ein Kurs-PC mit altem Stand konnte beim Auto-Speichern die
+// Arbeit von zu Hause überschreiben. Zustände: 'ok' in der Cloud · 'wait' wird
+// hochgeladen · 'big' zu groß, nur auf diesem Gerät · 'err' Hochladen schlug fehl.
+const _DS_CLOUD_KEY = 'volme3d_cloudst';
+let _dsCloud = {};
+try {
+  _dsCloud = JSON.parse(localStorage.getItem(_DS_CLOUD_KEY) || '{}') || {};
+  for (const k in _dsCloud) if (_dsCloud[k].st === 'wait') delete _dsCloud[k];   // nach Neuladen kein „speichert“ mehr
+} catch (_) { _dsCloud = {}; }
+const _DS_DEVICE = (() => {
+  try {
+    let d = localStorage.getItem('volme3d_device');
+    if (!d) { d = 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); localStorage.setItem('volme3d_device', d); }
+    return d;
+  } catch (_) { return 'g-unbekannt'; }
+})();
+let _fsSyncDone = false;   // vor dem ersten Abgleich nach dem Login nichts hochladen (sonst überschreibt ein alter Stand)
+let _dsHold = false;       // Auto-Speichern ruht, solange der Neuer-Stand-Dialog offen ist
+let _cloudStTimer = null;
+
+function _dsCloudSet(id, st, info) {
+  if (!id) return;
+  if (st === 'ok') delete _dsCloud[id];
+  else _dsCloud[id] = { st, info: info || '', t: Date.now() };
+  if (st !== 'wait') { try { localStorage.setItem(_DS_CLOUD_KEY, JSON.stringify(_dsCloud)); } catch (_) {} }
+  if (id === currentDesignId) _cloudStRender();
+}
+function _dsCloudGet(id) { const c = _dsCloud[id]; return c ? c.st : 'ok'; }
+
+function _cloudStRender() {
+  const el = document.getElementById('cloud-st');
+  if (!el) return;
+  if (!window._fbUser || !currentDesignId || window._mitGuestMode) { el.style.display = 'none'; return; }
+  const c = _dsCloud[currentDesignId];
+  let st = c ? c.st : 'ok', txt, tip;
+  if (st === 'wait') {
+    const lang = Date.now() - c.t > 20000;
+    txt = lang ? '☁ Wartet auf Internet …' : '☁ Speichert …';
+    tip = lang ? 'Noch nicht in der Cloud — keine Verbindung. Wird automatisch nachgeholt.' : 'Wird in deinem Konto gespeichert';
+    if (!lang) { clearTimeout(_cloudStTimer); _cloudStTimer = setTimeout(_cloudStRender, 21000); }
+  } else if (st === 'big') {
+    txt = '⚠ Nur auf diesem Gerät';
+    tip = 'Zu groß für die Cloud — an einem anderen Rechner nicht verfügbar. Klicken für Hilfe.';
+  } else if (st === 'err') {
+    txt = '⚠ Nicht in der Cloud';
+    tip = 'Hochladen fehlgeschlagen. Klicken für Details und neuen Versuch.';
+  } else {
+    txt = '☁ In der Cloud';
+    tip = 'In deinem Konto gespeichert — nach der Anmeldung an jedem Rechner da';
+  }
+  el.className = st; el.textContent = txt; el.title = tip; el.style.display = 'inline-flex';
+}
+
+function _cloudStInfo() {
+  const c = currentDesignId && _dsCloud[currentDesignId];
+  if (!c) return;
+  if (c.st === 'big') {
+    const mb = c.info ? ' (' + String(c.info).replace('.', ',') + ' MB gepackt, erlaubt sind 0,9 MB)' : '';
+    if (confirm('Dieses Design ist zu groß für die Cloud' + mb + '.\n\n'
+      + 'Es liegt nur in diesem Browser. An einem anderen Rechner siehst du es nicht.\n\n'
+      + 'Zum Mitnehmen: als Datei (.v3d) speichern und auf USB-Stick oder per E-Mail an dich selbst schicken. '
+      + 'Zu Hause öffnest du sie unter „Meine Designs“ → „Importieren“.\n\nJetzt als Datei speichern?')) {
+      try { _localSaveAs(); } catch (e) { notify('Bitte Strg+S drücken', 'w'); }
+    }
+  } else if (c.st === 'err') {
+    if (confirm('Das Design konnte nicht in die Cloud hochgeladen werden.\n'
+      + (c.info ? 'Grund: ' + c.info + '\n' : '') + '\nIn diesem Browser ist es gespeichert. Jetzt erneut versuchen?')) {
+      _autoSaveSigLast = null; _doAutoSave();
+    }
+  }
+}
+
+async function _fsSaveDesign(id, data, thumb, name, silent, packedIn, force) {
   const ref = _fsDesignsRef();
   if (!ref) return;
+  if (!_fsSyncDone && !force) { _dsCloudSet(id, 'wait'); return; }   // nach dem Abgleich holt das Auto-Speichern es nach
   try {
     const meta = _dsIdx().find(d => d.id === id);
     const now  = Date.now();
     // Schon gepackt (dsSaveDesign)? Dann nicht ein zweites Mal stringify+gzip —
     // bei Scans kostete das jeweils ~2 s Stillstand pro Auto-Speichern
-    if (packedIn == null && !_jsonOf(data)) return;   // Szene zu groß für JSON → nicht in die Cloud
+    if (packedIn == null && !_jsonOf(data)) { _dsCloudSet(id, 'big'); return; }   // Szene zu groß für JSON → nicht in die Cloud
     const packed = packedIn != null ? packedIn : _dsCompress(_jsonOf(data));
     if (packed.length > 900000) {
+      _dsCloudSet(id, 'big', (packed.length / 1e6).toFixed(1));
       if (silent) console.warn('[Firestore] Design zu groß (' + packed.length + ' B) — nur lokal gespeichert');
       else notify('Design zu groß zum Speichern (~900KB Limit)', 'w');
       return;
     }
+    _dsCloudSet(id, 'wait');
     const smallThumb = await _resizeThumb(thumb, 200, 150);
     await ref.doc(id).set({
+      device:  _DS_DEVICE,
       name:    name || meta?.name || 'Design',
       created: meta?.created || now,
       updated: now,
       data:    packed,
       thumb:   smallThumb
     });
-  } catch(e) { console.warn('[Firestore] save:', e); }
+    if (!_dsGeloescht.has(id)) _dsCloudSet(id, 'ok');
+  } catch(e) { console.warn('[Firestore] save:', e); _dsCloudSet(id, 'err', e && (e.code || e.message) || ''); }
 }
 
 async function _fsDeleteDesign(id) {
@@ -43612,6 +43717,8 @@ async function _fsRenameDesign(id, name) {
 async function _fsLoadAllToCache() {
   const ref = _fsDesignsRef();
   if (!ref) return;
+  const _vorher = new Map(_dsIdx().map(e => [e.id, e]));   // lokaler Stand VOR dem Abgleich
+  const _anderswo = [];                                      // auf einem anderen Gerät geändert
   try {
     // 1. Lokale Designs, die noch nicht in Firestore sind, hochladen
     const snap  = await ref.get();
@@ -43619,21 +43726,121 @@ async function _fsLoadAllToCache() {
     for (const entry of _dsIdx()) {
       if (!fsIds.has(entry.id)) {
         const data = dsLoadData(entry.id);
-        if (data) await _fsSaveDesign(entry.id, data, dsThumb(entry.id), entry.name, true);  // still
+        if (data) await _fsSaveDesign(entry.id, data, dsThumb(entry.id), entry.name, true, undefined, true);  // still, auch vor Abgleich-Ende
       }
     }
     // 2. Alle Firestore-Designs in localStorage cachen
     const fresh = await ref.orderBy('updated', 'desc').get();
     const idx = [];
+    const inCloud = new Set();
     fresh.docs.forEach(doc => {
       const d = doc.data();
+      const lok = _vorher.get(doc.id);
+      inCloud.add(doc.id);
+      // Lokal neuer als die Cloud (z. B. zu groß zum Hochladen)? Dann lokalen Stand behalten —
+      // früher überschrieb hier der ältere Cloud-Stand die neuere Arbeit im Browser.
+      if (lok && (lok.updated || 0) > (d.updated || 0) + 5000 && localStorage.getItem(_dsDataKey(doc.id))) {
+        idx.push(lok); return;
+      }
       idx.push({ id: doc.id, name: d.name, created: d.created || 0, updated: d.updated || 0 });
-      try { if (d.data)  localStorage.setItem(_dsDataKey(doc.id), d.data); } catch(_) {}   // bei voll: überspringen, on-demand nachladen
+      let cached = false;
+      try { if (d.data) { localStorage.setItem(_dsDataKey(doc.id), d.data); cached = true; } } catch(_) {}   // bei voll: überspringen, on-demand nachladen
       try { if (d.thumb) localStorage.setItem(_dsThumbKey(doc.id), d.thumb); } catch(_) {}
+      if (_dsCloudGet(doc.id) !== 'big') _dsCloudSet(doc.id, 'ok');
+      // Auf einem anderen Gerät geändert? Ohne Gerätekennung (ältere Speicherungen) zählt die Zeit.
+      const neuer = !lok || (d.updated || 0) > (lok.updated || 0) + (d.device ? 0 : 60000);
+      if (d.updated && neuer && d.device !== _DS_DEVICE)
+        _anderswo.push({ id: doc.id, name: d.name, updated: d.updated, thumb: d.thumb || '', cached });
     });
+    // Nur lokal vorhandene Designs (zu groß für die Cloud) NICHT aus der Liste werfen
+    for (const [id, e] of _vorher) if (!inCloud.has(id) && localStorage.getItem(_dsDataKey(id))) idx.push(e);
     _dsSetIdx(idx);
     if (document.getElementById('ds-modal')?.classList.contains('show')) _renderGallery();
   } catch(e) { console.warn('[Firestore] sync:', e); }
+  _fsSyncDone = true;
+  try { _autoSaveSigLast = null; } catch (_) {}   // aufgeschobene Uploads beim nächsten Auto-Speichern nachholen
+  try { _cloudStRender(); _tabsSync(); } catch (_) {}
+  try { _resumeOffer(_anderswo); } catch (e) { console.warn('[Weitermachen]', e); }
+}
+
+// ── Weitermachen, wo ich aufgehört habe ────────────────────────────────────
+// Nach dem Abgleich: Wurde ein Design auf einem anderen Gerät bearbeitet, bietet ein
+// Dialog es an. Drei Fälle: frischer Rechner (nichts offen) · hier ist ein ÄLTERER Stand
+// desselben Designs offen · hier ist ein anderes Design offen.
+let _resumeState = null;
+function _resumeOffer(cands) {
+  if (!cands || !cands.length) return;
+  if (window._mitGuestMode) return;
+  if (typeof _kidsOn === 'function' && _kidsOn()) return;
+  if (typeof _tut !== 'undefined' && _tut.on) return;
+  cands.sort((a, b) => b.updated - a.updated);
+  const top = cands[0];
+  const offen = !!currentDesignId && objects.length > 0;
+  const mode = top.id === currentDesignId && offen ? 'newer' : (offen ? 'other' : 'resume');
+  _resumeState = { mode, cand: top };
+  if (mode === 'newer') _dsHold = true;   // alter Stand darf den neueren nicht still überschreiben
+  const T = {
+    resume: ['Willkommen zurück!', 'Hier hast du zuletzt gearbeitet:'],
+    other:  ['Auf einem anderen Gerät weitergearbeitet', 'Zuletzt hast du an diesem Design gearbeitet. Möchtest du es öffnen? Das offene Design bleibt gespeichert.'],
+    newer:  ['Neuerer Stand gefunden', 'Dieses Design hast du auf einem anderen Gerät weiterbearbeitet. Hier ist noch ein älterer Stand offen.'],
+  }[mode];
+  document.getElementById('resume-title').textContent = T[0];
+  document.getElementById('resume-text').textContent = T[1];
+  document.getElementById('resume-name').textContent = top.name || 'Design';
+  document.getElementById('resume-date').textContent = 'Zuletzt geändert: ' + _fmtDate(top.updated);
+  const img = document.getElementById('resume-thumb');
+  const th = top.thumb || dsThumb(top.id);
+  img.style.visibility = th ? 'visible' : 'hidden';
+  if (th) img.src = th; else img.removeAttribute('src');
+  const B = (cls, txt, fn) => `<button class="btn ${cls}" onclick="${fn}">${txt}</button>`;
+  document.getElementById('resume-acts').innerHTML = mode === 'resume'
+      ? B('', '+ Neues Projekt', '_resumeNew()') + B('', '📁 Alle Designs', '_resumeClose();showDesigns()') + B('pri', '▶ Weiterarbeiten', '_resumeOpen()')
+    : mode === 'other'
+      ? B('', 'Später', '_resumeClose()') + B('pri', '▶ Öffnen', '_resumeOpen()')
+      : B('', 'Älteren Stand behalten', '_resumeKeep()') + B('pri', '⬇ Neueren Stand laden', '_resumeOpen()');
+  try { hideStarter(); } catch (_) {}
+  document.getElementById('resume-modal').classList.add('show');
+}
+function _resumeClose() {
+  document.getElementById('resume-modal').classList.remove('show');
+  _dsHold = false;
+  _resumeState = null;
+}
+function _resumeNew() {
+  _resumeClose();
+  if (localStorage.getItem('volme3d_hide_start') !== '1' && !objects.length) { try { showStarter(); } catch (_) {} }
+}
+// Älteren Stand behalten: der offene Stand wird gespeichert und ersetzt den neueren in der Cloud
+function _resumeKeep() {
+  if (!confirm('Dann ersetzt der ältere Stand hier den neueren Stand in der Cloud. Wirklich?')) return;
+  _resumeClose();
+  _autoSaveSigLast = null; _doAutoSave();
+}
+async function _resumeOpen() {
+  const s = _resumeState; if (!s) return;
+  const id = s.cand.id;
+  const neuerStand = s.mode === 'newer';
+  _resumeClose();
+  if (!neuerStand) _doAutoSave();                     // offenes Design vorher sichern
+  if (!s.cand.cached || !dsLoadData(id)) {            // Browser-Speicher war voll → direkt aus der Cloud
+    try {
+      const ref = _fsDesignsRef();
+      const doc = ref ? await ref.doc(id).get() : null;
+      const dd = doc && doc.exists ? doc.data() : null;
+      if (dd && dd.data) _lsSetWithEvict(_dsDataKey(id), dd.data, id);
+    } catch (e) { console.warn('[Weitermachen] laden:', e); }
+  }
+  const data = dsLoadData(id);
+  if (!data) { notify('Design konnte nicht geladen werden', 'e'); return; }
+  if (id !== currentDesignId) _localDetachFile();
+  _applySnapshot(data);
+  currentDesignId = id;
+  localStorage.setItem('volme3d_cur', id);
+  _updateDesignLabel(dsGetMeta(id)?.name || s.cand.name);
+  _dropAllToGround();
+  try { _autoSaveSigLast = _autoSaveSig(); _autoSaveLastT = Date.now(); } catch (_) {}
+  _dsCloudSet(id, 'ok');
+  notify(neuerStand ? 'Neuerer Stand geladen ✓' : 'Design "' + (s.cand.name || 'Design') + '" geöffnet ✓', 'ok');
 }
 
 // ── Öffentliche API (synchrone Reads aus localStorage, async Writes nach Firestore) ─
@@ -43678,6 +43885,7 @@ function dsSaveDesign(id, data, thumb, name, silent, packedIn) {
   if (!json || json.length > _DS_JSON_MAX) {
     console.warn('[Speichern] Design zu groß für Browser-Speicher/Cloud (' + (json.length / 1e6).toFixed(0) + ' MB JSON) — nur Sicherung/Datei');
     if (!silent) notify('Dieses Design ist zu groß für den Browser-Speicher. Bitte mit Strg+S als Datei speichern.', 'w', 9000);
+    _dsCloudSet(id, 'big');
     return false;
   }
   const packed = packedIn != null ? packedIn : _dsCompress(json);
@@ -43853,6 +44061,7 @@ async function _dsRefreshThumbs() {
 function _updateDesignLabel(name) {
   const el = document.getElementById('cur-design-lbl');
   if (el) el.textContent = name || 'Unbenannt';
+  try { _cloudStRender(); } catch (_) {}
   _tabsSync();   // jeder Ort, der das Label setzt, hält damit auch die Tab-Leiste aktuell
 }
 
@@ -44120,6 +44329,7 @@ function _autoSaveSig() {
 }
 function _doAutoSave() {
   if (_autoSaveBusy) return;
+  if (_dsHold) return;   // Dialog „Neuerer Stand gefunden“ ist offen
   if (typeof _tut !== 'undefined' && _tut.on) return;   // Anleitung läuft im Übungsprojekt — eigenes Projekt nicht überschreiben
   if (!currentDesignId && objects.length === 0) return;
   // Nichts geändert seit dem letzten Sichern? Dann nicht neu schreiben — spätestens
@@ -44202,7 +44412,7 @@ function _renderGallery() {
     const cur = d.id === currentDesignId;
     return `<div class="ds-card ${cur ? 'ds-active' : ''}" onclick="loadDesign('${d.id}')">
       <div class="ds-thumb-wrap" data-id="${d.id}" data-up="${d.updated || 0}" data-cur="${cur ? 1 : 0}">
-        <div class="ds-nothumb">⏳</div>${cur ? '<div class="ds-cur-badge">Aktuell</div>' : ''}
+        <div class="ds-nothumb">⏳</div>${cur ? '<div class="ds-cur-badge">Aktuell</div>' : ''}${['big', 'err'].includes(_dsCloudGet(d.id)) ? '<div class="ds-local-badge" title="Nicht in der Cloud — nur in diesem Browser">⚠ nur hier</div>' : ''}
       </div>
       <div class="ds-info">
         <div class="ds-name" title="${d.name}">${d.name}</div>
@@ -44493,6 +44703,7 @@ function _maybeShowStarter(){
     if (ov && !ov.classList.contains('hidden')) return false;
     return _kidsStart();
   }
+  if(document.getElementById('resume-modal')?.classList.contains('show')) return false;   // „Weitermachen?“ steht
   if(localStorage.getItem('volme3d_hide_start')==='1') return false;   // Nutzer hat abgewählt
   if(localStorage.getItem('volme3d_cur')) return false;                // schon ein Design offen
   if(objects.length) return false;                                     // Szene nicht leer
@@ -75722,8 +75933,13 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.299';
+const VOLME3D_VERSION = '1.18.300';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.300', date:'2026-11-02', changes:[
+    ['☁','<b>Im Kurs anfangen, zu Hause weitermachen.</b> Oben neben „Meine Designs“ steht jetzt, ob dein Design in der Cloud liegt: <b>☁ In der Cloud</b> heißt, nach der Anmeldung mit derselben E-Mail ist es an jedem Rechner da. Ist ein Design zu groß für die Cloud (z. B. ein feiner Scan), steht dort orange <b>⚠ Nur auf diesem Gerät</b> — ein Klick erklärt, wie du es als Datei mitnimmst. In „Meine Designs“ tragen solche Designs den Hinweis „nur hier“.'],
+    ['▶','<b>Weitermachen, wo du aufgehört hast.</b> Meldest du dich an einem anderen Rechner an, fragt V3D CAD: „Willkommen zurück! Hier hast du zuletzt gearbeitet“ — ein Klick auf <b>Weiterarbeiten</b> öffnet das Design.'],
+    ['🛟','<b>Kein Überschreiben mehr mit altem Stand.</b> Hast du ein Design zu Hause weiterbearbeitet und öffnest danach wieder den Kurs-Rechner, lud der zuerst den alten Stand und konnte ihn beim Auto-Speichern über deine neue Arbeit schreiben. Jetzt fragt er: „Neuerer Stand gefunden“. Außerdem verschwinden zu große, nur lokal gespeicherte Designs nach der Anmeldung nicht mehr aus der Liste.'],
+  ]},
   { version:'1.18.299', date:'2026-11-02', changes:[
     ['🕳️','<b>Loch bohren: sitzt sofort in der Mitte der Fläche.</b> 🕳️ Loch wählen und die Fläche anklicken: Der Kreis sitzt gleich mittig, und ein kleines Fenster fragt <b>Ø</b>, <b>Versatz ← →</b> und <b>↓ ↑</b> (in mm, so wie du auf den Bildschirm schaust) sowie <b>Tiefe</b> oder <b>durch alles</b>. ✓ Loch bohren, fertig. Ein Klick auf die Fläche setzt das Loch an diese Stelle, nahe der Mitte rastet es auf die Mitte ein. Kein Kreis-Zeichnen und kein Ziehen mehr nötig.'],
     ['▱','<b>Skizze „Auf Fläche“ liegt mittig.</b> Der Nullpunkt der Skizze ist jetzt die Mitte der angeklickten Fläche, nicht mehr die Klickstelle. Mitte, Ecken und Kantenmitten der Fläche sind Fangpunkte. Kreise und Rechtecke lassen sich jetzt auch <b>aufziehen</b> (drücken, ziehen, loslassen); zwei Klicks gehen weiter.'],
