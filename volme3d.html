@@ -2469,7 +2469,7 @@ const firebaseConfig = {
         <div class="shp" onclick="_flxOpen()" title="Beweglich machen (FlexiGen): flaches Teil in Glieder mit Fass-Scharnieren schneiden — druckt am Stück, biegt nach oben und unten">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2" y="9" width="5" height="6" rx="1"/><rect x="9.5" y="9" width="5" height="6" rx="1"/><rect x="17" y="9" width="5" height="6" rx="1"/><circle cx="8.2" cy="12" r="1.1"/><circle cx="15.7" cy="12" r="1.1"/></svg><span class="sdd-name">Beweglich (Flexi)</span>
         </div>
-        <div class="shp" onclick="_holeQuickStart()" title="Loch in einen Körper: Fläche anklicken → Kreis aufziehen → nach unten ziehen (D = durch alles). Danach geht Gewinde an Fläche.">
+        <div class="shp" onclick="_holeQuickStart()" title="Loch in einen Körper: Fläche anklicken → das Loch sitzt in ihrer Mitte → Ø, Versatz und Tiefe eintippen (oder durch alles) → ✓ Loch bohren. Danach geht Gewinde an Fläche.">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 9l9-5 9 5v8l-9 5-9-5V9z"/><ellipse cx="12" cy="9" rx="3.4" ry="1.7"/><path d="M8.6 9v5M15.4 9v5" stroke-dasharray="1.6 1.4"/></svg><span class="sdd-name">Loch ziehen</span>
         </div>
         <div class="shp" onclick="_lvtStart()" title="Vorhandenes Loch tiefer machen: ins Loch klicken → Ø, Tiefe und Restmaterial werden gemessen → neue Tiefe eingeben">
@@ -11794,7 +11794,7 @@ function exitSketchMode() {
   _sk.editFeat = null; _sk.editEmb = null; _sk.editFlg = null; _sk.editSwp = null; _sk.hlMode = false; _skHlBtn();
   _sk.active = false; canvas.style.cursor = ''; _sk.hint=''; _skUpdateBadge();
   if (_sk.group) { scene.remove(_sk.group); _skDisposeGroup(); _sk.group = null; }
-  _sk.ents = []; _sk.pending = []; _sk.dimLock = false;
+  _sk.ents = []; _sk.pending = []; _sk.dimLock = false; _sk.faceRef = null; _skLochClose();
   _sk.cons = []; _sk.sel = []; _sk.arm = null; _sk.cUndo = []; _skcDrag.on = false;
   _skcDimClose(); _skcOverlay(); _skcPanel(); _sk.patEd = null; _skpPanel(); _embClose();
   _skRefClear();
@@ -11930,18 +11930,70 @@ function _skFacePickDown(e){
   canvas.removeEventListener('pointerdown', _skFacePickDown, true);
   _sk.facePick = false; canvas.style.cursor = 'crosshair';
   const hits = pickObjects(e).filter(h => h.object.isMesh && h.face && !(h.object.userData && (h.object.userData.isEdgeLines || h.object.userData.isSketchRef)) && objects.some(o => o === h.object || o.getObjectById(h.object.id)));
-  _sk.ents = []; _sk.pending = []; _sk.cons = []; _sk.sel = [];
+  _sk.ents = []; _sk.pending = []; _sk.cons = []; _sk.sel = []; _sk.faceRef = null;
   if (!hits.length) {
-    if (_sk.hole) { _sk.facePick = true; canvas.style.cursor = 'pointer'; canvas.addEventListener('pointerdown', _skFacePickDown, true); _skHoleTip('<b>1/3</b> Da war kein Körper – bitte die Fläche eines Körpers anklicken, in die das Loch soll'); return; }
+    if (_sk.hole) { _sk.facePick = true; canvas.style.cursor = 'pointer'; canvas.addEventListener('pointerdown', _skFacePickDown, true); _skHoleTip('<b>1/2</b> Da war kein Körper – bitte die Fläche eines Körpers anklicken, in die das Loch soll'); return; }
     _skSetFrame(new THREE.Vector3(0,1,0), new THREE.Vector3()); _skRender(); notify('Skizze liegt auf der Bauplatte', 'ok'); return; }
   const h = hits[0];
   const n = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
   if (n.dot(raycaster.ray.direction) > 0) n.negate();
+  // Ursprung = MITTE der angeklickten ebenen Fläche, nicht die Klickstelle:
+  // sonst lag das Raster irgendwo und ein Kreis ließ sich nicht mittig setzen
+  // (Volker 2.11.: „der Kreis sollte immer in der Mitte andocken").
   _skSetFrame(n, h.point.clone());
+  const fr = _skFaceRegionUV(h);
+  if (fr) {
+    _skSetFrame(n, _skToWorld(new THREE.Vector3(fr.cu, 0, fr.cv)));
+    _sk.faceRef = { segs: fr.segs.map(([a, b]) => [{ u: a.u - fr.cu, v: a.v - fr.cv }, { u: b.u - fr.cu, v: b.v - fr.cv }]) };
+  }
   _skRender();
-  if (_sk.hole) { _skSetTool('circle'); _skHoleTip('<b>2/3</b> Kreis zeichnen: Mitte anklicken, dann am Rand noch einmal klicken <span style="opacity:.7">(Maß lässt sich tippen)</span>'); return; }
+  if (_sk.hole) { _skLochOpen(); return; }
   notify('Skizze liegt jetzt auf der Fläche — zeichnen, dann „✓ Extrudieren"', 'ok');
 }
+// Ebene Fläche um den Treffer: alle Dreiecke in derselben Ebene, die mit dem
+// getroffenen zusammenhängen → Mitte (Umriss-Box in Skizzen-u/v) + Randkanten
+// als Fang-Referenz. Erwartet den Skizzen-Rahmen schon auf der Fläche.
+function _skFaceRegionUV(h) {
+  const o = h.object, g = o.geometry; if (!g || !g.attributes.position || h.faceIndex == null) return null;
+  const pos = g.attributes.position, idx = g.index, nT = (idx ? idx.count : pos.count) / 3;
+  if (nT > 400000) return null;
+  o.updateMatrixWorld(true);
+  const W = new Array(pos.count);
+  const wp = i => W[i] || (W[i] = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld));
+  const vi = (t, k) => idx ? idx.getX(t * 3 + k) : t * 3 + k;
+  const N = _sk.N, O = _sk.O, size = getMeshBox(o).getSize(new THREE.Vector3()).length() || 1, tol = Math.max(1e-5, size * 2e-4);
+  const q = 1e-4 * size, key = v => Math.round(v.x / q) + ',' + Math.round(v.y / q) + ',' + Math.round(v.z / q);
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), nn = new THREE.Vector3();
+  const plan = [], byKey = new Map();
+  for (let t = 0; t < nT; t++) {
+    const a = wp(vi(t, 0)), b = wp(vi(t, 1)), c = wp(vi(t, 2));
+    nn.crossVectors(e1.subVectors(b, a), e2.subVectors(c, a));
+    const L = nn.length(); if (L < 1e-12) continue;
+    if (Math.abs(nn.dot(N) / L) < 0.9995) continue;
+    if (Math.abs(a.clone().sub(O).dot(N)) > tol || Math.abs(b.clone().sub(O).dot(N)) > tol || Math.abs(c.clone().sub(O).dot(N)) > tol) continue;
+    const ks = [key(a), key(b), key(c)];
+    plan[t] = ks;
+    for (const k of ks) { if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(t); }
+  }
+  if (!plan[h.faceIndex]) return null;
+  const seen = new Set([h.faceIndex]), stack = [h.faceIndex];
+  while (stack.length) { const t = stack.pop(); for (const k of plan[t]) for (const t2 of byKey.get(k)) if (!seen.has(t2)) { seen.add(t2); stack.push(t2); } }
+  // Randkanten: kommen in der Region genau einmal vor
+  const ecount = new Map();
+  for (const t of seen) for (let k = 0; k < 3; k++) {
+    const a = vi(t, k), b = vi(t, (k + 1) % 3), ka = plan[t][k], kb = plan[t][(k + 1) % 3];
+    const ek = ka < kb ? ka + '|' + kb : kb + '|' + ka;
+    const r = ecount.get(ek); if (r) r.n++; else ecount.set(ek, { n: 1, a, b });
+  }
+  const uv = i => { const p = wp(i).clone().applyMatrix4(_sk.Minv); return { u: p.x, v: p.z }; };
+  const segs = [];
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  ecount.forEach(r => { if (r.n !== 1) return; const A = uv(r.a), B = uv(r.b); segs.push([A, B]);
+    for (const P of [A, B]) { u0 = Math.min(u0, P.u); u1 = Math.max(u1, P.u); v0 = Math.min(v0, P.v); v1 = Math.max(v1, P.v); } });
+  if (!segs.length) return null;
+  return { cu: (u0 + u1) / 2, cv: (v0 + v1) / 2, segs: segs.length > 600 ? segs.slice(0, 600) : segs };
+}
+
 // 🕳️ Loch ziehen (Ralf 10.10.26: „soll das die Kreisfunktion sein?" – er hatte
 // ⊙ Kreismuster erwischt). Geführter Weg durch Skizze → Auf Fläche → Kreis →
 // Ziehen; der Hinweis bleibt stehen, bis der nächste Schritt dran ist.
@@ -11950,7 +12002,92 @@ function _holeQuickStart(){
   else if (_sk.ents.length) { _sk.ents = []; _sk.pending = []; _skRender(); }
   _sk.hole = true;
   _skFacePickStart();
-  _skHoleTip('<b>1/3</b> Fläche anklicken, in die das Loch soll');
+  _skHoleTip('<b>1/2</b> Fläche anklicken, in die das Loch soll — das Loch sitzt dann in ihrer Mitte');
+}
+// Loch-Fenster: Kreis sitzt gleich in der Flächenmitte; Ø, Versatz und Tiefe
+// eintippen, Klick auf die Fläche setzt den Kreis um (Fang an Mitte/Ecken/
+// Kanten). Versatz in Bildschirm-Richtung: → = nach rechts, ↑ = nach oben.
+const _skLoch = { open: false, d: 5, x: 0, y: 0, t: 10, thru: true, su: 1, sv: 1, en: null };
+function _skLochOpen(){
+  _skHoleTip(null);
+  // Bildschirm-Richtung der Skizzen-Achsen (Kamera schaut nach _skSetFrame auf die Fläche)
+  const sc = (u, v) => _skToWorld(new THREE.Vector3(u, 0, v)).project(camera);
+  const o0 = sc(0, 0), ou = sc(1, 0), ov = sc(0, 1);
+  const L = _skLoch;
+  if (Math.abs(ou.x - o0.x) >= Math.abs(ou.y - o0.y)) { L.axU = 'x'; L.su = ou.x >= o0.x ? 1 : -1; L.sv = ov.y >= o0.y ? 1 : -1; }
+  else { L.axU = 'y'; L.su = ov.x >= o0.x ? 1 : -1; L.sv = ou.y >= o0.y ? 1 : -1; }   // Achsen am Bildschirm vertauscht
+  L.x = 0; L.y = 0; L.open = true;
+  L.en = { type: 'circle', c: { u: 0, v: 0 }, r: L.d / 20 };
+  _sk.ents = [L.en]; _sk.pending = [];
+  _skSetTool('sel');
+  let el = document.getElementById('sk-loch');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'sk-loch';
+    el.style.cssText = 'position:fixed;left:50%;top:140px;transform:translateX(-50%);z-index:9100;background:#1f2937;color:#fff;padding:10px 14px;border-radius:10px;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.3);display:flex;flex-direction:column;gap:7px;min-width:300px';
+    const f = (id, lbl, tip) => `<label title="${tip}" style="display:flex;align-items:center;gap:6px;white-space:nowrap">${lbl}<input id="${id}" type="text" inputmode="decimal" style="width:52px;padding:3px 5px;border-radius:5px;border:1px solid #4b5563;background:#111827;color:#fff;text-align:right"> mm</label>`;
+    el.innerHTML =
+      '<div style="font-weight:700">🕳️ Loch <span style="font-weight:400;opacity:.75">— sitzt in der Mitte der Fläche; Klick auf die Fläche setzt es um</span></div>' +
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">' + f('skl-d', 'Ø', 'Durchmesser') + f('skl-x', '← →', 'Versatz von der Mitte nach rechts (minus = nach links)') + f('skl-y', '↓ ↑', 'Versatz von der Mitte nach oben (minus = nach unten)') + '</div>' +
+      '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input id="skl-thru" type="checkbox"> durch alles</label>' + f('skl-t', 'Tiefe', 'Tiefe des Sacklochs') + '</div>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" onclick="_skLochCancel()" style="background:#374151;border:1px solid #4b5563;color:#e5e7eb;border-radius:6px;padding:5px 12px;cursor:pointer">Abbrechen</button>' +
+      '<button type="button" id="skl-go" onclick="_skLochApply()" style="background:#F97316;border:0;color:#fff;border-radius:6px;padding:5px 14px;cursor:pointer;font-weight:700">✓ Loch bohren</button></div>';
+    document.body.appendChild(el);
+    el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); _skLochApply(); } else if (e.key === 'Escape') { e.preventDefault(); _skLochCancel(); } });
+    el.addEventListener('input', _skLochRead);
+    el.addEventListener('change', _skLochRead);
+  }
+  _skLochFill(); el.style.display = 'flex';
+  _skRender();
+  setTimeout(() => { const i = document.getElementById('skl-d'); if (i) { i.focus(); i.select(); } }, 50);
+}
+const _skLochNum = id => { const v = parseFloat(String(document.getElementById(id).value).replace(',', '.')); return isFinite(v) ? v : null; };
+const _skLochFmt = v => String(Math.round(v * 100) / 100).replace('.', ',');
+function _skLochFill(){
+  const L = _skLoch;
+  document.getElementById('skl-d').value = _skLochFmt(L.d);
+  document.getElementById('skl-x').value = _skLochFmt(L.x);
+  document.getElementById('skl-y').value = _skLochFmt(L.y);
+  document.getElementById('skl-t').value = _skLochFmt(L.t);
+  document.getElementById('skl-thru').checked = L.thru;
+  document.getElementById('skl-t').disabled = L.thru;
+  document.getElementById('skl-t').style.opacity = L.thru ? .4 : 1;
+}
+// Bildschirm-Versatz (mm) ↔ Skizzen-u/v (Einheiten)
+function _skLochUV(x, y){ const L = _skLoch; return L.axU === 'x' ? { u: L.su * x / 10, v: L.sv * y / 10 } : { u: L.sv * y / 10, v: L.su * x / 10 }; }
+function _skLochXY(u, v){ const L = _skLoch; return L.axU === 'x' ? { x: L.su * u * 10, y: L.sv * v * 10 } : { x: L.su * v * 10, y: L.sv * u * 10 }; }
+function _skLochRead(){
+  const L = _skLoch; if (!L.open || !L.en) return;
+  const d = _skLochNum('skl-d'), x = _skLochNum('skl-x'), y = _skLochNum('skl-y'), t = _skLochNum('skl-t');
+  if (d > 0) L.d = d; if (x != null) L.x = x; if (y != null) L.y = y; if (t > 0) L.t = t;
+  L.thru = document.getElementById('skl-thru').checked;
+  document.getElementById('skl-t').disabled = L.thru; document.getElementById('skl-t').style.opacity = L.thru ? .4 : 1;
+  const c = _skLochUV(L.x, L.y);
+  L.en.c = c; L.en.r = L.d / 20;
+  _skRender();
+}
+function _skLochSet(u, v){
+  const L = _skLoch; if (!L.open || !L.en) return;
+  const p = _skLochXY(u, v); L.x = Math.round(p.x * 100) / 100; L.y = Math.round(p.y * 100) / 100;
+  L.en.c = { u, v }; _skLochFill(); _skRender();
+}
+function _skLochClose(){
+  _skLoch.open = false; _skLoch.en = null;
+  const el = document.getElementById('sk-loch'); if (el) el.style.display = 'none';
+}
+function _skLochCancel(){ _skLochClose(); _sk.hole = false; _skHoleTip(null); if (_sk.active) exitSketchMode(); }
+async function _skLochApply(){
+  const L = _skLoch; if (!L.open) return;
+  _skLochRead();
+  if (!(L.d > 0)) { notify('Bitte einen Durchmesser eingeben', 'w'); return; }
+  const shapes = _skBuildShapes();
+  if (!shapes.length) { notify('Kein Kreis da', 'w'); return; }
+  _skx.shapes = [shapes[0]];
+  _skx.p = { dir: 'one', d: -(L.thru ? 1 : L.t), d2: 5, op: 'auto', thru: L.thru };
+  const r = _skxResolve();
+  if (r.op !== 'cut' || !r.target) { notify('Der Kreis liegt nicht auf dem Körper — bitte auf die Fläche verschieben', 'w'); return; }
+  _skLochClose(); _sk.hole = false; _skHoleTip(null);
+  _skx.open = true; _skx.res = r;
+  await _skxApply();
 }
 function _skHoleNext(){
   if (!_sk.active || !_sk.hole || _sk.tool !== 'circle') return;
@@ -12060,6 +12197,10 @@ function _skAllVertices(){
 function _skSnapCandidates(){
   const out=[];
   const p=(pt,k)=>out.push({u:pt.u, v:pt.v, k});
+  // Fläche, auf der die Skizze liegt: Mitte (= Ursprung), Ecken, Kantenmitten
+  if (_sk.faceRef){ p({u:0,v:0},'⊕');
+    const sg=_sk.faceRef.segs, viele=sg.length>48;
+    for (const [a,b] of sg){ if (!viele){ p(a,'•'); p({u:(a.u+b.u)/2, v:(a.v+b.v)/2},'◐'); } } }
   if (_sk.tool==='spline' && _sk.pending.length>=3) p(_sk.pending[0],'•');
   for (const en of _sk.ents){
     if (en.type==='line'){ p(en.a,'•'); p(en.b,'•'); p({u:(en.a.u+en.b.u)/2, v:(en.a.v+en.b.v)/2},'◐'); }
@@ -12364,6 +12505,7 @@ function _skFreeEnd(e) {
 
 function _skClick(e){
   const raw=_skPlanePoint(e); if(!raw) return;
+  if (_skLoch.open){ const q=_skSnapFull(raw); _skLochSet(q.u, q.v); return; }   // Loch-Fenster: Klick = Kreis dorthin
   if (_sk.tool==='pull'){ if(!_skPull.editing) _skPullStart(raw); return; }   // Fläche andrücken → interaktiv hochziehen
   if (_sk.tool==='free'){ _skFreeStart(raw); return; }                        // Freihand: ziehen statt klicken
   if (_sk.tool==='sel'){ _skcDown(e, raw); return; }                         // Auswahl / Abhängigkeiten / Ziehen
@@ -12374,6 +12516,16 @@ function _skClick(e){
   const sp=_skSnapFull(raw), cur={u:sp.u, v:sp.v};
   _sk.dimLock=false;
   const T=_sk.tool, P=_sk.pending;
+  // Kreis/Rechteck auch AUFZIEHEN: drücken, ziehen, loslassen (bisher nur zwei
+  // Klicks — wer zog, hatte danach einen am Zeiger hängenden Kreis)
+  if ((T==='circle'||T==='rect') && P.length===0 && e.clientX!=null){
+    const x0=e.clientX, y0=e.clientY;
+    const up=ev=>{ window.removeEventListener('pointerup', up, true);
+      if (!_sk.active || _sk.tool!==T || _sk.pending.length!==1) return;
+      if (Math.hypot(ev.clientX-x0, ev.clientY-y0) < 8) return;   // nur geklickt → zweiter Klick wie bisher
+      _skClick(ev); };
+    window.addEventListener('pointerup', up, true);
+  }
   if (T==='trim'){ _skTrimAt(cur); _skRender(); return; }
   if (T==='line'){
     P.push(cur);
@@ -75570,8 +75722,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.298';
+const VOLME3D_VERSION = '1.18.299';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.299', date:'2026-11-02', changes:[
+    ['🕳️','<b>Loch bohren: sitzt sofort in der Mitte der Fläche.</b> 🕳️ Loch wählen und die Fläche anklicken: Der Kreis sitzt gleich mittig, und ein kleines Fenster fragt <b>Ø</b>, <b>Versatz ← →</b> und <b>↓ ↑</b> (in mm, so wie du auf den Bildschirm schaust) sowie <b>Tiefe</b> oder <b>durch alles</b>. ✓ Loch bohren, fertig. Ein Klick auf die Fläche setzt das Loch an diese Stelle, nahe der Mitte rastet es auf die Mitte ein. Kein Kreis-Zeichnen und kein Ziehen mehr nötig.'],
+    ['▱','<b>Skizze „Auf Fläche“ liegt mittig.</b> Der Nullpunkt der Skizze ist jetzt die Mitte der angeklickten Fläche, nicht mehr die Klickstelle. Mitte, Ecken und Kantenmitten der Fläche sind Fangpunkte. Kreise und Rechtecke lassen sich jetzt auch <b>aufziehen</b> (drücken, ziehen, loslassen); zwei Klicks gehen weiter.'],
+  ]},
   { version:'1.18.298', date:'2026-11-02', changes:[
     ['⬡','<b>Kanten per Klick markieren, dann runden oder fasen.</b> Im Modus <b>⬡ Kanten bearbeiten</b> markiert jeder Klick eine Kante, ganz ohne Shift. Ein zweiter Klick auf eine markierte Kante nimmt sie wieder heraus. Markierte Kanten leuchten jetzt als dicker oranger Strich, vorher war es nur eine dünne Linie. Links im Panel <b>Fase</b> oder <b>Rundung</b> wählen, das Maß in mm eintippen und <b>✓ Anwenden</b> drücken (oder Enter): Alle markierten Kanten bekommen es auf einmal. Danach lassen sich gleich die nächsten Kanten markieren. Am Griff ziehen geht weiterhin und wirkt auf alle markierten Kanten. <b>Markierung leeren</b> hebt die Auswahl auf.'],
   ]},
