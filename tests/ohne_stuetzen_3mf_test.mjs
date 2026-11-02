@@ -130,6 +130,8 @@ ok('3MF: BambuStudio-Kennung', /<metadata name="Application">BambuStudio-/.test(
 ok('3MF: project_settings vollständig (> 400 Schlüssel)', ps && Object.keys(ps).length > 400, ps && Object.keys(ps).length);
 ok('3MF: Profilnamen X1C/PLA', ps && ps.printer_settings_id === 'Bambu Lab X1 Carbon 0.4 nozzle' && /^0\.20mm Standard @BBL X1C$/.test(ps.print_settings_id) && ps.filament_settings_id.length === 2 && /Bambu PLA Basic @BBL X1C/.test(ps.filament_settings_id[0]), ps && [ps.printer_settings_id, ps.print_settings_id, ps.filament_settings_id]);
 ok('3MF: 2 Filamentfarben, Spalten passend', ps && ps.filament_colour.length === 2 && ps.nozzle_temperature.length === 2 && ps.inherits_group.length === 4 && ps.different_settings_to_system.length === 4, ps && [ps.filament_colour, ps.different_settings_to_system]);
+// Bambu-Oberfläche (nicht das CLI) wirft sonst „Invalid configuration file" (Volker 2.11., A1)
+ok('3MF: filament_self_index + filament_extruder_variant je Filament', ps && String(ps.filament_self_index) === '1,2' && ps.filament_extruder_variant.length === 2, ps && [ps.filament_self_index, ps.filament_extruder_variant]);
 const tr = /<item objectid="\d+" transform="([^"]+)"/.exec(z['3D/3dmodel.model'] || '');
 const t = tr ? tr[1].split(' ').map(Number) : [];
 ok('3MF: Modell auf Plattenmitte (X1C 128/128)', t.length === 12 && Math.abs(t[9] - 128) < 30 && Math.abs(t[10] - 128) < 30, t.slice(9));
