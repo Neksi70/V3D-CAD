@@ -11614,7 +11614,7 @@ function enterEdgeMode(quiet = false) {
   canvas.style.cursor = 'crosshair';
   if (!quiet) {
     const msg = _isBox
-      ? 'Kante anklicken — Shift für Mehrfachauswahl — ESC zum Beenden'
+      ? 'Kanten anklicken = markieren (nochmal = weg) — links Maß eingeben und anwenden — ESC zum Beenden'
       : 'Kante anklicken — Handle ziehen — ESC zum Beenden';
     notify(msg, 'ok');
   }
@@ -11640,6 +11640,7 @@ function exitEdgeMode() {
   _edgeBevelHandlePos = null; _edgeBevelDragging = false;
   _edgeBevelDragStart = null; _edgeBevelDragVal = 0;
   _edgeMode = false; _edgeGlobal = false; _edgeObj = null; _edgeSel.clear(); _edgeHover = -1;
+  _edgeMarkDraw();
   canvas.style.cursor = '';
   _fpCurType = null; updateFP();
 }
@@ -16819,6 +16820,45 @@ function _updateEdgeColors() {
     });
     cc.needsUpdate = true;
   }
+  _edgeMarkDraw();
+}
+
+// Markierte Kanten deutlich zeigen: die Kantenlinien sind nur 1 px breit (WebGL),
+// orange darauf sah man kaum. Darüber ein dicker oranger Strich je Kante.
+let _edgeMarkGrp = null;
+function _edgeMarkDraw() {
+  if (_edgeMarkGrp) {
+    scene.remove(_edgeMarkGrp);
+    _edgeMarkGrp.traverse(c => { if (c.geometry) c.geometry.dispose(); });
+    _edgeMarkGrp = null;
+  }
+  const o = _edgeObj;
+  if (!_edgeMode || !o || !_edgeSel.size) return;
+  const dyn = o.userData._dynamicEdges || [];
+  // auf dem Bildschirm etwa gleich dick (≈ 3 px), egal wie nah die Kamera ist
+  const r = Math.max(0.004, camera.position.distanceTo(getMeshBox(o).getCenter(new THREE.Vector3())) * 0.0045);
+  const mat = _edgeMarkDraw.mat || (_edgeMarkDraw.mat = new THREE.MeshBasicMaterial({ color: 0xff6a00 }));
+  const g = new THREE.Group(), up = new THREE.Vector3(0, 1, 0);
+  const strich = (a, b) => {
+    const len = a.distanceTo(b); if (len < 1e-6) return;
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 8, 1, true), mat);
+    m.position.copy(a).lerp(b, 0.5);
+    m.quaternion.setFromUnitVectors(up, b.clone().sub(a).normalize());
+    m.renderOrder = 998; g.add(m);
+  };
+  o.updateMatrixWorld(true);
+  for (const i of _edgeSel) {
+    const ed = dyn[i]; if (!ed) continue;
+    if (ed.rim && ed.rim.pts) {
+      const P = ed.rim.pts.map(p => p.clone().applyMatrix4(o.matrixWorld));
+      P.forEach((p, k) => strich(p, P[(k + 1) % P.length]));
+      continue;
+    }
+    try { const [a, b] = _edgeWorldPts(o, ed); strich(a, b); } catch (e) {}
+  }
+  if (!g.children.length) return;
+  g.visible = !_ebPrev;
+  _edgeMarkGrp = g; scene.add(g);
 }
 
 function _getClosestPointOnEdge(ray, a, b) {
@@ -16919,6 +16959,7 @@ function _ebPrevStart() {
     if (!_oc) _loadOCCT().catch(() => {});
   }
   _ebPrev = p;
+  if (_edgeMarkGrp) _edgeMarkGrp.visible = false;   // Vorschau zeigt die neue Kante
 }
 
 // Original ausblenden (nur das Material — Kinder wie Kantenlinien bleiben
@@ -17257,7 +17298,7 @@ function _ebPrevEnd() {
   clearTimeout(p.timer);
   if (p.kind === 'cyl') { _ebPrevCylRestore(p); _fpRebuildGeo(p.o); _updateObjEdgeLines(p.o); }
   if (p.mesh) { scene.remove(p.mesh); p.mesh.geometry.dispose(); p.mesh.material.dispose(); }
-  _ebPrevShowOrig(p);
+  _ebPrevShowOrig(p);  if (_edgeMarkGrp) _edgeMarkGrp.visible = true;
 }
 
 function _updateEdgeBevelHandleDOM() {
@@ -19024,6 +19065,49 @@ function _edgeChainOf(o, idx) {
   };
   walk(idx, 0); walk(idx, 1);
   return [...seen];
+}
+
+// ─── Markierte Kanten mit Maß anwenden (Panel) ─────────────────────────────
+const _edgeMark = { round: true, mm: 1 };
+function _edgeMarkHTML(o, n) {
+  const canRound = _edgeBevelRightIsRound(o), round = canRound && _edgeMark.round;
+  const on = 'background:#F97316;color:#fff;border-color:#F97316', off = '';
+  const mm = String(_edgeMark.mm).replace('.', ',');
+  return `<div class="fp-row" style="flex-direction:row;gap:6px;align-items:center;flex-wrap:wrap">` +
+    `<button class="fp-btn" style="${round ? off : on}" onclick="_edgeMarkKind(false)" title="Schräge Kante">Fase</button>` +
+    (canRound ? `<button class="fp-btn" style="${round ? on : off}" onclick="_edgeMarkKind(true)" title="Runde Kante">Rundung</button>` : '') +
+    `<span style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap"><input id="fp-edge-mm" type="text" inputmode="decimal" value="${mm}" style="width:56px;flex:0 0 56px;text-align:right;padding:3px 5px" ` +
+      `onkeydown="event.stopPropagation();if(event.key==='Enter'){event.preventDefault();_edgeMarkApply()}" oninput="_edgeMarkMm(this.value)">mm</span></div>` +
+    `<div class="fp-row fp-edge-row" style="flex-direction:row;gap:6px"><button id="fp-edge-apply" class="fp-btn" style="${on};font-weight:700" onclick="_edgeMarkApply()" title="Fase/Rundung an allen markierten Kanten anbringen (Enter)">✓ Anwenden (${n} Kante${n !== 1 ? 'n' : ''})</button>` +
+    `<button class="fp-btn" onclick="_edgeMarkClear()" title="Alle Markierungen aufheben">Markierung leeren</button></div>`;
+}
+function _edgeMarkKind(round) { _edgeMark.round = !!round; _fpCurType = null; updateFP(); }
+function _edgeMarkMm(v) { const x = parseFloat(String(v).replace(',', '.')); if (x > 0) _edgeMark.mm = x; }
+function _edgeMarkClear() {
+  _edgeSel.clear(); _edgeBevelHandlePos = null; _edgeHover = -1;
+  _updateEdgeColors(); _fpCurType = null; updateFP();
+}
+async function _edgeMarkApply() {
+  const o = _edgeObj;
+  if (!o || !_edgeMode || !_edgeSel.size) { notify('Erst Kanten anklicken', 'w'); return; }
+  const inp = document.getElementById('fp-edge-mm');
+  const mm = parseFloat(String(inp ? inp.value : _edgeMark.mm).replace(',', '.'));
+  if (!(mm > 0) || mm > 1000) { notify('Bitte ein Maß in mm eingeben, z. B. 2 oder 1,5', 'w'); return; }
+  _edgeMark.mm = mm;
+  const round = _edgeBevelRightIsRound(o) && _edgeMark.round;
+  const want = (round ? 1 : -1) * mm / 10;   // wie beim Ziehen: rechts = Rundung, links = Fase
+  if (!_edgeBevelHandlePos) _edgeSelHandleAt(o, [..._edgeSel][0]);
+  _ebPrevStart();
+  const f = _ebPrevFinalVal(want);
+  _ebPrevEnd();
+  if (f == null) { notify((round ? 'Rundung' : 'Fase') + ' ' + String(mm).replace('.', ',') + ' mm geht an diesen Kanten nicht — nichts geändert.', 'w'); return; }
+  if (Math.abs(f - want) > 1e-6) notify((round ? 'Rundung' : 'Fase') + ' zu groß — auf das Machbare begrenzt: '
+    + (Math.abs(f) * 10).toFixed(1).replace('.', ',') + ' mm.', 'ok');
+  const ctx = _ebValCapture(f);
+  const r = _applyEdgeHandleValue(f);
+  await r;
+  _ebValShow(ctx);
+  _edgeModeWeiter(r);
 }
 
 function _edgeSelHandleAt(o, i) {
@@ -37106,8 +37190,8 @@ canvas.addEventListener('mousedown', e => {
       const _pick = _edgePickIdx(e), idx = _pick.idx;
       if (idx >= 0) {
         const _chain = _edgeChainOf(_edgeObj, idx);   // glatt weiterlaufende Stücke mit
-        if (e.shiftKey) { const _off = _edgeSel.has(idx); _chain.forEach(i => _off ? _edgeSel.delete(i) : _edgeSel.add(i)); }
-        else { _edgeSel.clear(); _chain.forEach(i => _edgeSel.add(i)); }
+        // Klick markiert (dazu/weg) — mit und ohne Shift, s. _dedDown
+        { const _off = _edgeSel.has(idx); _chain.forEach(i => _off ? _edgeSel.delete(i) : _edgeSel.add(i)); }
         _updateEdgeColors();
         if (_edgeObj.userData._dynamicEdges) {
           const edge = _edgeObj.userData._dynamicEdges[idx];
@@ -42959,7 +43043,19 @@ function _dedDown(e) {
     const r = _edgePickIdx(e);
     if (r.idx < 0 || !r.pw) return;
     e.stopPropagation(); e.preventDefault();
-    if (!(_edgeSel.has(r.idx) && _edgeSel.size > 1)) { _edgeSel.clear(); _edgeChainOf(_edgeObj, r.idx).forEach(i => _edgeSel.add(i)); }
+    // Klick MARKIERT: jede angeklickte Kante kommt zur Auswahl dazu, ein
+    // Klick auf eine markierte nimmt sie wieder heraus (beim Loslassen, s.
+    // _dedDragUp) — Volker 2.11.: „Kanten mit Klick markieren, dann runden".
+    // Ziehen wirkt auf alle markierten. Lochränder laufen über einen eigenen
+    // Weg und vertragen keine gemischte Auswahl → dann neu beginnen.
+    const dyn = _edgeObj.userData._dynamicEdges || [];
+    const had = _edgeSel.has(r.idx);
+    _ded.klick = { idx: r.idx, had };
+    if (!had) {
+      const rimNeu = !!(dyn[r.idx] && dyn[r.idx].rim);
+      if ([..._edgeSel].some(i => !!(dyn[i] && dyn[i].rim) !== rimNeu)) _edgeSel.clear();
+      _edgeChainOf(_edgeObj, r.idx).forEach(i => _edgeSel.add(i));
+    }
     _edgeHover = -1; _updateEdgeColors();
     _edgeBevelHandlePos = r.pw.clone();
     _fpCurType = null; updateFP();
@@ -43009,7 +43105,19 @@ function _dedDragUp(e) {
     // Kanten-Modus bleibt offen (er wurde bewusst über „⬡ Kanten bearbeiten"
     // geöffnet) — die nächste Kante lässt sich gleich weiter ziehen
     _edgeModeWeiter(_ebPrevRelease(val));
-  } else { _ebPrevEnd(); _edgeBevelDragVal = 0; }
+  } else {
+    _ebPrevEnd(); _edgeBevelDragVal = 0;
+    // reiner Klick auf eine schon markierte Kante → Markierung weg
+    const k = _ded.klick;
+    if (k && k.had && _edgeMode && _edgeObj) {
+      _edgeChainOf(_edgeObj, k.idx).forEach(i => _edgeSel.delete(i));
+      if (_edgeSel.size) _edgeSelHandleAt(_edgeObj, [..._edgeSel][0]);
+      else _edgeBevelHandlePos = null;
+      _updateEdgeColors();
+    }
+    _fpCurType = null; updateFP();
+  }
+  _ded.klick = null;
 }
 
 // Maus-Ersatzereignis nach dem Kanten-Griff schlucken (sonst startet das freie Ziehen)
@@ -75462,8 +75570,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.297';
+const VOLME3D_VERSION = '1.18.298';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.298', date:'2026-11-02', changes:[
+    ['⬡','<b>Kanten per Klick markieren, dann runden oder fasen.</b> Im Modus <b>⬡ Kanten bearbeiten</b> markiert jeder Klick eine Kante, ganz ohne Shift. Ein zweiter Klick auf eine markierte Kante nimmt sie wieder heraus. Markierte Kanten leuchten jetzt als dicker oranger Strich, vorher war es nur eine dünne Linie. Links im Panel <b>Fase</b> oder <b>Rundung</b> wählen, das Maß in mm eintippen und <b>✓ Anwenden</b> drücken (oder Enter): Alle markierten Kanten bekommen es auf einmal. Danach lassen sich gleich die nächsten Kanten markieren. Am Griff ziehen geht weiterhin und wirkt auf alle markierten Kanten. <b>Markierung leeren</b> hebt die Auswahl auf.'],
+  ]},
   { version:'1.18.297', date:'2026-11-02', changes:[
     ['🔲','<b>Ausgehöhlte Körper: Innenkanten lassen sich jetzt wirklich anklicken.</b> Der Kanten-Modus kannte am ausgehöhlten Quader nur die 12 Außenkanten. Ein Klick auf eine Innenkante landete deshalb auf der Außenkante daneben, und Fase oder Rundung saßen innen <i>und</i> außen. Jetzt stehen alle Kanten zur Wahl, innen wie außen. Eine Innenkante bekommt nur innen eine Fase oder Rundung, außen bleibt scharf. (Der Fix aus 1.18.295 hatte nur die Berechnung korrigiert, nicht die Auswahl.)'],
   ]},
@@ -81585,8 +81696,9 @@ function _fpBuildRows(type, o) {
       o.userData.occtShape || o.userData.wasBox);
     return `<div class="fp-row"><span class="fp-lbl">${selCount} von ${totalCount} Kante${totalCount!==1?'n':''} ausgewählt</span></div>` +
       (selCount > 0
-        ? `<div class="fp-row"><span class="fp-lbl" style="color:#aaa;font-size:11px">Handle ziehen: &#8592; Fase &nbsp;|&nbsp; Rundung &#8594;</span></div>`
-        : `<div class="fp-row"><span class="fp-lbl" style="color:#aaa;font-size:11px">Kante anklicken, dann Handle ziehen</span></div>`) +
+        ? _edgeMarkHTML(o, selCount) +
+          `<div class="fp-row"><span class="fp-lbl" style="color:#aaa;font-size:11px">Weitere Kante anklicken = dazu, markierte anklicken = weg. Oder am Griff ziehen: &#8592; Fase &nbsp;|&nbsp; Rundung &#8594;</span></div>`
+        : `<div class="fp-row"><span class="fp-lbl" style="color:#aaa;font-size:11px">Kanten anklicken, um sie zu markieren — dann Maß eingeben und anwenden</span></div>`) +
       // Der Winkel rundet NICHTS — er legt nur fest, ab welchem Knick eine Kante
       // anklickbar ist. Ralf (21.9.2026) drehte daran und wunderte sich.
       (isMeshEdges ? row('Kante ab Knick', 'fp-edge-ang', _edgeAngleThresh, '_edgeSetAngle(this.value)', '°', 10, 85, 5) +
