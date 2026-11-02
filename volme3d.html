@@ -985,7 +985,7 @@ body.devmode .dev-only{display:flex!important}
 #text3d-modal.show{display:flex}
 #text3d-box{background:#fff;border-radius:12px;width:360px;max-width:95vw;padding:20px;box-shadow:0 12px 40px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:12px}
 #text3d-box h3{margin:0;font-size:14px;font-weight:800}
-#text3d-input{width:100%;box-sizing:border-box;padding:8px 10px;border:1.5px solid var(--border);border-radius:6px;font-size:15px;font-family:var(--font);outline:none}
+#text3d-input{width:100%;box-sizing:border-box;padding:8px 10px;resize:vertical;min-height:40px;line-height:1.35;border:1.5px solid var(--border);border-radius:6px;font-size:15px;font-family:var(--font);outline:none}
 #text3d-input:focus{border-color:var(--acc)}
 #text3d-font{width:100%;box-sizing:border-box;padding:7px 9px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;font-family:var(--font);outline:none;background:#fff;cursor:pointer}
 #gf-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:3300;display:none;align-items:center;justify-content:center}
@@ -6933,7 +6933,7 @@ Patrick</textarea>
 <div id="text3d-modal" onclick="if(event.target===this&&Date.now()-(_text3dFontOutside._t||0)>400)_closeText3d()">
   <div id="text3d-box">
     <h3>✏️ 3D-Text</h3>
-    <input id="text3d-input" type="text" placeholder="Text eingeben…" maxlength="80" onkeydown="if(event.key==='Enter')_confirmText3d()" oninput="_text3dPreview()">
+    <textarea id="text3d-input" rows="2" placeholder="Text eingeben… (Enter = neue Zeile, Strg+Enter = Erstellen)" maxlength="400" onkeydown="if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();_confirmText3d()}" oninput="_text3dPreview()"></textarea>
     <select id="text3d-font" onchange="_text3dPreview()" style="display:none">
       <option value="helvetiker_bold">Helvetiker Bold (Standard)</option>
       <option value="helvetiker_regular">Helvetiker Regular</option>
@@ -20446,7 +20446,8 @@ function _fpDraw(cv, font, str, opt) {
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   // Dialog-Vorschau mit Abstand/Verschweißen: dieselben Konturen wie der Körper,
   // mit Umrisslinie — so sieht man, ob die Buchstaben EIN Teil werden.
-  if (opt && (opt.gap || opt.weld)) {
+  if ((opt && (opt.gap || opt.weld)) || (str.indexOf('\n') >= 0 && opt !== false)) {
+    opt = opt || {};
     let svg = '';
     try { const ts = _textToSvg(font, str, 100, (opt.gap || 0)); svg = (opt.weld && _textWeldSvg(ts.svg)) || ts.svg; } catch (e) {}
     for (const loops of _textSvgRings(svg)) for (const l of loops) {
@@ -20487,9 +20488,16 @@ function _fpDraw(cv, font, str, opt) {
   g.fillStyle = '#222'; g.fill('evenodd');
 }
 
+// Mehrzeiliger Text: \r weg, Leerraum am Zeilenende weg, Leerzeilen am Anfang/Ende weg.
+function _text3dClean(v) {
+  return (v || '').replace(/\r\n?/g, '\n').split('\n').map(l => l.replace(/\s+$/, '')).join('\n').replace(/^\n+|\n+$/g, '').replace(/^\s+$/, '');
+}
+// Name/Meldung: Zeilen nebeneinander mit „ / "
+function _text3dOneLine(s) { return String(s || '').replace(/\n+/g, ' / '); }
+
 function _fpSample() {
-  const v = (document.getElementById('text3d-input').value || '').trim();
-  return v ? v.slice(0, 40) : 'AaBbCc 123';
+  const v = _text3dClean(document.getElementById('text3d-input').value);
+  return v ? v.split('\n').slice(0, 4).map(l => l.slice(0, 40)).join('\n') : 'AaBbCc 123';
 }
 
 function _text3dPreview() {
@@ -20545,9 +20553,10 @@ function _text3dFontGridFill() {
     row.onclick = () => { sel.value = op.value; _text3dFontGrid(false); _text3dPreview(); document.getElementById('text3d-fprev').focus(); };
     grid.appendChild(row);
     const cv = row.querySelector('canvas');
-    _fpDraw(cv, window['_threeFont_' + op.value] || undefined, str);
+    const str1 = str.split('\n')[0];
+    _fpDraw(cv, window['_threeFont_' + op.value] || undefined, str1);
     if (!window['_threeFont_' + op.value])
-      _fpLoadFont(op.value, f => { if (tok === _text3dFontGridFill._tok) _fpDraw(cv, f, str); });
+      _fpLoadFont(op.value, f => { if (tok === _text3dFontGridFill._tok) _fpDraw(cv, f, str1); });
   }
   const on = grid.querySelector('.fg-row.on');
   if (on) grid.scrollTop = on.offsetTop - 4;
@@ -20562,7 +20571,7 @@ function _textEditBuildSvg(font, m) {
     return (ts.w && ts.h) ? { svg: (m.weld && _textWeldSvg(ts.svg)) || ts.svg, targetMM: Math.max(ts.w, ts.h) * 10 } : null;
   }
   const ts = _textToSvg(font, m.str, sizeU, (m.gap || 0) / 100 * sizeU);
-  return (ts.w && ts.h) ? { svg: (m.weld && _textWeldSvg(ts.svg)) || ts.svg, targetMM: m.size * Math.max(ts.w, ts.h) / ts.h } : null;
+  return (ts.w && ts.h) ? { svg: (m.weld && _textWeldSvg(ts.svg)) || ts.svg, targetMM: m.size * Math.max(ts.w, ts.h) / (ts.hLine || ts.h) } : null;
 }
 
 // Pfaddaten + Transform wie in _importSvgConfirm (Maßstab, Zentrierung) — bei
@@ -20608,8 +20617,9 @@ function _textEditApply(o, m, font) {
   ud.svgSize = built.targetMM;
   delete ud._svgShapeGeosFinal;
   ud.textEdit = Object.assign({}, m);
-  if (oldStr && typeof ud.name === 'string' && ud.name.indexOf(oldStr) === 0)
-    ud.name = m.str + ud.name.slice(oldStr.length);
+  const old1 = oldStr && _text3dOneLine(oldStr);
+  if (old1 && typeof ud.name === 'string' && ud.name.indexOf(old1) === 0)
+    ud.name = _text3dOneLine(m.str) + ud.name.slice(old1.length);
   const mulS = s => ({ x: s.x * f, y: s.y * f, z: s.z * f });
   const swap = geo => { o.geometry.dispose(); o.geometry = geo; };
   if (ud._svgWrap) {
@@ -20641,7 +20651,7 @@ function _textEditApply(o, m, font) {
   o.updateMatrixWorld(true);
   selectObjs([o]); updateTree(); updateTFInputs();
   if (selectedObjs.length) _doRepositionDimHandles();
-  notify('Text geändert: "' + m.str + '"', 'ok');
+  notify('Text geändert: "' + _text3dOneLine(m.str) + '"', 'ok');
   return true;
 }
 
@@ -20676,30 +20686,51 @@ function _text3dSetFace(f) {
 }
 
 // Font-Konturen → SVG-String (Y-Flip: THREE-Y-up → SVG-Y-down; Löcher als Subpaths).
-// Liefert { svg, w, h } (w/h = Bounding-Box in Font-Einheiten, für die mm-Skalierung).
+// Liefert { svg, w, h, hLine } (w/h = Bounding-Box in Font-Einheiten, hLine = Höhe
+// der höchsten Einzelzeile — Bezug für die mm-Größe, damit „Größe" je Zeile gilt).
+// Mehrzeilig (\n): Zeilen untereinander im Zeilenabstand der Schrift, jede zentriert.
+function _textLineHeight(font, size) {
+  const d = font.data, bb = d.boundingBox || {};
+  const lh = ((bb.yMax - bb.yMin) || d.resolution * 1.2) + (d.underlineThickness || 0);
+  return lh * size / d.resolution;
+}
 function _textToSvg(font, txt, size, gapU) {
-  // Mit Buchstabenabstand wird Zeichen für Zeichen gesetzt (eigener Vorschub + gapU)
-  const res = font.data.resolution, chars = gapU ? [...txt] : [txt];
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, paths = '', x0 = 0;
-  for (const ch of chars) {
-    for (const sh of font.generateShapes(ch, size)) {
-      const subs = [sh.getPoints(14), ...((sh.holes || []).map(h => h.getPoints(14)))];
+  const res = font.data.resolution, lh = _textLineHeight(font, size);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, hLine = 0, paths = '';
+  String(txt).split('\n').forEach((line, li) => {
+    // Mit Buchstabenabstand wird Zeichen für Zeichen gesetzt (eigener Vorschub + gapU)
+    const chars = gapU ? [...line] : [line], glyphs = [];
+    let x0 = 0, lx0 = Infinity, lx1 = -Infinity, ly0 = Infinity, ly1 = -Infinity;
+    for (const ch of chars) {
+      for (const sh of (ch ? font.generateShapes(ch, size) : [])) {
+        const subs = [sh.getPoints(14), ...((sh.holes || []).map(h => h.getPoints(14)))].filter(p => p && p.length >= 2);
+        if (!subs.length) continue;
+        glyphs.push(subs.map(pts => pts.map(p => [p.x + x0, p.y])));
+        for (const pts of subs) for (const p of pts) {
+          const x = p.x + x0; if (x<lx0)lx0=x; if (x>lx1)lx1=x; if (p.y<ly0)ly0=p.y; if (p.y>ly1)ly1=p.y;
+        }
+      }
+      if (gapU) {
+        const g = font.data.glyphs[ch] || font.data.glyphs['?'];
+        x0 += (g && g.ha ? g.ha : res * 0.5) * size / res + gapU;
+      }
+    }
+    if (!glyphs.length) return;   // Leerzeile: nur Abstand
+    const dx = -(lx0 + lx1) / 2, dy = -li * lh;
+    hLine = Math.max(hLine, ly1 - ly0);
+    for (const subs of glyphs) {
       let d = '';
       for (const pts of subs) {
-        if (!pts || pts.length < 2) continue;
-        d += `M ${(pts[0].x + x0).toFixed(3)} ${(-pts[0].y).toFixed(3)} `;
-        for (let i = 1; i < pts.length; i++) d += `L ${(pts[i].x + x0).toFixed(3)} ${(-pts[i].y).toFixed(3)} `;
+        d += `M ${(pts[0][0] + dx).toFixed(3)} ${(-(pts[0][1] + dy)).toFixed(3)} `;
+        for (let i = 1; i < pts.length; i++) d += `L ${(pts[i][0] + dx).toFixed(3)} ${(-(pts[i][1] + dy)).toFixed(3)} `;
         d += 'Z ';
-        for (const p of pts) { const x = p.x + x0; if (x<minX)minX=x; if (x>maxX)maxX=x; if (p.y<minY)minY=p.y; if (p.y>maxY)maxY=p.y; }
       }
-      if (d) paths += `<path d="${d}"/>`;
+      paths += `<path d="${d}"/>`;
     }
-    if (gapU) {
-      const g = font.data.glyphs[ch] || font.data.glyphs['?'];
-      x0 += (g && g.ha ? g.ha : res * 0.5) * size / res + gapU;
-    }
-  }
-  return { svg: `<svg xmlns="http://www.w3.org/2000/svg">${paths}</svg>`, w: maxX - minX, h: maxY - minY };
+    minX = Math.min(minX, lx0 + dx); maxX = Math.max(maxX, lx1 + dx);
+    minY = Math.min(minY, ly0 + dy); maxY = Math.max(maxY, ly1 + dy);
+  });
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg">${paths}</svg>`, w: maxX - minX, h: maxY - minY, hLine };
 }
 
 // Ringe eines selbst erzeugten Text-SVGs (nur M/L/Z): je <path> eine Liste von
@@ -20754,7 +20785,28 @@ function _textWeldSvg(svg) {
 // platziert (Grundlinie auf dem Bogen, Buchstaben stehen radial). Ergebnis
 // läuft durch die normale SVG-Pipeline (Snap, erhaben/vertieft, Inlay).
 // dir 'up' = Bogen nach oben (Schild-Kopf), 'down' = nach unten (Schild-Fuß).
+// Mehrzeilig: weitere Zeilen auf konzentrischen Bögen darunter (bei „oben" zur
+// Mitte hin, bei „unten" nach außen), Abstand = Zeilenabstand der Schrift.
 function _textArcSvg(font, txt, sizeU, radiusU, dir) {
+  const lines = String(txt).split('\n');
+  if (lines.length < 2) return _textArcSvg1(font, txt, sizeU, radiusU, dir);
+  const lh = _textLineHeight(font, sizeU);
+  const total = l => [...l].reduce((a, ch) => { const g = font.data.glyphs[ch] || font.data.glyphs['?'];
+    return a + (g && g.ha ? g.ha : font.data.resolution * 0.5) * sizeU / font.data.resolution; }, 0);
+  const R0 = Math.max(radiusU, total(lines[0]) / Math.PI);
+  let paths = '', minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  lines.forEach((l, i) => {
+    if (!l.trim()) return;
+    const r = dir === 'up' ? R0 - i * lh : R0 + i * lh;
+    const ts = _textArcSvg1(font, l, sizeU, Math.max(r, sizeU), dir, true);
+    if (!ts.w && !ts.h) return;
+    paths += ts.svg.replace(/^<svg[^>]*>|<\/svg>$/g, '');
+    minX = Math.min(minX, ts.x0); maxX = Math.max(maxX, ts.x0 + ts.w);
+    minY = Math.min(minY, ts.y0); maxY = Math.max(maxY, ts.y0 + ts.h);
+  });
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg">${paths}</svg>`, w: maxX - minX, h: maxY - minY };
+}
+function _textArcSvg1(font, txt, sizeU, radiusU, dir, festR) {
   const data = font.data;
   const fScale = sizeU / data.resolution;
   const advOf = ch => {
@@ -20764,7 +20816,7 @@ function _textArcSvg(font, txt, sizeU, radiusU, dir) {
   const chars = [...txt];
   const advs = chars.map(advOf);
   const total = advs.reduce((a, b) => a + b, 0);
-  const R = Math.max(radiusU, total / Math.PI);   // Bogen ≤ 180°, sonst Überlappung
+  const R = festR ? radiusU : Math.max(radiusU, total / Math.PI);   // Bogen ≤ 180°, sonst Überlappung
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, paths = '';
   let s = -total / 2;
   for (let ci = 0; ci < chars.length; ci++) {
@@ -20798,11 +20850,11 @@ function _textArcSvg(font, txt, sizeU, radiusU, dir) {
     }
     if (d) paths += `<path d="${d}"/>`;
   }
-  return { svg: `<svg xmlns="http://www.w3.org/2000/svg">${paths}</svg>`, w: maxX - minX, h: maxY - minY };
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg">${paths}</svg>`, w: maxX - minX, h: maxY - minY, x0: minX, y0: minY };
 }
 
 function _confirmText3d() {
-  const txt = document.getElementById('text3d-input').value.trim();
+  const txt = _text3dClean(document.getElementById('text3d-input').value);
   if (!txt) { notify('Bitte Text eingeben', 'w'); return; }
   const fontKey  = document.getElementById('text3d-font').value;
   const sizeMm   = parseFloat(document.getElementById('text3d-size').value) || 8;
@@ -20838,7 +20890,7 @@ function _confirmText3d() {
       mesh.userData = { id: idCtr++, type: 'text', shapeType: 'text', name: 'Text ' + typeCounts['text'], color, isHole, fillet: 0, chamfer: 0, textStr: txt, textFont: fontKey, textSizeMm: sizeMm };
       scene.add(mesh); objects.push(mesh);
       _updateObjEdgeLines(mesh); selectObjs([mesh]); updateTree();
-      notify('Text "' + txt + '" hinzugefügt', 'ok');
+      notify('Text "' + _text3dOneLine(txt) + '" hinzugefügt', 'ok');
       return;
     }
     // Bogen-Text: gebogene Konturen als SVG → gleiche Pipeline wie 'free'
@@ -20848,7 +20900,7 @@ function _confirmText3d() {
     const built = _textEditBuildSvg(font, meta);
     if (!built) { notify('Text ohne Kontur', 'w'); return; }
     const mesh = _importSvgConfirm({ svgText: built.svg, mode: 'extrude', depthMM: Math.max(1, sizeMm * 0.25),
-                                     targetMM: built.targetMM, name: meta.mode === 'arc' ? txt + ' (Bogen)' : txt });
+                                     targetMM: built.targetMM, name: _text3dOneLine(txt) + (meta.mode === 'arc' ? ' (Bogen)' : '') });
     if (mesh) mesh.userData.textEdit = meta;   // für „Text ändern"
     if (mesh && mode === 'surface' && !_lblPickStart(mesh))
       notify('Kein Bauteil in der Szene — der Text liegt frei auf der Platte', 'w');
@@ -75357,8 +75409,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.293';
+const VOLME3D_VERSION = '1.18.294';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.294', date:'2026-11-02', changes:[
+    ['✏️','<b>3D-Text mehrzeilig.</b> Im Textfeld springt <b>Enter</b> jetzt in die nächste Zeile, statt den Text gleich zu erstellen. Die Zeilen stehen untereinander, jede mittig ausgerichtet; die <b>Größe</b> gilt weiter je Zeile. Erstellen geht über den Knopf oder <b>Strg+Enter</b>. Auch im Bogen klappt es: weitere Zeilen laufen auf einem Bogen darunter. Mehrzeilige Texte lassen sich wie gewohnt per Doppelklick ändern.'],
+  ]},
   { version:'1.18.293', date:'2026-11-02', changes:[
     ['✂️','<b>Dackel und Mops: neue Teilung Rücken/Bauch.</b> Unter <i>Druck</i> gibt es jetzt <b>✂️ Rücken/Bauch</b>: Der Hund wird waagerecht auf Höhe der Rumpfmitte geteilt. Das <b>Oberteil</b> (Rücken, Kerzen, Kopf mit Mütze, Schwanz) steht auf der Schnittfläche, das <b>Unterteil</b> (Bauch und Beine) wird umgedreht gedruckt, die Beine zeigen nach oben. So läuft keine Naht über Gesicht und Rücken, die Fuge liegt unauffällig an der Seite im Pullover. Stützen braucht nur noch Kinn und Ohren, nachgerechnet 82–87 % weniger Stützmaterial als am Stück. Zusammengesteckt wird mit senkrechten Steckstiften. Die bisherige Teilung heißt jetzt <b>✂️ Längs</b> und bleibt wählbar.'],
   ]},
