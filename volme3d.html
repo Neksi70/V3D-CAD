@@ -17607,6 +17607,8 @@ function _mergeOCCTOps(prevOps, newOps, dim) {
   const diagLen = cur ? 2 * Math.hypot(cur.sx, cur.sy, cur.sz) : 0;
   for (const raw of newOps) {
     const op = stamp({ ...raw });
+    // vor oder nach dem Aushöhlen? entscheidet _replayOCCTOps beim ersten Rechnen
+    if (op.type !== 'shell' && op.ns === undefined) op.ns = null;
     let hit = -1;
     if (op.type === 'shell') {
       hit = out.findIndex(p => p.type === 'shell');
@@ -17748,8 +17750,6 @@ function _occtFeaturesWeg(oc, shape, kanten) {
 }
 
 function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz, noSeq) {
-  const chamferOps = ops.filter(op => op.type === 'chamfer');
-  const filletOps  = ops.filter(op => op.type === 'fillet');
   const diagLen = 2 * Math.hypot(sx, sy, sz);
   // Kanten einer gespeicherten Operation auf die AKTUELLE Bauteilgröße
   // umrechnen. Ohne das zeigen die Absolut-Koordinaten nach dem Skalieren ins
@@ -17789,9 +17789,13 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz, noSeq) {
     }
     return keep;
   };
-  let curShape = baseShape;
+  // Fasen + Rundungen einer Stufe auf startShape (vor bzw. nach dem Aushöhlen)
+  const _kanten = (startShape, eOps) => {
+  const chamferOps = eOps.filter(op => op.type === 'chamfer');
+  const filletOps  = eOps.filter(op => op.type === 'fillet');
+  let curShape = startShape;
   let opOk = true;
-  let lebende = ops.filter(op => op.type === 'shell');
+  let lebende = [];
   if (chamferOps.length > 0) {
     const r = _resolve(curShape, chamferOps, 0.01);
     if (!r) opOk = false;
@@ -17848,24 +17852,60 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz, noSeq) {
   // Reicht die Anlege-Reihenfolge nicht, noch „Fasen zuerst" und „Rundungen
   // zuerst" (je einzeln) — je nach Ecke gelingt nur eine davon.
   if (!opOk && !noSeq && chamferOps.length + filletOps.length > 1) {
-    const edgeOps = ops.filter(op => op.type === 'chamfer' || op.type === 'fillet');
+    const edgeOps = eOps;
     const orders = [edgeOps, [...chamferOps, ...filletOps], [...filletOps, ...chamferOps]];
     const seen = new Set();
     for (const order of orders) {
       const key = order.map(op => edgeOps.indexOf(op)).join(',');
       if (seen.has(key)) continue;
       seen.add(key);
-      let sh = baseShape, ok = true, live = [];
+      let sh = startShape, ok = true, live = [];
       for (const op of order) {
         const r1 = _replayOCCTOps(oc, sh, [op], sx, sy, sz, true);
         if (!r1.opOk) { ok = false; break; }
         sh = r1.shape; live = live.concat(r1.ops);
       }
-      if (ok) { curShape = sh; opOk = true; lebende = ops.filter(op => op.type === 'shell').concat(live); break; }
+      if (ok) { curShape = sh; opOk = true; lebende = live; break; }
     }
   }
-  // ─── Gehäuse / Shell: Solid aushöhlen (nach Fillet/Chamfer) ──────────
+  return { shape: curShape, opOk, live: lebende };
+  };
+  // Rundungen/Fasen NACH dem Aushöhlen (op.ns = true): Kanten, die es erst am
+  // ausgehöhlten Körper gibt — die Innenkanten. Bis 1.18.294 lief jede Kanten-
+  // Operation vor dem Aushöhlen; eine angeklickte Innenkante wurde dabei auf die
+  // Außenkante gezogen, und das Aushöhlen versetzte deren Rundung nach innen →
+  // innen UND außen rund (Volker 2.11.: „außen soll scharfkantig bleiben").
+  // Neue Operationen kommen mit ns = null aus _mergeOCCTOps und werden hier
+  // einmal eingeordnet: liegt die Kante schon am massiven Körper (gleiche Kante
+  // in enger Toleranz), bleibt sie vorn — sonst wird sie nach dem Aushöhlen
+  // angesetzt. Alte Operationen (ns fehlt) bleiben unverändert vorn.
   const shellOp = ops.find(op => op.type === 'shell');
+  const edgeAll = ops.filter(op => op.type === 'chamfer' || op.type === 'fillet');
+  if (!shellOp) edgeAll.forEach(op => { if (op.ns === null) op.ns = false; });
+  const vorne = () => edgeAll.filter(op => !shellOp || (op.ns !== true && op.ns !== null));
+  let st = _kanten(baseShape, vorne());
+  const offen = shellOp ? edgeAll.filter(op => op.ns === null) : [];
+  if (offen.length && st.opOk) {
+    let nVorne = 0;
+    for (const op of offen) {
+      const want = _efpWantOf(op, sx, sy, sz);
+      let auf = !want;
+      if (want) try {
+        const ex = new oc.TopExp_Explorer_2(st.shape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+        while (ex.More() && !auf) {
+          if (_efpCost(want, _efpOfEdge(oc, oc.TopoDS.Edge_1(ex.Current())), 0) < _EFP.SAME) auf = true;
+          ex.Next();
+        }
+        ex.delete();
+      } catch (e) { auf = true; }
+      op.ns = !auf;
+      if (auf) nVorne++;
+    }
+    if (nVorne) st = _kanten(baseShape, vorne());
+  } else offen.forEach(op => { op.ns = false; });
+  let curShape = st.shape, opOk = st.opOk;
+  let lebende = ops.filter(op => op.type === 'shell').concat(st.live);
+  // ─── Gehäuse / Shell: Solid aushöhlen (nach Fillet/Chamfer) ──────────
   if (shellOp && opOk) {
     // Negativer Offset = nach innen aushöhlen (Wand bleibt innerhalb der Außenkontur)
     // Hinweis: dieser OCCT-Build hat Message_ProgressRange wegkompiliert → ohne diesen Arg aufrufen
@@ -17901,6 +17941,12 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz, noSeq) {
       }
       facesToRemove.delete();
     } catch (e) { console.warn('Shell (MakeThickSolid) fehlgeschlagen:', e); opOk = false; }
+  }
+  const hinten = shellOp ? edgeAll.filter(op => op.ns === true) : [];
+  if (hinten.length && opOk) {
+    const st2 = _kanten(curShape, hinten);
+    opOk = st2.opOk;
+    if (opOk) { curShape = st2.shape; lebende = lebende.concat(st2.live); }
   }
   // ops = die überlebenden Operationen (Doppelte auf dieselbe Kante entfernt,
   // Referenzen auf die tatsächlich getroffene Kante festgeschrieben)
@@ -75409,8 +75455,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.294';
+const VOLME3D_VERSION = '1.18.295';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.295', date:'2026-11-02', changes:[
+    ['🔲','<b>Ausgehöhlte Körper: Innenkanten einzeln runden.</b> Wer an einem ausgehöhlten Quader (▣ Gehäuse) eine Kante <i>innen</i> abrundet oder anfast, bekommt jetzt genau diese Kante, außen bleibt alles scharfkantig. Bisher wurde die Innenkante auf die Außenkante umgelenkt, und das Aushöhlen hat die Rundung dann innen und außen gezeigt. Außenkanten verhalten sich wie gewohnt: Die Rundung läuft gleichmäßig auch innen mit, die Wand bleibt überall gleich dick. Bestehende Modelle bleiben unverändert.'],
+  ]},
   { version:'1.18.294', date:'2026-11-02', changes:[
     ['✏️','<b>3D-Text mehrzeilig.</b> Im Textfeld springt <b>Enter</b> jetzt in die nächste Zeile, statt den Text gleich zu erstellen. Die Zeilen stehen untereinander, jede mittig ausgerichtet; die <b>Größe</b> gilt weiter je Zeile. Erstellen geht über den Knopf oder <b>Strg+Enter</b>. Auch im Bogen klappt es: weitere Zeilen laufen auf einem Bogen darunter. Mehrzeilige Texte lassen sich wie gewohnt per Doppelklick ändern.'],
   ]},
