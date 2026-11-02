@@ -244,6 +244,8 @@ body.sym #tb-r1 .tbg-l{display:block!important}
 .pc-tt{font-weight:800;font-size:13.5px;color:var(--text)}
 .pc-ms{font-size:12px;color:var(--mid);line-height:1.45;margin-top:1px}
 .pc-row .btn{flex:0 0 auto;align-self:center;font-size:12px;padding:6px 10px;white-space:nowrap}
+.pc-row.pc-viel{flex-wrap:wrap}.pc-row.pc-viel .pc-tx{flex:1 1 calc(100% - 40px)}.pc-row.pc-viel .btn:first-of-type{margin-left:31px}
+.pc-row label{font-size:12.5px}
 #printcheck-foot{display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid var(--border)}
 /* Befehls-Palette (Strg/Cmd+K) */
 #cmdk{position:fixed;inset:0;background:rgba(10,12,20,.4);z-index:9000;display:none;align-items:flex-start;justify-content:center;font-family:var(--font)}
@@ -1563,6 +1565,7 @@ const firebaseConfig = {
       <button class="btn" onclick="toggleFaceDown()" title="Fläche unten — Objekt wählen, dann die Fläche anklicken, die flach auf der Platte liegen soll. Spart das Drehen von Hand.">⬓ Fläche unten</button>
       <button class="btn" onclick="standUpright()" title="Aufstellen — stellt das Teil in seine sicherste Standlage (Sockel, Füße), auch wenn die nicht eben ist, z. B. bei Scans. Nochmal klicken = nächste Standlage.">⊥ Aufstellen</button>
       <button class="btn" onclick="_sfnOpen()" title="Stützfinnen — abbrechbare Stützen fest ins Modell einbauen: Überhänge werden rot gezeigt, Finnen mit Zinken und Bett-Pad erzeugt. Gedruckt wird dann ohne Slicer-Stützen.">🦈 Stützfinnen</button>
+      <button class="btn" onclick="_ohfOpen()" title="Ohne Stützen — unter alle Stellen, die steiler als 45° nach unten hängen, eine 45°-Schräge bis zur Wand/Platte setzen (Vorschau blau, dann Übernehmen). Das Teil druckt danach ohne Stützen. Wirkt auf die Auswahl, sonst auf alles.">📐 Ohne Stützen</button>
       <button class="btn" onclick="linearPatternTool()" title="Lineares Muster — Objekt mehrfach in einer Richtung kopieren">⋮ Linear</button>
       <button class="btn" onclick="circularPatternTool()" title="Kreismuster — Objekt mehrfach im Kreis anordnen (für Löcher: Werkzeuge → 🕳️ Loch ziehen)">⊙ Kreismuster</button>
       <button class="btn" onclick="enterKonturmuster()" title="Konturmuster — gewählten Körper entlang einer Kante/Kontur verteilen (z. B. Rändelkerben rund um einen Kopf), als Kopien oder gleich abziehen/anfügen">⟿ Konturmuster</button>
@@ -1630,7 +1633,7 @@ const firebaseConfig = {
           <div class="sli-item" onclick="_printCheckOpen()" title="Druck-Check — prüft vor dem Export: wasserdicht, passt aufs Bett, auf der Platte, Überhänge">🖨 Druck-Check</div>
           <div class="sli-sep"></div>
           <div class="sli-item" onclick="exportSTL()">⬇ STL</div>
-          <div class="sli-item" onclick="export3MF()">⬇ 3MF (zum Einfärben)</div>
+          <div class="sli-item" onclick="_3mfSpeichern()" title="3MF mit Farben/Teilen — vorher kurzer Druck-Check (Überhänge, Wände, Einstellungen); auf Wunsch als Bambu-Studio-Projekt mit Drucker und Einstellungen">⬇ 3MF (zum Einfärben)</div>
           <div class="sli-item" id="sli-schicht" onclick="event.stopPropagation();_schichtModusWeiter()" title="Variable Schichthöhe schon im 3MF mitgeben: flache Stellen (Kuppeln, Reliefs) fein, steile Wände grob. Bambu Studio / Orca übernehmen das Profil, wenn Düse und Erste Schicht passen (Drucker aus der Druck-Vorschau). Klick schaltet um."></div>
           <div class="sli-item" onclick="exportPartsSTL()">⬇ STL pro Körper</div>
           <div class="sli-item" onclick="exportOBJ()">⬇ OBJ</div>
@@ -7513,6 +7516,7 @@ Patrick</textarea>
 </script>
 <script src="cam-kern.js"></script>
 <script src="schicht-kern.js"></script>
+<script src="druckcheck-kern.js"></script>
 <script src="lib/fflate.min.js"></script>
 <script src="lib/p3mf.js"></script>
 <script src="lib/SimplifyModifier.js"></script>
@@ -39085,7 +39089,7 @@ function _exportPartsSTL() {
 // als zwei zuweisbare Objekte (kein Dreieck-Bemalen). Geometrie verschweißt =
 // wasserdicht (keine "open edges").
 // Mehrere Platten: liegt die Quelle auf EINER Platte ≥ 2, auf deren Mitte zurückrücken
-function export3MF() { return _withPlateShift(_exportSrc(), _export3MF); }
+function export3MF(opt) { return _withPlateShift(_exportSrc(), () => _export3MF(opt)); }
 
 // ── Variable Schichthöhe im 3MF (Rechenkern = V3D Slicer, schicht-kern.js) ──
 // Modus: 'auto' = nur wenn ein Lithophane dabei ist, 'an' = immer, 'aus'.
@@ -39114,13 +39118,13 @@ function _schichtOpts(litho) {
   const hBase = Math.min(hMax, Math.max(hMin, parseFloat(p.lh) || r2(noz * 0.5)));
   return { nozzle: noz, hFirst, hMin, hMax, hBase, quality: litho ? 0.8 : 0.5 };
 }
-function _export3MF() {
+function _export3MF(opt) {
   document.getElementById('stl-menu').classList.remove('show');
   if (typeof fflate === 'undefined') { notify('Zip-Bibliothek lädt noch — kurz warten, erneut versuchen', 'w'); return; }
   const expSrc = _exportSrc();
   if (!expSrc.length) { notify('Keine Objekte', 'w'); return; }
   try {
-    const r = _build3mfBlob(expSrc);
+    const r = _build3mfBlob(expSrc, { projekt: opt && opt.projekt });
     if (!r) { notify('Keine Flächen', 'w'); return; }
     const fname = _designFilename('3mf');
     _saveExport(r.blob, fname).then(res => {
@@ -39129,6 +39133,7 @@ function _export3MF() {
       if (r.chroma) notify(r.chroma, /NICHT/.test(r.chroma) ? 'w' : 'ok');
       if (r.schicht) notify(r.schicht, 'ok');
       if (r.litho) notify(r.litho, 'ok');
+      if (r.projekt) notify(r.projekt, 'ok');
     });
   } catch(e) {
     console.error('3MF Export Fehler:', e);
@@ -39156,6 +39161,7 @@ function _build3mfBlob(expSrc, opt = {}) {
       && (sm === 'an' || (sm === 'auto' && meshes.some(m => m.userData.type === 'litho')));
     const schichtTeile = [];
     const objXml = [], compXml = [], partXml = [];
+    const bb3 = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];   // Druck-Koordinaten mm
     // 🎨 Chroma: Filamente in Druck-Reihenfolge zuerst vergeben (Filament 1 = Basis),
     // damit die Wechsel unten auf die richtigen Slots zeigen. Von Hand = alles auf 1.
     const chrM = meshes.filter(m => m.userData.chroma), chrC = chrM.length ? chrM[0].userData.chroma : null;
@@ -39193,6 +39199,7 @@ function _build3mfBlob(expSrc, opt = {}) {
           if (f !== extruder) triFil[k] = f;
         }
       }
+      if (opt.nurFarben) { geo.dispose(); return; }   // nur Filament-Reihenfolge gefragt (Bambu-Projekt)
       m.updateMatrixWorld(true);
       geo.applyMatrix4(m.matrixWorld);
       if (_expShiftX) geo.translate(-_expShiftX, 0, 0);       // Platte 2+ → Plattenmitte
@@ -39201,6 +39208,9 @@ function _build3mfBlob(expSrc, opt = {}) {
       for (const n in geo.attributes) if (n !== 'position') geo.deleteAttribute(n);
       geo = THREE.BufferGeometryUtils.mergeVertices(geo, 1e-4); // pro Teil wasserdicht
       const pos = geo.attributes.position, idx = geo.index ? geo.index.array : null;
+      for (let k = 0; k < pos.count; k++) { const x = pos.getX(k), y = pos.getY(k), z = pos.getZ(k);
+        if (x < bb3[0]) bb3[0] = x; if (y < bb3[1]) bb3[1] = y; if (z < bb3[2]) bb3[2] = z;
+        if (x > bb3[3]) bb3[3] = x; if (y > bb3[4]) bb3[4] = y; if (z > bb3[5]) bb3[5] = z; }
       if (mitSchicht) schichtTeile.push({ pos: pos.array.slice(), idx: idx ? idx.slice() : null });
       let v = '', t = '';
       for (let k = 0; k < pos.count; k++)
@@ -39219,7 +39229,15 @@ function _build3mfBlob(expSrc, opt = {}) {
       partXml.push(`  <part id="${id}" subtype="normal_part"><metadata key="name" value="${pname}"/><metadata key="extruder" value="${extruder}"/></part>`);
       geo.dispose();
     });
+    if (opt.nurFarben) return { legend: [...colorIndex.entries()].sort((a, b) => a[1] - b[1]).map(([h, ix]) => (ix + 1) + '=#' + h) };
     const asmId = meshes.length + 1;
+    // 🧩 Bambu-Projekt (_bbsProjekt): als Bambu-Studio-Datei ausweisen und auf die
+    // Plattenmitte des gewählten Druckers rücken — Projekte lädt Bambu an Ort und
+    // Stelle, nur reine Geometrie wird automatisch mittig gelegt
+    const PJ = opt.projekt || null;
+    const itemT = PJ && Number.isFinite(bb3[0])
+      ? `1 0 0 0 1 0 0 0 1 ${(PJ.bett[0] - (bb3[0] + bb3[3]) / 2).toFixed(4)} ${(PJ.bett[1] - (bb3[1] + bb3[4]) / 2).toFixed(4)} ${(-bb3[2]).toFixed(4)}`
+      : IDENT;
     // Lithophane: Wand komplett aus Wandlinien (sauberere Helligkeitsverläufe als
     // Füllmuster) — als Objekt-Einstellung, die Bambu Studio / Orca übernehmen
     const litho = meshes.some(m => m.userData.type === 'litho');
@@ -39274,20 +39292,35 @@ function _build3mfBlob(expSrc, opt = {}) {
         }
       } catch (e) { console.warn('[3mf] Schichtprofil fehlgeschlagen:', e); }
     }
+    const xEsc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
     const model = `<?xml version="1.0" encoding="UTF-8"?>
-<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
- <resources>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"${PJ ? ' xmlns:BambuStudio="http://schemas.bambulab.com/package/2021"' : ''}>
+${PJ ? ` <metadata name="Application">BambuStudio-${PJ.settings.version}</metadata>
+ <metadata name="BambuStudio:3mfVersion">1</metadata>
+ <metadata name="Title">${xEsc(modelName)}</metadata>
+ <metadata name="Designer">V3D CAD</metadata>
+` : ''} <resources>
 ${objXml.join('\n')}
   <object id="${asmId}" type="model"><components>${compXml.join('')}</components></object>
  </resources>
- <build><item objectid="${asmId}" transform="${IDENT}"/></build>
+ <build><item objectid="${asmId}" transform="${itemT}"/></build>
 </model>`;
     const cfg = `<?xml version="1.0" encoding="UTF-8"?>
 <config>
  <object id="${asmId}">
   <metadata key="name" value="${modelName}"/>${(chrXml || chrRanges) ? `\n  <metadata key="layer_height" value="${chrC.lh}"/>` : ''}${litho ? `\n  <metadata key="wall_loops" value="${_LITHO_WAENDE}"/>\n  <metadata key="sparse_infill_density" value="100%"/>` : ''}${farbTiefe ? `\n  <metadata key="mmu_segmented_region_max_width" value="${farbTiefe}"/>` : ''}
 ${partXml.join('\n')}
- </object>
+ </object>${PJ ? `
+ <plate>
+  <metadata key="plater_id" value="1"/>
+  <metadata key="plater_name" value=""/>
+  <metadata key="locked" value="false"/>
+  <model_instance>
+   <metadata key="object_id" value="${asmId}"/>
+   <metadata key="instance_id" value="0"/>
+   <metadata key="identify_id" value="${asmId + 100}"/>
+  </model_instance>
+ </plate>` : ''}
 </config>`;
     const ct = `<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/xml"/><Default Extension="xml" ContentType="application/xml"/></Types>`;
@@ -39300,6 +39333,7 @@ ${partXml.join('\n')}
       '3D/3dmodel.model': u8(model),
       'Metadata/model_settings.config': u8(cfg),
     };
+    if (PJ) dateien['Metadata/project_settings.config'] = u8(JSON.stringify(PJ.settings, null, 4));
     if (chrXml) dateien['Metadata/custom_gcode_per_layer.xml'] = u8(chrXml);
     if (chrRanges) dateien['Metadata/layer_config_ranges.xml'] = u8(chrRanges);
     if (schichtTxt) {
@@ -39310,6 +39344,7 @@ ${partXml.join('\n')}
     const blob3mf = new Blob([zipped], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
     const legend = [...colorIndex.entries()].sort((a, b) => a[1] - b[1]).map(([h, ix]) => (ix + 1) + '=#' + h);
     return { blob: blob3mf, parts: meshes.length, colors: colorIndex.size, legend, chroma: chrHinweis, schicht: schichtHinweis,
+      projekt: PJ ? `🧩 Bambu-Studio-Projekt: ${PJ.settings.printer_settings_id.replace(/ nozzle$/, '')} · ${PJ.filName.replace(/ @.*$/, '')} · ${PJ.procName.replace(/ @.*$/, '')}${PJ.geaendert.length ? ' · geändert: ' + PJ.geaendert.length : ''} — öffnet als Projekt mit diesen Einstellungen` : null,
       litho: litho ? `🖼️ Lithophane: ${_LITHO_WAENDE} Wandschleifen + 100 % Füllung als Objekt-Einstellung eingetragen` : null };
 }
 
@@ -76126,8 +76161,13 @@ async function _mdOeffnen(fid){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.302';
+const VOLME3D_VERSION = '1.18.303';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.303', date:'2026-11-02', changes:[
+    ['📐','<b>Ohne Stützen drucken.</b> Im 🖨 Druck-Check steht bei den Überhängen jetzt <b>📐 Ohne Stützen</b>. V3D CAD sucht alle Stellen, die steiler als 45° nach unten hängen (rot), und zeigt darunter eine <b>blaue 45°-Schräge</b> bis zur Wand oder Platte, samt zusätzlichem Material in cm³. Mit <b>Übernehmen</b> wird sie fest ans Teil angefügt, danach druckt es ohne Stützen. Wirkt auf die ausgewählten Teile, sonst auf alle.'],
+    ['💾','<b>3MF speichern mit Druck-Check.</b> <b>⬇ 3MF</b> prüft jetzt vorher kurz (wasserdicht, Platte, Überhänge, Wände) und lässt den <b>V3D Druckcheck</b> die Einstellungen für deinen Drucker ansehen. Vorschläge hakst du an, sie kommen gleich mit in die Datei. Wer das nicht will, schaltet „vor dem Speichern immer prüfen“ ab.'],
+    ['🧩','<b>Bambu Studio öffnet die 3MF als Projekt.</b> Bisher hieß es dort „nur Geometriedaten importiert“. Jetzt speichert V3D CAD Drucker, Filament, Schichthöhe, Wände, Füllung und Stützen mit den echten Bambu-Profilen in die 3MF. Bambu Studio (und OrcaSlicer) übernimmt alles, Farben und Teile bleiben erhalten, und das Modell liegt mittig auf der Platte.'],
+  ]},
   { version:'1.18.302', date:'2026-11-02', changes:[
     ['📥','<b>Meine Dateien: eigener Ordner für Bilder, SVGs und Modelle.</b> Unter <i>Import</i> (und im ☰ Menü) gibt es <b>📥 Meine Dateien</b>. Dort lädst du Fotos, SVGs, STL, 3MF oder STEP hoch, per Hineinziehen oder vom <b>Handy über den QR-Code</b>, und öffnest sie mit einem Klick in V3D CAD. Ein Foto landet in der Bild-Auswahl (z. B. Lithophan-Kugel für die Christbaumkugel), ein SVG im SVG-Import, ein Modell im normalen Import. Die Dateien bleiben im Ordner, bis du sie löschst (bis 2 GB).'],
     ['👋','<b>Vorname und Nachname.</b> Bei der Registrierung werden jetzt Vor- und Nachname abgefragt. Wer schon ein Konto hat, wird einmal beim Start danach gefragt (bei Google-Anmeldung ist der Name vorausgefüllt). Der Name benennt auch deinen Ordner unter „Meine Dateien“.'],
@@ -87246,6 +87286,469 @@ function _sculptRefine() {
 }
 
 // Reparieren: offene Löcher im ausgewählten Objekt (oder dessen Mesh-Kindern) schließen
+// ═══ 📐 OHNE STÜTZEN: Überhänge mit 45°-Schräge auffüllen (_ohf*, v1.18.303) ═══
+// Idee aus dem s'Kis DesignLab (2.11.26): unter jede Stelle, die steiler als 45°
+// nach unten zeigt, kommt Material bis zur Wand oder Platte — das Teil druckt dann
+// ohne Stützen. Anders als die 🦈 Stützfinnen wird das Bauteil selbst geändert.
+// Verfahren (Druck-Koordinaten mm, Z oben, Zellgröße h, Schicht dz = h → 45°):
+//   F(k) = S(k) ∪ erode4(F(k+1))
+// S = Körper je Schicht (Windungszahl aus den Dreiecken, robust bei überlappenden
+// Teilen). Jede Schicht ragt so höchstens eine Zelle über die darunter (Kreuz-
+// Erosion = eher etwas steiler gefüllt, nie flacher). Spitzen, die in der Luft
+// enden würden, laufen senkrecht weiter bis Platte/Körper (Säule, wird gemeldet).
+// Zusatz = F \ S, eine Zelle in den Körper hinein verlängert → glatte Fläche per
+// Manifold.levelSet (0,5-Iso der trilinear gelesenen Zellen) → mit dem Original
+// vereint. Die Original-Flächen bleiben exakt, nur die Schräge ist neu.
+let _ohf = null;
+function _ohfZiele() {
+  const sel = (selectedObjs || []).filter(o => objects.includes(o));
+  return (sel.length ? sel : objects).filter(o => o.visible !== false && !o.userData.isHole && !o.userData.isEdgeLines);
+}
+// Dreiecke eines Objekts in Druck-Koordinaten (mm, Z oben) als Float32Array (9 je Dreieck)
+function _ohfTris(o) {
+  const bufs = _objsToUnionStls([o]);
+  let n = 0; for (const b of bufs) n += new DataView(b).getUint32(80, true);
+  const t = new Float32Array(n * 9); let w = 0;
+  for (const b of bufs) { const dv = new DataView(b), m = dv.getUint32(80, true);
+    for (let i = 0; i < m; i++) for (let k = 0; k < 9; k++) t[w++] = dv.getFloat32(84 + i * 50 + 12 + k * 4, true); }
+  return t;
+}
+// Kern ohne DOM (auch für Tests): Dreiecke → Raster + Zusatzzellen
+function _ohfRechne(t, opt = {}) {
+  const winkel = opt.winkel || 45, nT = t.length / 9;
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (let i = 0; i < t.length; i += 3) {
+    const x = t[i], y = t[i + 1], z = t[i + 2];
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  if (!(x1 > x0 && y1 > y0 && z1 > z0)) return null;
+  const maxDim = Math.max(x1 - x0, y1 - y0, z1 - z0);
+  let h = opt.zelle || Math.min(1.2, Math.max(0.25, maxDim / 220));
+  const dzF = 1 / Math.tan(winkel * Math.PI / 180);           // Schichthöhe je Zelle Versatz
+  let nx, ny, nz;
+  for (;;) {
+    nx = Math.ceil((x1 - x0) / h) + 3; ny = Math.ceil((y1 - y0) / h) + 3; nz = Math.max(1, Math.ceil((z1 - z0) / (h * dzF)));
+    if (nx * ny * nz <= (opt.maxZellen || 24e6)) break;
+    h *= 1.15;
+  }
+  const dz = h * dzF, gx = x0 - h, gy = y0 - h, nxy = nx * ny;
+  // Schnittpunkte je Säule: z + Richtung (Fläche zeigt runter = Eintritt beim Weg nach oben)
+  const cols = new Array(nxy);
+  const ex = h * 1.3e-4, ey = h * 0.71e-4;   // Stichprobe knapp neben der Zellmitte → keine Treffer genau auf Kanten
+  for (let f = 0; f < nT; f++) {
+    const o = f * 9, ax = t[o], ay = t[o + 1], az = t[o + 2], bx = t[o + 3], by = t[o + 4], bz = t[o + 5], cx = t[o + 6], cy = t[o + 7], cz = t[o + 8];
+    const d = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if (Math.abs(d) < 1e-12) continue;                             // senkrechte Fläche: trifft keine Säule
+    const nzS = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);     // Normale z (Vorzeichen)
+    const i0 = Math.max(0, Math.ceil((Math.min(ax, bx, cx) - gx) / h - 0.5)), i1 = Math.min(nx - 1, Math.floor((Math.max(ax, bx, cx) - gx) / h - 0.5));
+    const j0 = Math.max(0, Math.ceil((Math.min(ay, by, cy) - gy) / h - 0.5)), j1 = Math.min(ny - 1, Math.floor((Math.max(ay, by, cy) - gy) / h - 0.5));
+    for (let j = j0; j <= j1; j++) {
+      const py = gy + (j + 0.5) * h + ey;
+      for (let i = i0; i <= i1; i++) {
+        const px = gx + (i + 0.5) * h + ex;
+        const l1 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / d, l2 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / d, l3 = 1 - l1 - l2;
+        if (l1 < 0 || l2 < 0 || l3 < 0) continue;
+        const c = j * nx + i;
+        (cols[c] || (cols[c] = [])).push(l1 * az + l2 * bz + l3 * cz, nzS < 0 ? 1 : -1);
+      }
+    }
+  }
+  const S = new Uint8Array(nxy * nz);
+  const idx = [];
+  for (let c = 0; c < nxy; c++) {
+    const a = cols[c]; if (!a) continue;
+    idx.length = 0; for (let p = 0; p < a.length; p += 2) idx.push(p);
+    idx.sort((p, q) => a[p] - a[q]);
+    let wnd = 0;
+    for (let q = 0; q < idx.length; q++) {
+      const p = idx[q], before = wnd; wnd += a[p + 1];
+      if (before <= 0 && wnd > 0) {                                // Eintritt: bis zum Austritt füllen
+        const za = a[p]; let zb = za;
+        for (let r = q + 1, w2 = wnd; r < idx.length; r++) { w2 += a[idx[r] + 1]; if (w2 <= 0) { zb = a[idx[r]]; break; } }
+        const k0 = Math.max(0, Math.ceil((za - z0) / dz - 0.5)), k1 = Math.min(nz - 1, Math.floor((zb - z0) / dz - 0.5));
+        for (let k = k0; k <= k1; k++) S[k * nxy + c] = 1;
+      }
+    }
+  }
+  // Von oben nach unten: F(k) = S(k) ∪ Kreuz-Erosion von F(k+1); hängende Spitzen → Säule
+  const F = new Uint8Array(S.length);
+  F.set(S.subarray((nz - 1) * nxy), (nz - 1) * nxy);
+  let saeule = 0;
+  for (let k = nz - 2; k >= 0; k--) {
+    const o = k * nxy, u = o + nxy;
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const c = j * nx + i;
+      F[o + c] = (S[o + c] || (i > 0 && i < nx - 1 && j > 0 && j < ny - 1 &&
+        F[u + c] && F[u + c - 1] && F[u + c + 1] && F[u + c - nx] && F[u + c + nx])) ? 1 : 0;
+    }
+    for (let j = 1; j < ny - 1; j++) for (let i = 1; i < nx - 1; i++) {
+      const c = j * nx + i;
+      if (!F[u + c] || F[o + c]) continue;
+      let traeg = false;
+      for (let dj = -1; dj <= 1 && !traeg; dj++) for (let di = -1; di <= 1; di++) if (F[o + c + dj * nx + di]) { traeg = true; break; }
+      if (!traeg) { F[o + c] = 1; saeule++; }
+    }
+  }
+  let n = 0, bi0 = nx, bj0 = ny, bk0 = nz, bi1 = -1, bj1 = -1, bk1 = -1;
+  const U = new Uint8Array(S.length);
+  for (let k = 0; k < nz; k++) for (let c = 0; c < nxy; c++) {
+    const q = k * nxy + c;
+    if (F[q] && !S[q]) { U[q] = 1; n++; const i = c % nx, j = (c / nx) | 0;
+      if (i < bi0) bi0 = i; if (i > bi1) bi1 = i; if (j < bj0) bj0 = j; if (j > bj1) bj1 = j; if (k < bk0) bk0 = k; if (k > bk1) bk1 = k; }
+  }
+  return { h, dz, gx, gy, z0, nx, ny, nz, S, U, n, saeule, volMm3: n * h * h * dz,
+    box: n ? [bi0, bj0, bk0, bi1, bj1, bk1] : null };
+}
+// Zusatzzellen → glatter Manifold-Körper (mm, Z oben), ragt eine Zelle in den Körper
+function _ohfKoerper(w, R) {
+  if (!R || !R.n) return null;
+  const { nx, ny, nz, h, dz, gx, gy, z0, S, U } = R, nxy = nx * ny;
+  const G = new Uint8Array(U);
+  for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const q = k * nxy + j * nx + i;
+    if (!S[q] || G[q]) continue;
+    if ((i > 0 && U[q - 1]) || (i < nx - 1 && U[q + 1]) || (j > 0 && U[q - nx]) || (j < ny - 1 && U[q + nx]) ||
+        (k > 0 && U[q - nxy]) || (k < nz - 1 && U[q + nxy])) G[q] = 1;
+  }
+  const at = (i, j, k) => (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) ? 0 : G[k * nxy + j * nx + i];
+  const sdf = p => {
+    const fx = (p[0] - gx) / h - 0.5, fy = (p[1] - gy) / h - 0.5, fz = (p[2] - z0) / dz - 0.5;
+    const i = Math.floor(fx), j = Math.floor(fy), k = Math.floor(fz), u = fx - i, v = fy - j, s = fz - k;
+    const c00 = at(i, j, k) * (1 - u) + at(i + 1, j, k) * u, c10 = at(i, j + 1, k) * (1 - u) + at(i + 1, j + 1, k) * u;
+    const c01 = at(i, j, k + 1) * (1 - u) + at(i + 1, j, k + 1) * u, c11 = at(i, j + 1, k + 1) * (1 - u) + at(i + 1, j + 1, k + 1) * u;
+    return ((c00 * (1 - v) + c10 * v) * (1 - s) + (c01 * (1 - v) + c11 * v) * s) - 0.5;
+  };
+  const [bi0, bj0, bk0, bi1, bj1, bk1] = R.box;
+  const bounds = { min: [gx + (bi0 - 2) * h, gy + (bj0 - 2) * h, z0 + Math.max(-0.5, bk0 - 2) * dz],
+                   max: [gx + (bi1 + 3) * h, gy + (bj1 + 3) * h, z0 + (bk1 + 3) * dz] };
+  const mf = w.Manifold.levelSet(sdf, bounds, h, 0);
+  // Krümel aus dem Raster (einzelne Zellen am Rand einer 45°-Fläche) weglassen
+  const parts = mf.decompose(), minV = 3 * h * h * dz;
+  const keep = parts.filter(m => m.volume() >= minV);
+  const r = keep.length ? (keep.length === 1 ? keep[0] : w.Manifold.union(keep)) : null;
+  parts.forEach(m => { if (m !== r) m.delete(); }); mf.delete();
+  if (!r || r.isEmpty()) return null;
+  return r;
+}
+function _ohfVorschauWeg() {
+  if (_ohf && _ohf.ghost) { scene.remove(_ohf.ghost); _ohf.ghost.traverse(c => { c.geometry && c.geometry.dispose(); c.material && c.material.dispose(); }); _ohf.ghost = null; }
+}
+function _ohfAbbrechen(still) {
+  _ohfVorschauWeg();
+  const nachher = _ohf && _ohf.nachher;
+  if (_ohf) (_ohf.teile || []).forEach(t => { try { t.mf && t.mf.delete(); } catch (e) {} });
+  _ohf = null;
+  const el = document.getElementById('ohf-panel'); if (el) el.remove();
+  _pcClearOhVis();
+  if (nachher && !still) nachher();   // aus dem Druck-Check/Speichern gekommen → dorthin zurück
+}
+async function _ohfOpen(nachher) {
+  _ohfAbbrechen(true);
+  const ziele = _ohfZiele();
+  if (!ziele.length) { notify('Keine Körper zum Prüfen', 'w'); return; }
+  if (document.getElementById('printcheck-modal').classList.contains('show')) _printCheckClose();
+  _ohf = { teile: [], ghost: null, nachher: nachher || null };
+  try {
+    _progressShow('📐 Überhänge suchen …'); _progressSet(5);
+    const w = await _mfInit();
+    let vol = 0, saeule = 0;
+    for (let i = 0; i < ziele.length; i++) {
+      const o = ziele[i];
+      _progressSet(5 + 85 * i / ziele.length, '📐 ' + (o.userData.name || 'Teil') + ' …');
+      await new Promise(r => setTimeout(r, 20));
+      const R = _ohfRechne(_ohfTris(o));
+      if (!R || !R.n) continue;
+      const mf = _ohfKoerper(w, R);
+      if (!mf) continue;
+      vol += mf.volume(); saeule += R.saeule * R.dz;
+      _ohf.teile.push({ o, mf, saeule: R.saeule * R.dz });
+    }
+    _progressDone();
+  } catch (e) {
+    _progressDone(); _ohfAbbrechen(true);
+    notify('Überhänge füllen ging nicht: ' + ((e && e.message) || e), 'e'); return;
+  }
+  if (!_ohf.teile.length) {
+    const n = _ohf.nachher; _ohfAbbrechen(true);
+    notify('📐 Nichts zu füllen — keine Stelle steiler als 45° (druckt ohne Stützen)', 'ok');
+    if (n) n(); return;
+  }
+  // Vorschau: blau, halbtransparent, Druck-Koordinaten → Szene (wie STL-Import)
+  const g = new THREE.Group();
+  g.scale.setScalar(0.1); g.rotation.x = -Math.PI / 2;
+  const mat = new THREE.MeshStandardMaterial({ color: 0x2f7cf6, transparent: true, opacity: 0.6, roughness: 0.5, depthWrite: false, side: THREE.DoubleSide });
+  for (const t of _ohf.teile) {
+    const m = t.mf.getMesh(), P = m.vertProperties, T = m.triVerts, np = m.numProp;
+    const pos = new Float32Array(T.length * 3);
+    for (let i = 0; i < T.length; i++) { const v = T[i] * np; pos[i * 3] = P[v]; pos[i * 3 + 1] = P[v + 1]; pos[i * 3 + 2] = P[v + 2]; }
+    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.computeVertexNormals();
+    g.add(new THREE.Mesh(geo, mat));
+  }
+  scene.add(g); _ohf.ghost = g;
+  try { _pcShowOverhangs(true); } catch (e) {}
+  const cm3 = _ohf.teile.reduce((s, t) => s + t.mf.volume(), 0) / 1000;
+  const saeule = _ohf.teile.reduce((s, t) => s + t.saeule, 0);
+  const f1 = v => String(Math.round(v * 10) / 10).replace('.', ',');
+  const el = document.createElement('div'); el.id = 'ohf-panel';
+  el.style.cssText = 'position:fixed;right:232px;top:120px;width:320px;z-index:8600;background:var(--white);border:1.5px solid #2f7cf6;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text);line-height:1.5';
+  el.innerHTML = `<div style="display:flex;align-items:center;margin-bottom:6px"><b style="font-size:13px;flex:1">📐 Ohne Stützen drucken</b>
+      <span onclick="_ohfAbbrechen()" style="cursor:pointer;color:var(--dim);font-size:15px" title="Abbrechen (Esc)">✕</span></div>
+    <div>Unter die <b style="color:#dc2626">roten</b> Stellen kommt eine <b style="color:#2f7cf6">blaue Schräge mit 45°</b> (<b>+${f1(cm3)} cm³</b>${_ohf.teile.length > 1 ? ', ' + _ohf.teile.length + ' Teile' : ''}). Dann hängt dort nichts mehr frei – das Teil druckt ohne Stützen.</div>
+    ${saeule > 1 ? `<div style="margin-top:6px;color:#b45309">⚠ ${f1(saeule)} mm davon laufen als Säule bis zur Platte (Spitzen frei in der Luft). Lieber anders aufstellen (⊥) oder 🦈 Stützfinnen?</div>` : ''}
+    <div style="display:flex;gap:6px;margin-top:10px"><button class="btn" style="flex:1" onclick="_ohfAbbrechen()">Abbrechen</button>
+      <button class="btn pri" style="flex:1" id="ohf-ok" onclick="_ohfUebernehmen()">✓ Übernehmen</button></div>`;
+  el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape') _ohfAbbrechen(); });
+  document.body.appendChild(el);
+  document.getElementById('ohf-ok').focus();
+}
+async function _ohfUebernehmen() {
+  if (!_ohf || !_ohf.teile.length) { _ohfAbbrechen(); return; }
+  const teile = _ohf.teile, nachher = _ohf.nachher;
+  _ohfVorschauWeg();
+  const el = document.getElementById('ohf-panel'); if (el) el.remove();
+  _pcClearOhVis();
+  let ok = 0, plus = 0; const neu = [];
+  try {
+    _progressShow('📐 Schräge wird angefügt …'); _progressSet(15);
+    saveUndo();
+    for (const t of teile) {
+      const o = t.o; if (objects.indexOf(o) < 0) continue;
+      const w = await _mfInit();
+      const src = _mfAusStls(w, _objsToUnionStls([o]));
+      if (!src.mf) { notify((o.userData.name || 'Teil') + ': nicht geschlossen – erst 🩹 Reparieren', 'w'); continue; }
+      const v0 = src.mf.volume(), r = w.Manifold.union(src.mf, t.mf);
+      plus += r.volume() - v0;
+      const tris = _ohfTris(o);
+      const mesh = _meshFromStlB64(_bufToBase64(_mfToStlBuf(r)), o.userData.name || 'Teil', true);
+      if (!mesh) continue;
+      const hex = o.userData._mmuBase || o.userData.color || currentColor;
+      mesh.userData.color = hex; mesh.material.color.set(hex);
+      mesh.userData.ohneStuetzen = 45;
+      // Bemalung übertragen (nächstes altes Dreieck; die Schräge nimmt die Farbe der Ansatzstelle)
+      const sg = o.isMesh && o.userData._mmuPaint ? (o.geometry.index ? o.geometry.toNonIndexed() : o.geometry) : null;
+      const st = sg ? _mmuTriStatesGeo(sg, o.userData) : null;
+      if (st && st.states.length * 9 === tris.length) {
+        let g = mesh.geometry; if (g.index) { const ng = g.toNonIndexed(); g.dispose(); mesh.geometry = g = ng; mesh.userData._origGeo = ng; }
+        _roundTransferPaint(g, tris, st.states, st.hexes, 0.5);
+        mesh.material.vertexColors = true; mesh.material.color.set('#ffffff'); mesh.material.needsUpdate = true;
+        mesh.userData._mmuPaint = 1; mesh.userData._mmuBase = st.hexes[0]; mesh.userData._mmuSlots = st.hexes.slice(1);
+      }
+      const i = objects.indexOf(o);
+      objects = objects.filter(x => x !== mesh);
+      if (i >= 0) objects[i] = mesh; else objects.push(mesh);
+      scene.remove(o);
+      if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(mesh);
+      neu.push(mesh); ok++;
+    }
+    teile.forEach(t => { try { t.mf.delete(); } catch (e) {} });
+    _ohf = null;
+    if (neu.length) selectObjs(neu);
+    updateTree();
+    _progressDone();
+    if (ok) notify('📐 45°-Schräge angefügt (+' + String(Math.round(plus / 100) / 10).replace('.', ',') + ' cm³) — druckt jetzt ohne Stützen', 'ok');
+  } catch (e) {
+    _progressDone(); _ohf = null;
+    notify('Übernehmen ging nicht: ' + ((e && e.message) || e), 'e');
+  }
+  if (nachher) nachher();
+}
+
+// ═══ 💾 3MF SPEICHERN: erst Druck-Check, dann Bambu-konformes Projekt (v1.18.303) ═══
+// Volker 2.11.26: beim Speichern als 3MF gleich den V3D Druckcheck anbieten, damit
+// die gröbsten Schnitzer vorher behoben sind — und die 3MF so bauen, dass Bambu
+// Studio sie als PROJEKT öffnet statt „nur Geometriedaten" zu importieren.
+// Bambu prüft (bbs_3mf.cpp / Plater::load_files): <metadata name="Application">
+// beginnt mit „BambuStudio-" UND Metadata/project_settings.config ist vollständig.
+// Die Einstellungen stammen aus den System-Profilen von Bambu Studio selbst
+// (bambu-projekt.json, tools/bau_bambu_projekt.py); printer/print/filament_settings_id
+// tragen die echten Profilnamen → Bambu wählt seine eigenen Profile, nur unsere
+// Abweichungen (Wände, Füllung, Stützen, Druckcheck-Fixes) stehen in
+// different_settings_to_system und bleiben als „geändert" sichtbar.
+// Der V3D Druckcheck (druckcheck-kern.js = orca-wasm/web/print-check.js, EINE
+// Quelle mit V3D Slicer und ~/v3ddruckcheck) prüft Modell + diese Einstellungen.
+const _BBS_VERSION = '02.08.02.61';
+let _bbsProf = null, _pcModus = 'pruefen', _b3 = null;
+function _bbsLaden() {
+  if (_bbsProf) return Promise.resolve(_bbsProf);
+  return fetch('bambu-projekt.json', { cache: 'force-cache' })
+    .then(r => { if (!r.ok) throw new Error('Bambu-Profile nicht geladen (HTTP ' + r.status + ')'); return r.json(); })
+    .then(j => (_bbsProf = j));
+}
+function _bbsAus(art, name) {
+  const A = _bbsProf && _bbsProf[art], e = A && A.je[name];
+  if (!e) return null;
+  const r = Object.assign({}, A.basis);
+  (e._ohne || []).forEach(k => delete r[k]);
+  for (const k in e) if (k !== '_ohne') r[k] = e[k];
+  return r;
+}
+// Auswahl für das Bambu-Projekt: eigener Speicher, Vorgabe aus der Druck-Vorschau
+function _b3Wahl() {
+  let w = {}; try { w = JSON.parse(localStorage.getItem('v3d_3mf_bambu') || '{}'); } catch (e) {}
+  const p = (typeof _dv !== 'undefined' && _dv.p) || {};
+  if (!w.machine && p.vendor === 'BBL' && p.machine) w.machine = p.machine;
+  if (!w.ftype) w.ftype = p.ftype || 'PLA';
+  if (!w.lh) w.lh = String(p.lh || '0.2');
+  const D = _bbsProf && _bbsProf.drucker;
+  if (D && !D[w.machine]) w.machine = D['Bambu Lab X1 Carbon 0.4 nozzle'] ? 'Bambu Lab X1 Carbon 0.4 nozzle' : Object.keys(D)[0];
+  if (D && w.machine) {
+    const d = D[w.machine];
+    if (!d.filament[w.ftype]) w.ftype = d.filament.PLA ? 'PLA' : Object.keys(d.filament)[0];
+    const lhs = Object.keys(d.prozess);
+    if (!d.prozess[w.lh]) w.lh = lhs.reduce((a, b) => Math.abs(b - 0.2) < Math.abs(a - 0.2) ? b : a, lhs[0]);
+  }
+  return w;
+}
+function _b3Set(k, v) {
+  const w = _b3Wahl(); w[k] = v;
+  try { localStorage.setItem('v3d_3mf_bambu', JSON.stringify(w)); } catch (e) {}
+  _b3Abschnitt();
+}
+// Farben der zu speichernden Teile in derselben Reihenfolge wie _build3mfBlob (Filament 1, 2 …)
+function _b3Farben(src) {
+  try {
+    const r = _withPlateShift(src, () => _build3mfBlob(src, { schicht: false, nurFarben: true }));
+    return r ? r.legend.map(s => s.split('=')[1]) : ['#FFFFFF'];
+  } catch (e) { return ['#FFFFFF']; }
+}
+// Vollständige project_settings für Drucker/Filament/Schicht (+ Druck-Vorschau-Werte)
+function _bbsProjekt(w, farben, fixes) {
+  const D = _bbsProf && _bbsProf.drucker[w.machine]; if (!D) return null;
+  const procName = D.prozess[w.lh] || D.prozess['0.2'] || Object.values(D.prozess)[0];
+  const filName = D.filament[w.ftype] || D.filament.PLA || Object.values(D.filament)[0];
+  const M = _bbsAus('maschine', w.machine), P = _bbsAus('prozess', procName), Fi = _bbsAus('filament', filName);
+  if (!M || !P || !Fi) return null;
+  const n = Math.max(1, farben.length);
+  const out = Object.assign({}, M, P);
+  // Filament-Werte je Filament: Bambu schreibt eine Spalte je Filament (Variante der Düse = erste)
+  const filKeys = new Set(Object.keys(Fi));
+  for (const k of filKeys) { const v = Fi[k]; out[k] = Array.isArray(v) ? Array(n).fill(String(v.length ? v[0] : '')) : v; }
+  const ids = Fi.filament_id;
+  ['compatible_printers', 'compatible_printers_condition', 'compatible_prints', 'compatible_prints_condition', 'include', 'filament_id'].forEach(k => delete out[k]);
+  const p = (typeof _dv !== 'undefined' && _dv.p) || {};
+  const diff = [[], ...Array.from({ length: n }, () => []), []];   // Druck, Filamente…, Drucker
+  const setze = (k, v, slot) => { if (JSON.stringify(out[k]) === JSON.stringify(v)) return; out[k] = v; if (!diff[slot].includes(k)) diff[slot].push(k); };
+  if (p.walls) setze('wall_loops', String(p.walls), 0);
+  if (p.infill != null) setze('sparse_infill_density', String(p.infill) + '%', 0);
+  const st = p.support || 'aus';
+  setze('enable_support', st === 'aus' ? '0' : '1', 0);
+  if (st !== 'aus') setze('support_type', st === 'baum' ? 'tree(auto)' : 'normal(auto)', 0);
+  // Druckplatte, für die das Filament eine Betttemperatur hat (sonst bricht Bambu das Slicen ab)
+  const platte = { 'Textured PEI Plate': 'textured_plate_temp', 'High Temp Plate': 'hot_plate_temp', 'Cool Plate': 'cool_plate_temp', 'Engineering Plate': 'eng_plate_temp' };
+  const temp = b => parseFloat((Fi[platte[b]] || [])[0]) || 0;
+  let bed = temp('Textured PEI Plate') > 0 ? 'Textured PEI Plate' : (Object.keys(platte).find(b => temp(b) > 0) || 'Textured PEI Plate');
+  Object.assign(out, {
+    from: 'project', name: 'project_settings', version: _BBS_VERSION,
+    printer_settings_id: w.machine, print_settings_id: procName, filament_settings_id: Array(n).fill(filName),
+    filament_colour: farben.length ? farben.slice() : ['#FFFFFF'], curr_bed_type: bed,
+  });
+  if (ids) out.filament_ids = Array(n).fill(String(Array.isArray(ids) ? ids[0] : ids));
+  // V3D Druckcheck-Fixes (Werte als Bambu-Schlüssel) – Platte als eigene Wahl
+  const DC = window.V3D_DRUCKCHECK;
+  for (const x of (fixes || [])) {
+    if (x.key === 'curr_bed_type') { out.curr_bed_type = String(x.value); continue; }
+    if (out[x.key] === undefined) continue;   // Orca-only-Schlüssel kennt Bambu Studio nicht
+    const neu = DC.applyFixes({ [x.key]: out[x.key] }, [x])[x.key];
+    const slot = filKeys.has(x.key) ? 1 + Math.min(n - 1, x.idx || 0) : (M[x.key] !== undefined && P[x.key] === undefined ? n + 1 : 0);
+    setze(x.key, neu, slot);
+  }
+  out.inherits_group = Array(n + 2).fill('');
+  out.different_settings_to_system = diff.map(l => l.join(';'));
+  // Plattenmitte (printable_area „0x0,256x0,…") → dahin rückt der Export das Modell
+  const pts = (out.printable_area || []).map(s => String(s).split('x').map(parseFloat)).filter(q => q.length === 2 && q.every(Number.isFinite));
+  const xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
+  const bett = pts.length ? [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2] : [128, 128];
+  return { settings: out, bett, procName, filName, bed, geaendert: diff.flat() };
+}
+// Netze für den V3D Druckcheck (Druck-Koordinaten mm, Z oben, je Objekt)
+function _b3Modelle(src) {
+  const DC = window.V3D_DRUCKCHECK, out = [];
+  let tris = 0;
+  src.forEach(o => o.traverse(c => { if (c.isMesh && c.geometry && c.visible !== false && !c.userData.isHole && !c.userData.isEdgeLines) tris += _geoTriCount(c.geometry); }));
+  if (tris > 1500000) return null;
+  _withPlateShift(src, () => src.forEach((o, i) => {
+    if (o.visible === false || o.userData.isHole) return;
+    const t = _ohfTris(o); if (!t.length) return;
+    try { out.push(DC.analyzeMesh(t, null, { name: o.userData.name || ('Teil ' + (i + 1)), maxThickSamples: 3000 })); } catch (e) { console.warn('[3mf] Druckcheck-Analyse:', e); }
+  }));
+  return out;
+}
+// Teil im Druck-Check-Fenster (Modus '3mf'): Bambu-Projekt + V3D Druckcheck der Einstellungen
+async function _b3Abschnitt() {
+  const box = document.getElementById('b3-abschnitt'); if (!box) return;
+  const an = localStorage.getItem('v3d_3mf_projekt') !== '0';
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  box.innerHTML = `<div class="pc-row lvl-info" style="display:block;font-size:12.5px">
+      <label style="display:flex;gap:7px;align-items:flex-start;cursor:pointer"><input type="checkbox" id="b3-proj" ${an ? 'checked' : ''} onchange="localStorage.setItem('v3d_3mf_projekt',this.checked?'1':'0');_b3Abschnitt()" style="margin-top:2px">
+      <span><b style="font-size:13.5px">🧩 Als Bambu-Studio-Projekt speichern</b><br><span style="color:var(--mid);font-size:12px">mit Drucker, Filament und Einstellungen — Bambu Studio öffnet die Datei als Projekt statt „nur Geometriedaten“ (OrcaSlicer ebenso)</span></span></label>
+      <div id="b3-wahl" style="margin-top:6px">${an ? '<span style="color:var(--dim)">Bambu-Profile laden …</span>' : ''}</div></div>
+    <div id="b3-check"></div>`;
+  if (!an) { _b3 = null; return; }
+  try { await _bbsLaden(); } catch (e) { document.getElementById('b3-wahl').innerHTML = '<span style="color:#dc2626">' + esc(e.message || e) + ' — die 3MF wird ohne Projekt-Einstellungen gespeichert.</span>'; _b3 = null; return; }
+  if (!document.getElementById('b3-wahl')) return;
+  const w = _b3Wahl(), D = _bbsProf.drucker[w.machine];
+  const sel = (k, opts, cur) => `<select style="flex:1;min-width:0" onchange="_b3Set('${k}',this.value)">${opts.map(([v, t]) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
+  const p = (typeof _dv !== 'undefined' && _dv.p) || {};
+  const stz = { aus: 'aus', normal: 'normal', baum: 'Baum (auto)' }[p.support || 'aus'];
+  document.getElementById('b3-wahl').innerHTML = `
+    <div class="vrow"><label>Drucker</label>${sel('machine', Object.keys(_bbsProf.drucker).map(n => [n, n.replace(/^Bambu Lab /, '').replace(/ nozzle$/, ' mm Düse')]), w.machine)}</div>
+    <div class="vrow"><label>Filament</label>${sel('ftype', Object.keys(D.filament).map(t => [t, D.filament[t].replace(/ @.*$/, '')]), w.ftype)}</div>
+    <div class="vrow"><label>Schichthöhe</label>${sel('lh', Object.keys(D.prozess).sort((a, b) => a - b).map(l => [l, D.prozess[l].replace(/ @.*$/, '').replace(/^([\d.]+)mm/, (m, x) => String(+x).replace('.', ',') + ' mm')]), w.lh)}</div>
+    <div style="color:var(--dim);font-size:11px">Wände ${p.walls || 2} · Füllung ${p.infill != null ? p.infill : 15} % · Stützen ${stz} — aus der 🖨 Druck-Vorschau</div>`;
+  // V3D Druckcheck: Modell + Einstellungen
+  const chk = document.getElementById('b3-check');
+  const DC = window.V3D_DRUCKCHECK;
+  if (!DC) { chk.innerHTML = ''; _b3 = { w }; return; }
+  chk.innerHTML = '<div class="pc-row lvl-info"><div class="pc-ic">⏳</div><div class="pc-tx"><div class="pc-ms">V3D Druckcheck prüft die Einstellungen …</div></div></div>';
+  await new Promise(r => setTimeout(r, 30));
+  const src = _exportSrc(), farben = _b3Farben(src);
+  const proj = _bbsProjekt(w, farben, []);
+  if (!proj) { chk.innerHTML = ''; _b3 = null; return; }
+  let modelle = null; try { modelle = _b3Modelle(src); } catch (e) { console.warn(e); }
+  let befunde = [];
+  try { befunde = DC.checkSettings(proj.settings, { models: modelle || [], usedFilaments: farben.map((f, i) => i) }); } catch (e) { console.warn('[3mf] Druckcheck:', e); }
+  befunde = befunde.filter(f => f.level > DC.LEVEL.OK && f.cat !== 'Abgleich');
+  befunde.sort((a, b) => b.level - a.level);
+  _b3 = { w, befunde };
+  const titel = '<div style="font-weight:800;font-size:13.5px;margin:12px 2px 4px">🖨 V3D Druckcheck — Einstellungen für ' + esc(w.machine.replace(/ nozzle$/, '')) + '</div>';
+  if (!befunde.length) { chk.innerHTML = titel + '<div class="pc-row lvl-ok"><div class="pc-ic">🎉</div><div class="pc-tx"><div class="pc-tt">Einstellungen passen</div><div class="pc-ms">Nichts zu ändern.</div></div></div>'; return; }
+  chk.innerHTML = titel + befunde.map((f, i) => {
+    const lvl = f.level >= DC.LEVEL.ERROR ? 'err' : f.level === DC.LEVEL.WARN ? 'warn' : 'info';
+    const fx = (f.fixes || []).filter(x => x.key === 'curr_bed_type' || proj.settings[x.key] !== undefined);
+    const was = fx.map(x => DC.keyLabel(x.key) + ' → ' + DC.valueText(x.key, x.value)).join(', ');
+    return `<div class="pc-row lvl-${lvl}"><div class="pc-ic">${DC.LEVEL_ICONS[f.level]}</div>
+      <div class="pc-tx"><div class="pc-tt">${esc(f.title)}</div><div class="pc-ms">${f.detail || ''}${was ? '<br><b>Ändern:</b> ' + esc(was) : ''}</div></div>
+      ${fx.length ? `<label style="white-space:nowrap;cursor:pointer;font-size:12px"><input type="checkbox" class="b3-fix" data-i="${i}" ${f.level >= DC.LEVEL.WARN ? 'checked' : ''}> übernehmen</label>` : ''}</div>`;
+  }).join('');
+}
+function _b3Fixes() {
+  if (!_b3 || !_b3.befunde) return [];
+  const out = [];
+  document.querySelectorAll('.b3-fix').forEach(cb => { if (cb.checked) { const f = _b3.befunde[+cb.dataset.i]; if (f) out.push(...(f.fixes || [])); } });
+  return out;
+}
+// Menü „⬇ 3MF": erst prüfen (abschaltbar), dann speichern
+function _3mfSpeichern() {
+  document.getElementById('stl-menu')?.classList.remove('show');
+  if (!_exportSrc().length) { notify('Keine Objekte', 'w'); return; }
+  if (localStorage.getItem('v3d_3mf_pruefen') === '0') { _3mfJetzt(true); return; }
+  _bbsLaden().catch(() => {});
+  _printCheckOpen('3mf');
+}
+async function _3mfJetzt(ohneDialog) {
+  let projekt = null;
+  if (localStorage.getItem('v3d_3mf_projekt') !== '0') {
+    try {
+      await _bbsLaden();
+      const fixes = ohneDialog ? [] : _b3Fixes();
+      const w = (_b3 && _b3.w) || _b3Wahl();
+      projekt = _bbsProjekt(w, _b3Farben(_exportSrc()), fixes);
+    } catch (e) { notify('Bambu-Profile fehlen — 3MF ohne Projekt-Einstellungen: ' + (e.message || e), 'w'); }
+  }
+  _printCheckClose();
+  export3MF(projekt ? { projekt } : undefined);
+}
+
 // ===== DRUCK-CHECK =====
 // Analysiert die sichtbaren Körper (was exportiert würde): wasserdicht/manifold,
 // passt aufs Bett, liegt auf der Platte, Überhänge, sehr dünn.
@@ -87438,7 +87941,7 @@ function _pcClearOhVis(){
   if (_pcOhTimer) { clearTimeout(_pcOhTimer); _pcOhTimer = null; }
 }
 
-function _pcShowOverhangs(){
+function _pcShowOverhangs(stumm){
   _pcClearOhVis();
   _printCheckClose();
   const meshes = [];
@@ -87482,6 +87985,7 @@ function _pcShowOverhangs(){
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
   mesh.renderOrder = 998; mesh.raycast = () => {};
   scene.add(mesh); _pcOhVis.push(mesh);
+  if (stumm) return;   // 📐 Ohne Stützen räumt selbst auf
   notify('Überhänge rot markiert (steiler als 45° nach unten' + (truncated ? ', Anzeige gekappt' : '') + ') — verschwindet nach 15 s', 'w');
   _pcOhTimer = setTimeout(_pcClearOhVis, 15000);
 }
@@ -87562,7 +88066,7 @@ async function _pcThickenWalls(){
     notify('✓ ' + ok + ' Körper verstärkt: Wände +' + (dist * 2).toFixed(2) + ' mm, Löcher ' +
            (dist * 2).toFixed(2) + ' mm enger' + (failed ? ' (' + failed + ' übersprungen)' : ''), 'ok');
     updateTree();
-    setTimeout(_printCheckOpen, 30);
+    setTimeout(() => _printCheckOpen(_pcModus), 30);
   } catch (e) {
     _progressHide();
     console.error('[verstärken]', e);
@@ -87570,13 +88074,15 @@ async function _pcThickenWalls(){
   }
 }
 
-function _printCheckOpen(){
+function _printCheckOpen(modus){
+  _pcModus = modus === '3mf' ? '3mf' : 'pruefen';
+  _pcFuss();
   document.getElementById('printcheck-modal').classList.add('show');
   const body=document.getElementById('printcheck-body');
   let r; try{ r=_printCheckAnalyze(); }catch(e){ console.warn('Druck-Check:',e); body.innerHTML='<div class="pc-summary">Analyse fehlgeschlagen.</div>'; return; }
   if(!r){ body.innerHTML='<div class="pc-summary" style="color:var(--dim)">Keine druckbaren Körper in der Szene.</div>'; return; }
   const items=[];
-  const row=(lvl,ic,tt,ms,btn,act,btn2,act2)=>items.push({lvl,ic,tt,ms,btn,act,btn2,act2});
+  const row=(lvl,ic,tt,ms,btn,act,btn2,act2,btn3,act3)=>items.push({lvl,ic,tt,ms,btn,act,btn2,act2,btn3,act3});
   // Wasserdicht / Manifold
   if(r.capped) row('info','⏭','Sehr große Szene', r.tris.toLocaleString('de')+' Dreiecke — Detailprüfung (wasserdicht/Überhänge) übersprungen, um nicht einzufrieren.');
   else if(r.boundaryEdges===0 && r.nonManifold===0) row('ok','✅','Wasserdicht','Geschlossenes Volumen — sauber druckbar.');
@@ -87592,8 +88098,8 @@ function _printCheckOpen(){
   else row('warn','⚠️','Unter der Platte','Ragt '+(-r.minYmm).toFixed(1)+' mm unter die Platte.','⬇ Auf Platte','_printDropToPlate()');
   // Überhänge
   if(!r.capped){
-    if(r.overhangPct<10) row('ok','✅','Kaum Überhänge', r.overhangPct+'% steile Unterseiten — wenig/kein Stützmaterial nötig.', r.overhangPct>0?'👁 Zeigen':null, '_pcShowOverhangs()');
-    else row('info','ℹ️','Überhänge', r.overhangPct+'% der Fläche zeigt steil nach unten (>45°) — evtl. Stützen nötig.','👁 Zeigen','_pcShowOverhangs()','↻ Ausrichten','_printCheckOrient()');
+    if(r.overhangPct<10) row('ok','✅','Kaum Überhänge', r.overhangPct+'% steile Unterseiten — wenig/kein Stützmaterial nötig.', r.overhangPct>0?'👁 Zeigen':null, '_pcShowOverhangs()', r.overhangPct>0?'📐 Ohne Stützen':null, '_ohfAusCheck()');
+    else row('info','ℹ️','Überhänge', r.overhangPct+'% der Fläche zeigt steil nach unten (>45°) — evtl. Stützen nötig. <b>📐 Ohne Stützen</b> setzt eine 45°-Schräge darunter.','👁 Zeigen','_pcShowOverhangs()','📐 Ohne Stützen','_ohfAusCheck()','↻ Ausrichten','_printCheckOrient()');
   }
   // Sehr dünn (Heuristik auf Außenmaße)
   const minDim=Math.min(r.wMM,r.dMM,r.hMM);
@@ -87623,14 +88129,31 @@ function _printCheckOpen(){
     : worst==='warn'?'<span style="color:#b45309">⚠ Druckbar, aber prüf die Hinweise.</span>'
     : '<span style="color:#dc2626">✕ Vor dem Druck beheben.</span>';
   body.innerHTML='<div class="pc-summary">'+head+'</div>'+items.map(i=>
-    '<div class="pc-row lvl-'+i.lvl+'"><div class="pc-ic">'+i.ic+'</div>'+
+    '<div class="pc-row lvl-'+i.lvl+(i.btn3?' pc-viel':'')+'"><div class="pc-ic">'+i.ic+'</div>'+
     '<div class="pc-tx"><div class="pc-tt">'+i.tt+'</div><div class="pc-ms">'+i.ms+'</div></div>'+
     (i.btn?'<button class="btn" onclick="'+i.act+'">'+i.btn+'</button>':'')+
-    (i.btn2?'<button class="btn" onclick="'+i.act2+'">'+i.btn2+'</button>':'')+'</div>').join('');
+    (i.btn2?'<button class="btn" onclick="'+i.act2+'">'+i.btn2+'</button>':'')+
+    (i.btn3?'<button class="btn" onclick="'+i.act3+'">'+i.btn3+'</button>':'')+'</div>').join('')+
+    (_pcModus==='3mf'?'<div id="b3-abschnitt"></div>':'');
+  if(_pcModus==='3mf') _b3Abschnitt();
 }
+// Fuß + Titel je Modus: normaler Druck-Check oder „3MF speichern"
+function _pcFuss(){
+  const hd=document.getElementById('printcheck-hd'), ft=document.getElementById('printcheck-foot');
+  if(!hd||!ft) return;
+  if(_pcModus==='3mf'){
+    hd.innerHTML='💾 3MF speichern — kurz prüfen<span class="px" onclick="_printCheckClose()">✕</span>';
+    ft.innerHTML='<label style="display:flex;gap:5px;align-items:center;font-size:12px;color:var(--dim);cursor:pointer" title="Aus = ⬇ 3MF speichert sofort (Projekt-Einstellungen wie zuletzt gewählt)"><input type="checkbox" '+(localStorage.getItem('v3d_3mf_pruefen')!=='0'?'checked':'')+' onchange="localStorage.setItem(\'v3d_3mf_pruefen\',this.checked?\'1\':\'0\')"> vor dem Speichern immer prüfen</label>'+
+      '<div style="flex:1"></div><button class="btn" onclick="_printCheckClose()">Abbrechen</button><button class="btn pri" id="b3-save" onclick="_3mfJetzt()">💾 3MF speichern</button>';
+  } else {
+    hd.innerHTML='🖨 Druck-Check<span class="px" onclick="_printCheckClose()">✕</span>';
+    ft.innerHTML='<button class="btn" onclick="_printCheckOpen()">↻ Erneut prüfen</button><div style="flex:1"></div><button class="btn" onclick="_printCheckClose()">Schließen</button><button class="btn pri" onclick="_printCheckClose();exportSTL()">⬇ STL exportieren</button>';
+  }
+}
+function _ohfAusCheck(){ const m=_pcModus; _ohfOpen(()=>_printCheckOpen(m)); }
 function _printCheckClose(){ document.getElementById('printcheck-modal').classList.remove('show'); }
-function _printCheckRepair(){ selectObjs(objects.slice()); repairSelected(); setTimeout(_printCheckOpen,30); }
-function _printCheckOrient(){ if(typeof autoOrientForPrint==='function') autoOrientForPrint(); setTimeout(_printCheckOpen,30); }
+function _printCheckRepair(){ selectObjs(objects.slice()); repairSelected(); setTimeout(()=>_printCheckOpen(_pcModus),30); }
+function _printCheckOrient(){ if(typeof autoOrientForPrint==='function') autoOrientForPrint(); setTimeout(()=>_printCheckOpen(_pcModus),30); }
 function _printDropToPlate(){
   if(!objects.length) return;
   saveUndo();
@@ -87641,7 +88164,7 @@ function _printDropToPlate(){
   if(!isFinite(dy)) return;
   objects.forEach(o=>{ o.position.y += dy; });
   notify('Auf die Platte gelegt','ok');
-  setTimeout(_printCheckOpen,30);
+  setTimeout(()=>_printCheckOpen(_pcModus),30);
 }
 // ===== END DRUCK-CHECK =====
 
@@ -87728,6 +88251,8 @@ const CMDK = [
   {i:'🖍️',g:'Bearbeiten',t:'Mehrfarb-Druck',k:'mehrfarb mmu multicolor filament bambu ams bemalen druck malen füllen slot mehrfarbig',run:()=>openMmuPaintTool()},
   {i:'🩹',g:'Druck',t:'Reparieren',k:'repair loch wasserdicht',run:()=>repairSelected()},
   {i:'🖨',g:'Druck',t:'Druck-Check',k:'print check druckbar',run:()=>_printCheckOpen()},
+  {i:'📐',g:'Druck',t:'Ohne Stützen (45°-Schräge unter Überhänge)',k:'überhang stützen support 45 schräge fase overhang',run:()=>_ohfOpen()},
+  {i:'💾',g:'Druck',t:'3MF speichern (mit Druck-Check / Bambu-Projekt)',k:'3mf bambu projekt speichern export',run:()=>_3mfSpeichern()},
   {i:'↻',g:'Druck',t:'Für Druck ausrichten',k:'orient',run:()=>autoOrientForPrint()},
   {i:'📐',g:'Bearbeiten',t:'Messen (Abstand / Durchmesser)',k:'measure distance diameter durchmesser bemaszung',run:()=>measureTool()},
   {i:'↕',g:'Bearbeiten',t:'Fläche ziehen / versetzen (Push/Pull)',k:'push pull fläche offset versetzen extrudieren bis nächste bis fläche durch alles',run:()=>enterPushPull()},

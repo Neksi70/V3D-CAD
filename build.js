@@ -32,6 +32,10 @@ const OUT = path.join(__dirname, 'volme3d.dist.html');
 if (fs.existsSync(path.join(__dirname, 'orca-wasm/web/adaptive-layers.js'))) {
   require('child_process').execFileSync(process.execPath, [path.join(__dirname, 'tools/bau_schicht_kern.mjs')], { stdio: 'inherit' });
 }
+// druckcheck-kern.js genauso aus dem V3D Druckcheck (orca-wasm/web/print-check.js)
+if (fs.existsSync(path.join(__dirname, 'orca-wasm/web/print-check.js'))) {
+  require('child_process').execFileSync(process.execPath, [path.join(__dirname, 'tools/bau_druck_kern.mjs')], { stdio: 'inherit' });
+}
 
 const SCRIPT_RE = /<script\b([^>]*)>([\s\S]*?)<\/script>/g;
 
@@ -60,7 +64,7 @@ async function build() {
     // Auslieferung soll eine einzige Datei bleiben. Nur was hier steht —
     // lib/three.min.js & Co. bleiben absichtlich draussen, die sind gross
     // und aendern sich nie.
-    const EINBETTEN = ['cam-kern.js', 'schicht-kern.js'];
+    const EINBETTEN = ['cam-kern.js', 'schicht-kern.js', 'druckcheck-kern.js'];
     if (hasSrc) {
       const m2 = /\bsrc\s*=\s*["']([^"']+)["']/.exec(match.attrs);
       const datei = m2 && m2[1];
