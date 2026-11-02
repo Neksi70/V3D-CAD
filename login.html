@@ -23,8 +23,10 @@ body{background:#fff;display:flex;align-items:center;justify-content:center;font
 #auth-google svg{width:18px;height:18px;flex-shrink:0}
 .auth-divider{display:flex;align-items:center;gap:10px;width:100%;font-size:11px;font-weight:700;color:var(--dim)}
 .auth-divider::before,.auth-divider::after{content:'';flex:1;height:1px;background:var(--border)}
-#auth-email,#auth-pw{width:100%;padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-family:var(--font);font-size:13px;color:var(--text);outline:none;transition:border-color .15s;box-sizing:border-box}
-#auth-email:focus,#auth-pw:focus{border-color:var(--acc)}
+#auth-name{display:none;gap:8px;width:100%}
+#auth-name input{flex:1;min-width:0}
+#auth-email,#auth-pw,#auth-name input{width:100%;padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-family:var(--font);font-size:13px;color:var(--text);outline:none;transition:border-color .15s;box-sizing:border-box}
+#auth-email:focus,#auth-pw:focus,#auth-name input:focus{border-color:var(--acc)}
 .auth-btns{display:flex;gap:8px;width:100%}
 #auth-btn-login{flex:1;padding:10px;background:var(--acc);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);transition:background .15s}
 #auth-btn-login:hover{background:var(--ahov)}
@@ -47,6 +49,7 @@ body{background:#fff;display:flex;align-items:center;justify-content:center;font
     Mit Google anmelden
   </button>
   <div class="auth-divider">oder</div>
+  <div id="auth-name"><input type="text" id="auth-vorname" placeholder="Vorname" autocomplete="given-name"><input type="text" id="auth-nachname" placeholder="Nachname" autocomplete="family-name"></div>
   <input type="email" id="auth-email" placeholder="E-Mail-Adresse" autocomplete="email">
   <input type="password" id="auth-pw" placeholder="Passwort" autocomplete="current-password">
   <div class="auth-btns">
@@ -85,6 +88,10 @@ if (params.get('grund') === 'sitzung')
 else if (params.get('grund') === 'abgelaufen')
   note('Deine Anmeldung ist abgelaufen. Bitte melde dich neu an.');
 
+// Name aus der Registrierung — geht mit der Sitzung an den Server (Ordner in
+// „📥 Meine Dateien“ heißt „Nachname, Vorname“; E-Mails sind oft kryptisch)
+let neuName = null;
+
 // Firebase-Anmeldung -> serverseitige Sitzung. Erst danach gibt der Server
 // die App heraus; das Cookie ist HttpOnly, der Editor sieht es nie.
 async function sessionAnlegen(user){
@@ -92,7 +99,7 @@ async function sessionAnlegen(user){
   const r = await fetch('/auth/session', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({idToken: idToken}),
+    body: JSON.stringify(Object.assign({idToken: idToken}, neuName || {})),
     credentials: 'same-origin'
   });
   if (!r.ok) {
@@ -121,8 +128,19 @@ $('auth-btn-login').onclick = function(){
 };
 $('auth-btn-register').onclick = function(){
   $('auth-err').style.display = 'none';
+  const box = $('auth-name');
+  // Erster Klick zeigt die Namensfelder, der zweite registriert
+  if (getComputedStyle(box).display === 'none') {
+    box.style.display = 'flex'; $('auth-vorname').focus();
+    note('Zum Registrieren bitte Vorname und Nachname angeben, dann E-Mail und Passwort.');
+    return;
+  }
+  const vn = $('auth-vorname').value.trim(), nn = $('auth-nachname').value.trim();
+  if (!vn || !nn) { showErr('Bitte Vorname und Nachname eingeben.'); (vn ? $('auth-nachname') : $('auth-vorname')).focus(); return; }
+  neuName = {vorname: vn, nachname: nn};
   auth.createUserWithEmailAndPassword($('auth-email').value.trim(), $('auth-pw').value)
-      .catch(e => showErr(e.message));
+      .then(c => c.user.updateProfile({displayName: vn + ' ' + nn}).catch(() => {}))
+      .catch(e => { neuName = null; showErr(e.message); });
 };
 $('auth-pw').addEventListener('keydown', e => { if (e.key === 'Enter') $('auth-btn-login').click(); });
 </script>

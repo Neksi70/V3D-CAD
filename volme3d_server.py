@@ -24,6 +24,46 @@ import v3d_auth
 # Nutzungsmessung pro Konto (Beta): Grundlage fuer die spaeteren Tarife.
 import v3d_nutzung
 import v3d_kichat
+# Vorname/Nachname je Konto + „📥 Meine Dateien“ (Ordner in Mimi share)
+import v3d_profil
+
+# Mimi share (~/v3dteilen, 127.0.0.1:8807) hält je Nutzer einen Ordner
+# „Nachname, Vorname“; wir reichen /api/dateien* mit gemeinsamem Schlüssel durch.
+MIMI_URL = os.environ.get('V3D_MIMI_URL') or 'http://127.0.0.1:8807'
+MIMI_KEYFILE = os.environ.get('V3D_MIMI_KEYFILE') or os.path.expanduser('~/.config/v3dteilen/cad_schluessel')
+MIMI_OEFFENTLICH = os.environ.get('V3D_MIMI_OEFFENTLICH') or 'https://v3da.tailf05fe9.ts.net/teilen'
+MIMI_MAX_DATEI = 300 * 1024 * 1024
+
+
+def _mimi_key():
+    try:
+        with open(MIMI_KEYFILE) as f:
+            return f.read().strip()
+    except OSError:
+        return ''
+
+
+def _mimi(method, path, body=None, headers=None, stream_len=None, timeout=60):
+    """Anfrage an Mimi share → (status, http.client.HTTPResponse, conn)."""
+    u = urllib.parse.urlsplit(MIMI_URL)
+    conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+    h = {'X-V3D-CAD': _mimi_key()}
+    h.update(headers or {})
+    if stream_len is not None:
+        conn.putrequest(method, path)
+        for k, v in h.items():
+            conn.putheader(k, v)
+        conn.putheader('Content-Length', str(stream_len))
+        conn.endheaders()
+        for chunk in body:
+            conn.send(chunk)
+    else:
+        if body is not None and not isinstance(body, (bytes, bytearray)):
+            body = json.dumps(body).encode()
+            h['Content-Type'] = 'application/json'
+        conn.request(method, path, body=body, headers=h)
+    r = conn.getresponse()
+    return r.status, r, conn
 
 # OCCT-Backend (occt-server.js) laeuft lokal auf HTTPS:3001 (self-signed).
 # Wir reichen /api/occt* + /occt-health dorthin durch, damit die Server-CAD-
@@ -567,8 +607,169 @@ class Handler(BaseHTTPRequestHandler):
                                       'anmelden.'})
             return
         cookie = v3d_auth.make_cookie(claims['sub'], claims.get('email', ''))
+        try:   # Name aus der Registrierung bzw. Vorschlag aus dem Google-Konto
+            vn, nn = body.get('vorname'), body.get('nachname')
+            if vn or nn or claims.get('name'):
+                v3d_profil.setzen(claims['sub'], claims.get('email', ''),
+                                  vorname=vn if vn else None, nachname=nn if nn else None,
+                                  vorschlag=claims.get('name'))
+        except Exception as e:
+            print('[profil]', e, flush=True)
         self._json(200, {'ok': True, 'email': claims.get('email', '')},
                    cookie=self._cookie_header(cookie, v3d_auth.SESSION_TTL))
+
+    # ── Profil (Name) + „📥 Meine Dateien“ ─────────────────────────────
+
+    def _konto(self):
+        """Angemeldeter Nutzer (kein Gast) — sonst Fehler gesendet, None."""
+        sess = self._session()
+        if not sess:
+            self._json(401, {'error': 'Bitte anmelden.', 'login': '/login'})
+            return None
+        if sess.get('g'):
+            self._json(403, {'error': 'Gäste haben keinen eigenen Ordner — bitte mit eigenem Konto anmelden.'})
+            return None
+        return sess
+
+    def _body(self, limit=16 * 1024):
+        n = int(self.headers.get('Content-Length', 0) or 0)
+        if n > limit:
+            return None
+        try:
+            return json.loads(self.rfile.read(n) or b'{}')
+        except ValueError:
+            return None
+
+    def _profil_get(self):
+        sess = self._session()
+        if not sess:
+            self._json(401, {'error': 'Bitte anmelden.'})
+            return
+        if sess.get('g'):
+            self._json(200, {'gast': True})
+            return
+        p = v3d_profil.holen(sess['u'])
+        self._json(200, {'vorname': p.get('vorname', ''), 'nachname': p.get('nachname', ''),
+                         'vorschlag': p.get('vorschlag', ''), 'email': sess.get('e', ''),
+                         'dev': DEV_MODE})
+
+    def _profil_post(self):
+        sess = self._konto()
+        if not sess:
+            return
+        b = self._body()
+        vn, nn = v3d_profil.sauber((b or {}).get('vorname')), v3d_profil.sauber((b or {}).get('nachname'))
+        if not vn or not nn:
+            self._json(400, {'error': 'Bitte Vorname und Nachname eingeben.'})
+            return
+        p = v3d_profil.setzen(sess['u'], sess.get('e', ''), vorname=vn, nachname=nn)
+        try:   # Ordner in Mimi share gleich mit umbenennen (wenn es ihn schon gibt)
+            self._mimi_ordner(sess, p)
+        except Exception:
+            pass
+        self._json(200, {'ok': True, 'vorname': vn, 'nachname': nn})
+
+    def _mimi_ordner(self, sess, p=None):
+        p = p or v3d_profil.holen(sess['u'])
+        name = v3d_profil.ordnername(p)
+        if not name:
+            return None
+        st, r, c = _mimi('POST', '/intern/cad/ordner', {'uid': sess['u'], 'titel': name, 'email': sess.get('e', '')})
+        data = r.read()
+        c.close()
+        if st != 200:
+            raise RuntimeError('Mimi share: ' + data.decode('utf-8', 'replace')[:200])
+        return json.loads(data)
+
+    def _dateien(self, method):
+        sess = self._konto()
+        if not sess:
+            return
+        url = urllib.parse.urlsplit(self.path)
+        q = urllib.parse.parse_qs(url.query)
+        was = url.path[len('/api/dateien'):].strip('/')
+        uid = urllib.parse.quote(sess['u'], safe='')
+        try:
+            if method == 'GET' and was == '':
+                o = self._mimi_ordner(sess)
+                if not o:
+                    self._json(409, {'error': 'Bitte zuerst Vorname und Nachname angeben.', 'name_fehlt': True})
+                    return
+                st, r, c = _mimi('GET', '/intern/cad/dateien?uid=' + uid)
+                data = json.loads(r.read() or b'{}')
+                c.close()
+                if st != 200:
+                    self._json(502, {'error': data.get('fehler') or 'Mimi share antwortet nicht'})
+                    return
+                titel = o['titel'].replace('V3D CAD · ', '', 1)
+                self._json(200, {'ordner': titel, 'link': MIMI_OEFFENTLICH + '/s/' + o['token'] + '/',
+                                 'dateien': data.get('dateien', [])})
+                return
+            if method == 'GET' and was == 'datei':
+                fid = (q.get('fid') or [''])[0]
+                if not re.fullmatch(r'[a-f0-9]{12}', fid):
+                    self._json(400, {'error': 'fid'})
+                    return
+                st, r, c = _mimi('GET', '/intern/cad/datei?uid=' + uid + '&fid=' + fid, timeout=300)
+                if st != 200:
+                    r.read(); c.close()
+                    self._json(404, {'error': 'Datei nicht gefunden'})
+                    return
+                self.send_response(200)
+                for k in ('Content-Type', 'Content-Length', 'Content-Disposition'):
+                    if r.getheader(k):
+                        self.send_header(k, r.getheader(k))
+                self.send_header('Cache-Control', 'private, no-store')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.end_headers()
+                while True:
+                    chunk = r.read(1 << 16)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                c.close()
+                return
+            if method == 'POST' and was == 'hochladen':
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                if n <= 0 or n > MIMI_MAX_DATEI:
+                    self._json(413, {'error': 'Datei leer oder größer als 300 MB'})
+                    return
+                if not self._mimi_ordner(sess):
+                    self._json(409, {'error': 'Bitte zuerst Vorname und Nachname angeben.', 'name_fehlt': True})
+                    return
+                name = urllib.parse.unquote(self.headers.get('X-Filename', '') or 'datei')[:200]
+                typ = (self.headers.get('X-Typ') or '')[:80]
+
+                def stuecke():
+                    rest = n
+                    while rest > 0:
+                        b = self.rfile.read(min(rest, 1 << 20))
+                        if not b:
+                            break
+                        rest -= len(b)
+                        yield b
+                pfad = ('/intern/cad/hochladen?uid=' + uid + '&name=' + urllib.parse.quote(name)
+                        + '&typ=' + urllib.parse.quote(typ))
+                st, r, c = _mimi('POST', pfad, body=stuecke(), stream_len=n, timeout=300)
+                data = json.loads(r.read() or b'{}')
+                c.close()
+                if st != 200:
+                    self._json(st if st in (400, 413, 507) else 502, {'error': data.get('fehler') or 'Hochladen fehlgeschlagen'})
+                    return
+                v3d_nutzung.erfassen(sess, 'dateien', 'hochladen', 0, True)
+                self._json(200, data)
+                return
+            if method == 'POST' and was == 'loeschen':
+                b = self._body() or {}
+                st, r, c = _mimi('POST', '/intern/cad/loeschen?uid=' + uid, {'fid': str(b.get('fid', ''))})
+                data = json.loads(r.read() or b'{}')
+                c.close()
+                self._json(200 if st == 200 else 404, data if st == 200 else {'error': 'Datei nicht gefunden'})
+                return
+            self._json(404, {'error': 'nicht gefunden'})
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            print('[dateien]', e, flush=True)
+            self._json(502, {'error': 'Ablage (Mimi share) gerade nicht erreichbar.'})
 
     def _auth_logout(self):
         self._json(200, {'ok': True}, cookie=self._cookie_header('', 0))
@@ -660,6 +861,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == '/auth/logout':
             self._auth_logout()
+            return
+        if self.path == '/api/profil':
+            self._profil_post()
+            return
+        if self.path.startswith('/api/dateien/'):
+            self._dateien('POST')
             return
         if self.path.startswith('/api/occt'):
             if not self._need_session():
@@ -942,6 +1149,13 @@ class Handler(BaseHTTPRequestHandler):
                              # Admin (Liste ~/.config/volme3d/admins) — z. B. für
                              # „Claude live“, das nur mit Volkers Claude funktioniert
                              'admin': bool(DEV_MODE or v3d_nutzung.ist_admin(sess))})
+            return
+
+        if path == '/api/profil':
+            self._profil_get()
+            return
+        if path == '/api/dateien' or path.startswith('/api/dateien/'):
+            self._dateien('GET')
             return
 
         if path == '/ki-chat/status':

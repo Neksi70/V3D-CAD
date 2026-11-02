@@ -1530,6 +1530,7 @@ const firebaseConfig = {
         <div class="sli-item" onclick="_mitOpen()" title="Gemeinsam arbeiten: ihr seht beide alles, bearbeiten darf einer — den Stift reicht ihr euch weiter. Der andere braucht kein Konto">👥 Gemeinsam arbeiten</div>
         <div class="sli-sep"></div>
         <div class="bm-sec">Extras</div>
+        <div class="sli-item" onclick="_mdOpen()" title="Eigener Ordner für Bilder, SVGs und Modelle — hochladen (auch vom Handy) und hier weiterbearbeiten">📥 Meine Dateien</div>
         <div class="sli-item" onclick="openShareModal()" title="Modell als 3D-Link teilen — Empfänger dreht &amp; zoomt im Browser">🔗 Teilen</div>
         <div class="sli-item" onclick="window.open('abstimmung.html','_blank')" title="Umfragen erstellen und per WhatsApp teilen">🗳 Abstimmung</div>
         <div class="sli-item" id="btn-spacemouse" onclick="openSpaceMouseSetup()" title="SpaceMouse einrichten (3Dconnexion, 6DOF)">🖱 SpaceMouse</div>
@@ -1539,6 +1540,7 @@ const firebaseConfig = {
       <button class="btn" onclick="_stlLibOpen()" title="Bibliothek: heruntergeladene Modelle (STL/3MF/OBJ/STEP) durchsuchen, ansehen, öffnen, drucken">📚 Bibliothek</button>
       <button class="btn" onclick="_svgImportOpen()" title="SVG importieren — Vektor-Datei (Logo, Schriftzug, Laser-Vorlage) als Körper extrudieren, flach einfügen oder als Skizze bearbeiten">⬆ SVG</button>
       <button class="btn" onclick="_scan2cad()" title="Scan → CAD mit einem Klick: gescanntes Teil (gewählt, sonst Datei wählen) wird automatisch zu einem echten CAD-Körper mit Skizzen im Verlauf">🪄 Scan→CAD</button>
+      <button class="btn" onclick="_mdOpen()" title="Meine Dateien: Bilder, SVGs und Modelle in deinem eigenen Ordner ablegen (auch vom Handy) und hier weiterbearbeiten — z. B. Fotos für die Christbaumkugel">📥 Meine Dateien</button>
       <button class="btn" onclick="_imgInsert()" title="Bild einfügen — Foto/Logo (PNG, JPG) wählen und danach aussuchen, was daraus werden soll: Gravur, Leuchtrelief, Box, Ausstecher …  Bild ins Fenster ziehen geht auch">🖼️ Bild</button>
       <input type="file" id="fimport" accept=".stl,.step,.stp,.3mf,.obj,.glb,.gltf,.ply,.svg,.json" style="display:none" onchange="handleImport(event)">
       <input type="file" id="img-file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="_imgFile(event)">
@@ -75941,9 +75943,195 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
   }
 })();
 
+// ═══ NAME + „📥 MEINE DATEIEN" (Ordner in Mimi share) ═════════════════════
+// Volker 2.11.26: Nutzer sollen Bilder/SVGs/Modelle hochladen und im CAD
+// weiterbearbeiten können (z. B. Fotos für die Christbaumkugel). Der Server
+// (volme3d_server.py /api/dateien) hält je Konto einen Ordner „Nachname,
+// Vorname“ in Mimi share; vom Handy lädt man über dessen Empfangs-Link hoch.
+// Dafür braucht jedes Konto einen Namen — bestehende werden einmal gefragt.
+function _mdEsc(t){ return String(t == null ? '' : t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function _mdModal(id, html){
+  let m = document.getElementById(id);
+  if (!m) {
+    m = document.createElement('div'); m.id = id;
+    m.style.cssText = 'position:fixed;inset:0;z-index:20000;background:rgba(15,23,42,.45);display:none;align-items:center;justify-content:center';
+    document.body.appendChild(m);
+  }
+  m.innerHTML = '<div style="background:#fff;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.3);padding:18px 20px;width:min(560px,94vw);max-height:88vh;overflow:auto;font-size:13px;color:#1f2937">' + html + '</div>';
+  m.style.display = 'flex';
+  return m;
+}
+
+// ── Name abfragen ─────────────────────────────────────────────────────────
+let _profil = null;
+async function _profilLaden(){
+  try { const r = await fetch('/api/profil', { credentials: 'same-origin' }); _profil = r.ok ? await r.json() : null; }
+  catch (e) { _profil = null; }
+  return _profil;
+}
+function _profilFrage(weiter){
+  const p = _profil || {};
+  let vn = p.vorname || '', nn = p.nachname || '';
+  if (!vn && !nn && p.vorschlag) { const t = p.vorschlag.trim().split(/\s+/); nn = t.length > 1 ? t.pop() : ''; vn = t.join(' '); }
+  const inp = 'style="width:100%;box-sizing:border-box;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:7px;font-size:14px"';
+  const m = _mdModal('profil-modal',
+    '<div style="font-size:16px;font-weight:700;margin-bottom:4px">👋 Wie heißt du?</div>' +
+    '<div style="color:#6b7280;margin-bottom:12px">Damit wir dich zuordnen können — E-Mail-Adressen sind oft schwer zu lesen. Dein Name benennt auch deinen Ordner unter „📥 Meine Dateien“.</div>' +
+    '<div style="display:flex;gap:8px;margin-bottom:10px"><input id="pf-vn" placeholder="Vorname" autocomplete="given-name" ' + inp + ' value="' + _mdEsc(vn) + '"><input id="pf-nn" placeholder="Nachname" autocomplete="family-name" ' + inp + ' value="' + _mdEsc(nn) + '"></div>' +
+    '<div id="pf-err" style="color:#dc2626;min-height:16px;margin-bottom:6px"></div>' +
+    '<div style="display:flex;justify-content:flex-end"><button class="btn" id="pf-ok" style="background:#F97316;color:#fff;border-color:#F97316;font-weight:700;padding:7px 16px">Speichern</button></div>');
+  const ok = async () => {
+    const v = document.getElementById('pf-vn').value.trim(), n = document.getElementById('pf-nn').value.trim();
+    if (!v || !n) { document.getElementById('pf-err').textContent = 'Bitte Vorname und Nachname eingeben.'; return; }
+    try {
+      const r = await fetch('/api/profil', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vorname: v, nachname: n }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { document.getElementById('pf-err').textContent = j.error || 'Speichern ging nicht'; return; }
+      _profil = Object.assign(_profil || {}, { vorname: j.vorname, nachname: j.nachname });
+      m.style.display = 'none';
+      notify('Danke, ' + j.vorname + '!', 'ok');
+      if (weiter) weiter();
+    } catch (e) { document.getElementById('pf-err').textContent = 'Server nicht erreichbar'; }
+  };
+  document.getElementById('pf-ok').onclick = ok;
+  m.querySelectorAll('input').forEach(i => i.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') ok(); }));
+  setTimeout(() => document.getElementById(vn ? 'pf-nn' : 'pf-vn').focus(), 50);
+}
+// Beim Start einmal: angemeldet, kein Gast, Name fehlt → fragen
+setTimeout(async () => {
+  const p = await _profilLaden();
+  if (!p || p.gast || (p.vorname && p.nachname)) return;
+  if (p.dev && !/profilfrage/.test(location.search)) return;   // Entwicklung/Tests: nicht dazwischenfunken
+  _profilFrage();
+}, 1500);
+
+// ── Meine Dateien ─────────────────────────────────────────────────────────
+const _md = { daten: null, laedt: false };
+const _MD_MODELL = /\.(stl|step|stp|3mf|obj|glb|gltf|ply|svg|json)$/i;
+async function _mdOpen(){
+  if (!_profil) await _profilLaden();
+  if (_profil && _profil.gast) { notify('Gäste haben keinen eigenen Ordner — bitte mit eigenem Konto anmelden', 'w'); return; }
+  if (_profil && !(_profil.vorname && _profil.nachname)) { _profilFrage(_mdOpen); return; }
+  _mdRender(); _mdLaden();
+}
+function _mdClose(){ const m = document.getElementById('md-modal'); if (m) m.style.display = 'none'; }
+async function _mdLaden(){
+  _md.laedt = true; _mdRender();
+  try {
+    const r = await fetch('/api/dateien', { credentials: 'same-origin' });
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 409 && j.name_fehlt) { _mdClose(); _profilFrage(_mdOpen); return; }
+    if (!r.ok) throw new Error(j.error || ('Fehler ' + r.status));
+    _md.daten = j; _md.fehler = null;
+  } catch (e) { _md.fehler = e.message || String(e); }
+  _md.laedt = false; _mdRender();
+}
+function _mdGroesse(b){ return b > 1048576 ? (b / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB'; }
+function _mdIcon(d){
+  if (/^image\//.test(d.typ)) return null;
+  if (/\.svg$/i.test(d.name)) return '✒️';
+  if (/\.(stl|3mf|obj|glb|gltf|ply|step|stp)$/i.test(d.name)) return '🧊';
+  if (/pdf$/.test(d.typ)) return '📄';
+  return '📎';
+}
+function _mdRender(){
+  const D = _md.daten, btn = 'class="btn" style="padding:4px 9px;font-size:12px"';
+  let liste = '';
+  if (_md.fehler) liste = '<div style="color:#dc2626;padding:10px 0">' + _mdEsc(_md.fehler) + '</div>';
+  else if (!D) liste = '<div style="color:#6b7280;padding:10px 0">Lade …</div>';
+  else if (!D.dateien.length) liste = '<div style="color:#6b7280;padding:14px 0;text-align:center">Noch keine Dateien. Zieh welche hier herein oder lade sie vom Handy hoch.</div>';
+  else liste = D.dateien.map(d => {
+    const ic = _mdIcon(d), src = '/api/dateien/datei?fid=' + d.fid;
+    const bild = ic ? '<div style="width:44px;height:44px;display:flex;align-items:center;justify-content:center;font-size:24px;background:#f3f4f6;border-radius:6px">' + ic + '</div>'
+                    : '<img src="' + src + '" loading="lazy" style="width:44px;height:44px;object-fit:cover;border-radius:6px;background:#f3f4f6">';
+    const dat = new Date(d.erstellt * 1000).toLocaleDateString('de-DE');
+    return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #f1f5f9">' + bild +
+      '<div style="flex:1;min-width:0"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + _mdEsc(d.name) + '">' + _mdEsc(d.name) + '</div>' +
+      '<div style="color:#6b7280;font-size:11px">' + _mdGroesse(d.groesse) + ' · ' + dat + (d.von && d.von !== 'V3D CAD' ? ' · vom Handy (' + _mdEsc(d.von) + ')' : '') + '</div></div>' +
+      '<button class="btn md-open" data-fid="' + d.fid + '" style="padding:4px 10px;font-size:12px;background:#F97316;color:#fff;border-color:#F97316;font-weight:700" onclick="_mdOeffnen(\'' + d.fid + '\')">Öffnen</button>' +
+      '<a ' + btn + ' href="' + src + '" download title="Herunterladen">⬇</a>' +
+      '<button ' + btn + ' title="Löschen" onclick="_mdLoeschen(\'' + d.fid + '\')">🗑</button></div>';
+  }).join('');
+  const link = D && D.link;
+  const handy = link ? '<div style="display:flex;gap:12px;align-items:center;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin:10px 0">' +
+      '<div id="md-qr" style="flex:0 0 auto"></div><div style="flex:1;min-width:0"><div style="font-weight:700;margin-bottom:3px">📱 Vom Handy hochladen</div>' +
+      '<div style="color:#6b7280;margin-bottom:6px">QR-Code scannen oder Link aufs Handy schicken — dort Fotos wählen, sie landen hier in deinem Ordner.</div>' +
+      '<div style="display:flex;gap:6px"><input id="md-link" readonly value="' + _mdEsc(link) + '" style="flex:1;min-width:0;padding:4px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:11px"><button ' + btn + ' onclick="_mdKopieren()">Kopieren</button></div></div></div>' : '';
+  const m = _mdModal('md-modal',
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px"><div style="font-size:16px;font-weight:700;flex:1">📥 Meine Dateien</div>' +
+    '<button ' + btn + ' title="Neu laden (z. B. nach dem Hochladen vom Handy)" onclick="_mdLaden()">↻</button><button ' + btn + ' onclick="_mdClose()" title="Schließen">✕</button></div>' +
+    '<div style="color:#6b7280;margin-bottom:8px">Ordner: <b>' + _mdEsc(D ? D.ordner : '…') + '</b> — Bilder (z. B. für die Christbaumkugel), SVGs und Modelle ablegen und hier weiterbearbeiten.</div>' +
+    '<div id="md-drop" style="border:2px dashed #cbd5e1;border-radius:9px;padding:14px;text-align:center;color:#475569;cursor:pointer" onclick="document.getElementById(\'md-file\').click()">' +
+      (_md.hoch ? '⏳ ' + _mdEsc(_md.hoch) : '⬆ Dateien hierher ziehen oder <u>auswählen</u>') + '</div>' +
+    '<input type="file" id="md-file" multiple style="display:none" onchange="_mdHochladen(this.files);this.value=\'\'">' +
+    handy + '<div>' + liste + '</div>');
+  m.onclick = e => { if (e.target === m) _mdClose(); };
+  const dz = document.getElementById('md-drop');
+  dz.ondragover = e => { e.preventDefault(); e.stopPropagation(); dz.style.borderColor = '#F97316'; };
+  dz.ondragleave = () => { dz.style.borderColor = '#cbd5e1'; };
+  dz.ondrop = e => { e.preventDefault(); e.stopPropagation(); dz.style.borderColor = '#cbd5e1'; _mdHochladen(e.dataTransfer.files); };
+  if (link && typeof qrcode === 'function') {
+    try { const qr = qrcode(0, 'M'); qr.addData(link); qr.make(); document.getElementById('md-qr').innerHTML = qr.createSvgTag({ cellSize: 3, margin: 0 }); } catch (e) {}
+  }
+}
+function _mdKopieren(){
+  const i = document.getElementById('md-link'); if (!i) return;
+  (navigator.clipboard ? navigator.clipboard.writeText(i.value) : Promise.reject()).then(() => notify('Link kopiert', 'ok'),
+    () => { i.select(); document.execCommand('copy'); notify('Link kopiert', 'ok'); });
+}
+async function _mdHochladen(files){
+  files = Array.from(files || []); if (!files.length) return;
+  let ok = 0;
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    _md.hoch = 'Lade hoch: ' + f.name + (files.length > 1 ? ' (' + (i + 1) + '/' + files.length + ')' : ''); _mdRender();
+    try {
+      const r = await fetch('/api/dateien/hochladen', { method: 'POST', credentials: 'same-origin', body: f,
+        headers: { 'X-Filename': encodeURIComponent(f.name), 'X-Typ': f.type || '' } });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { notify(f.name + ': ' + (j.error || 'Hochladen ging nicht'), 'w'); continue; }
+      ok++;
+    } catch (e) { notify(f.name + ': Server nicht erreichbar', 'w'); }
+  }
+  _md.hoch = null;
+  if (ok) notify(ok + ' Datei' + (ok > 1 ? 'en' : '') + ' hochgeladen', 'ok');
+  _mdLaden();
+}
+async function _mdLoeschen(fid){
+  const d = _md.daten && _md.daten.dateien.find(x => x.fid === fid); if (!d) return;
+  if (!confirm('„' + d.name + '“ aus deinem Ordner löschen?')) return;
+  const r = await fetch('/api/dateien/loeschen', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fid }) });
+  if (!r.ok) notify('Löschen ging nicht', 'w');
+  _mdLaden();
+}
+// Öffnen = wie Hineinziehen: Bild → Auswahl (Lithophan/Kugel, Gravur, Relief …),
+// SVG/STL/3MF/STEP/… → normaler Import. Anderes wird heruntergeladen.
+async function _mdOeffnen(fid){
+  const d = _md.daten && _md.daten.dateien.find(x => x.fid === fid); if (!d) return;
+  const istBild = _IMG_OK.test(d.typ || '') || /\.(png|jpe?g|webp)$/i.test(d.name);
+  if (!istBild && !_MD_MODELL.test(d.name)) {
+    notify('„' + d.name + '“ kann V3D CAD nicht öffnen — wird heruntergeladen', 'w');
+    const a = document.createElement('a'); a.href = '/api/dateien/datei?fid=' + fid; a.download = d.name; a.click(); return;
+  }
+  try {
+    const r = await fetch('/api/dateien/datei?fid=' + fid, { credentials: 'same-origin' });
+    if (!r.ok) throw new Error('Datei nicht gefunden');
+    const blob = await r.blob();
+    const typ = istBild ? (_IMG_OK.test(d.typ || '') ? d.typ : (/\.png$/i.test(d.name) ? 'image/png' : /\.webp$/i.test(d.name) ? 'image/webp' : 'image/jpeg')) : (d.typ || '');
+    const file = new File([blob], d.name, { type: typ });
+    _mdClose();
+    if (istBild) _imgChoose(file);
+    else handleImport({ target: { files: [file], value: '' } });
+  } catch (e) { notify('Öffnen ging nicht: ' + (e.message || e), 'w'); }
+}
+
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.301';
+const VOLME3D_VERSION = '1.18.302';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.302', date:'2026-11-02', changes:[
+    ['📥','<b>Meine Dateien: eigener Ordner für Bilder, SVGs und Modelle.</b> Unter <i>Import</i> (und im ☰ Menü) gibt es <b>📥 Meine Dateien</b>. Dort lädst du Fotos, SVGs, STL, 3MF oder STEP hoch, per Hineinziehen oder vom <b>Handy über den QR-Code</b>, und öffnest sie mit einem Klick in V3D CAD. Ein Foto landet in der Bild-Auswahl (z. B. Lithophan-Kugel für die Christbaumkugel), ein SVG im SVG-Import, ein Modell im normalen Import. Die Dateien bleiben im Ordner, bis du sie löschst (bis 2 GB).'],
+    ['👋','<b>Vorname und Nachname.</b> Bei der Registrierung werden jetzt Vor- und Nachname abgefragt. Wer schon ein Konto hat, wird einmal beim Start danach gefragt (bei Google-Anmeldung ist der Name vorausgefüllt). Der Name benennt auch deinen Ordner unter „Meine Dateien“.'],
+  ]},
   { version:'1.18.301', date:'2026-11-02', changes:[
     ['☁','<b>Behoben: „Wartet auf Internet“ blieb stehen.</b> War man schon angemeldet, startete der Abgleich mit der Cloud manchmal nicht, und neue Designs wurden nicht hochgeladen. Jetzt wird der Abgleich nachgeholt und alles Wartende sofort hochgeladen.'],
   ]},
