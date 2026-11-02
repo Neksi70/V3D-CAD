@@ -107,6 +107,57 @@ class TestImport(unittest.TestCase):
         with self.assertRaises(erp.Fehler):
             self.imp("kunden", self.datei("x.csv", "Name;Ort\nA;B\n"))
 
+    def test_artikel_bericht_utf16_wie_myfactory(self):
+        """Artikelbericht aus myfactory: UTF-16, „sep=;“, Kurzbezeichnung statt Bezeichnung, Artikeltyp, Steuerklasse, ein einzelnes \"."""
+        lang = "Musterring verlesen und verpacken mit sehr langer Kurzbezeichnung"
+        p = self.datei("report.csv",
+                       "sep=;\r\n"
+                       "Artikelnr.;Kurzbezeichnung;Artikeltyp;Artikelgruppe;BME;Steuerklasse;Preiseinheit;Hauptlager;Lagerbestand;Interner Wert;VME\r\n"
+                       "M-100;Musterbuchse Ø10 honen;Stückliste;Honen;Stk;1;1,00;Standardlager;0,00;0,00;\r\n"
+                       "RM-100;Musterbuchse Ø10 honen (Rohmaterial);Rohstoff;Honen;Stk;1;1,00;Standardlager;12.345,00;0,00;\r\n"
+                       "E-1;Musterbohrer 5 mm;Eigenbedarf;Allgemein;Stk;1;1,00;Standardlager;5,00;19,90;\r\n"
+                       "M-200;\"" + lang + "; 10% prüfen\";Stückliste;Verlesen;Stk;1;1,00;Standardlager;0,00;0,00;\r\n"
+                       "WN 1;\"Musterwerkzeug 2,5 Linksdrall;Handelsartikel;Allgemein;Stk;1;1,00;Standardlager;0,00;0,00;\r\n"
+                       "D-1;Konstruktion;Dienstleistung;Allgemein;Stk;1;1,00;Standardlager;0,00;0,00;\r\n", "utf-16")
+        st = self.imp("artikel", p)
+        self.assertEqual((st["neu"], st["fehler"]), (6, 0), self.log)
+        a = lambda nr: erp.artikel_lesen(self.db, self.db.execute("SELECT id FROM artikel WHERE artikelnr=?", (nr,)).fetchone()["id"])
+        lohn, roh, eigen, hub, wn, dl = a("M-100"), a("RM-100"), a("E-1"), a("M-200"), a("WN 1"), a("D-1")
+        self.assertEqual((lohn["lagerfuehrung"], lohn["steuer_pct"], lohn["gruppe"]), (0, 19, "Honen"))
+        self.assertEqual([x["text"] for x in lohn["arbeitsplan_liste"]], ["Honen"])            # Artikelgruppe = Arbeitsgang
+        self.assertEqual((roh["lagerfuehrung"], roh["bestand"]), (0, 0))                        # Kundenmaterial nicht ins eigene Lager
+        self.assertIn("12.345", roh["memo"])
+        self.assertEqual(roh["arbeitsplan_liste"], [])
+        self.assertEqual((eigen["lagerfuehrung"], eigen["bestand"], eigen["ek_preis"]), (1, 5, 19.9))
+        self.assertEqual(eigen["arbeitsplan_liste"], [])                                         # „Allgemein“ ist kein Arbeitsgang
+        self.assertEqual(hub["bezeichnung"], lang + "; 10% prüfen")
+        self.assertEqual(len(hub["kurz"]), 30)
+        self.assertEqual(wn["bezeichnung"], "Musterwerkzeug 2,5 Linksdrall")                      # einzelnes \" entfernt
+        self.assertEqual((wn["lagerfuehrung"], dl["lagerfuehrung"]), (1, 0))
+        self.assertNotIn("Musterbuchse", " ".join(self.log))
+        # erneuter Import: von Hand gepflegter Arbeitsplan und Notiz bleiben
+        erp.artikel_speichern(self.db, dict(lohn, arbeitsplan=[{"text": "Vorhonen"}, {"text": "Honen"}], memo="eigene Notiz"))
+        st = self.imp("artikel", p)
+        self.assertEqual(st["aktualisiert"], 6)
+        l2 = a("M-100")
+        self.assertEqual([x["text"] for x in l2["arbeitsplan_liste"]], ["Vorhonen", "Honen"])
+        self.assertEqual(l2["memo"], "eigene Notiz")
+
+    def test_adressen_ohne_kundennummer(self):
+        """Adressbericht ohne Kunden-/Lieferantennummer: Nummer wird vergeben, Wiedererkennung über die Adressnummer."""
+        inhalt = ("Adressnummer;Kurzbezeichnung;Name;Straße;PLZ;Ort;Land;Telefon;E-Mail;Notiz;Rolle;Prüfen\n"
+                  "AD09990;TESTSINTER;Testsinter GmbH;Weg 1;12345;Musterstadt;DE;01234 5;info@testsinter.example;www.testsinter.example;kunde;\n"
+                  "AD09991;ZWEITER;Zweiter Kunde;;;;DE;;;;kunde;\n")
+        p = self.datei("kunden.csv", inhalt, "utf-8-sig")
+        st = self.imp("kunden", p)
+        self.assertEqual((st["neu"], st["fehler"]), (2, 0), self.log)
+        a = erp.adressen_liste(self.db, "Testsinter")[0]
+        self.assertEqual((a["kundennr"], a["adressnr"]), ("10000", "AD09990"))
+        self.assertEqual(erp.adresse_lesen(self.db, a["id"])["notiz"], "www.testsinter.example")
+        st = self.imp("kunden", p)
+        self.assertEqual((st["neu"], st["aktualisiert"]), (0, 2))
+        self.assertEqual(self.db.execute("SELECT COUNT(*) c FROM kunde").fetchone()["c"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
