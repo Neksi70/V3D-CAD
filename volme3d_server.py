@@ -35,7 +35,25 @@ MIMI_OEFFENTLICH = os.environ.get('V3D_MIMI_OEFFENTLICH') or 'https://v3da.tailf
 MIMI_MAX_DATEI = 300 * 1024 * 1024
 
 
+# Auf netcup läuft kein Mimi share: dort steht in ~/.config/volme3d/mimi.json
+# {"url": "https://v3da.tailf05fe9.ts.net/teilen", "schluessel": "…"} — der
+# Weg über den Funnel; /intern/cad/* schützt allein der Schlüssel.
+MIMI_CONF = os.path.expanduser('~/.config/volme3d/mimi.json')
+
+
+def _mimi_conf():
+    try:
+        with open(MIMI_CONF) as f:
+            c = json.load(f)
+        return (c.get('url') or MIMI_URL).rstrip('/'), (c.get('schluessel') or '').strip()
+    except (OSError, ValueError):
+        return MIMI_URL.rstrip('/'), ''
+
+
 def _mimi_key():
+    k = _mimi_conf()[1]
+    if k:
+        return k
     try:
         with open(MIMI_KEYFILE) as f:
             return f.read().strip()
@@ -45,8 +63,12 @@ def _mimi_key():
 
 def _mimi(method, path, body=None, headers=None, stream_len=None, timeout=60):
     """Anfrage an Mimi share → (status, http.client.HTTPResponse, conn)."""
-    u = urllib.parse.urlsplit(MIMI_URL)
-    conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+    u = urllib.parse.urlsplit(_mimi_conf()[0])
+    if u.scheme == 'https':
+        conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout)
+    else:
+        conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+    path = (u.path or '').rstrip('/') + path
     h = {'X-V3D-CAD': _mimi_key()}
     h.update(headers or {})
     if stream_len is not None:
