@@ -371,6 +371,31 @@ body.devmode .dev-only{display:flex!important}
 .btn.sub:hover{border-color:var(--red);color:var(--red);background:#fff0f0}
 .btn:disabled{opacity:.55;cursor:not-allowed;border-color:var(--border);color:var(--dim)}
 #stl-wrap{position:relative;display:flex}
+#tbr .uh-spl{padding:5px 6px;margin-left:-3px}
+#uh-tip{position:fixed;z-index:7000;width:260px;background:#1f2329;color:#e6e8eb;border:1px solid #3a3f47;border-radius:10px;padding:9px 11px;font:12px/1.4 system-ui,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.4);display:none;pointer-events:none}
+#uh-tip.show{display:block}
+#uh-tip img{display:block;width:100%;border-radius:6px;margin-top:3px;background:#10141c}
+#uh-tip .uh-k,#uh-liste .uh-kopf span{color:#9aa0a8;font-size:11px}
+#uh-tip .uh-t{font-weight:700;font-size:13px}
+#uh-tip .uh-h,#uh-liste .uh-h{color:#c7cdd6;font-size:11px}
+#uh-liste{position:fixed;z-index:7000;width:550px;max-width:96vw;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.25);font:12px/1.35 system-ui,sans-serif;overflow:hidden}
+#uh-liste .uh-kopf{padding:9px 12px;border-bottom:1px solid var(--border);font-weight:800;font-size:13px;display:flex;gap:10px;align-items:baseline}
+#uh-liste .uh-cols{display:flex;max-height:min(62vh,520px)}
+#uh-liste .uh-scroll{flex:1;overflow-y:auto;min-width:0}
+#uh-liste .uh-gross{width:230px;flex-shrink:0;border-left:1px solid var(--border);padding:10px;color:var(--dim);font-size:11px;background:#f7f8fa}
+#uh-liste .uh-gross img{width:100%;border-radius:7px;margin-top:6px;background:#10141c}
+#uh-liste .uh-z{display:flex;gap:8px;padding:6px 12px;cursor:pointer;border-bottom:1px solid #f0f1f3;align-items:flex-start}
+#uh-liste .uh-z:hover{background:#fff4ea}
+#uh-liste .uh-z.redo{opacity:.55}
+#uh-liste .uh-z.redo:hover{opacity:1}
+#uh-liste .uh-i{width:20px;text-align:center;flex-shrink:0}
+#uh-liste .uh-m{display:flex;flex-direction:column;min-width:0}
+#uh-liste .uh-t{font-weight:600;overflow:hidden;text-overflow:ellipsis}
+#uh-liste .uh-h{color:#6b7280}
+#uh-liste .uh-w{color:#9aa0a8;font-size:10px}
+#uh-liste .uh-jetzt{padding:6px 12px;font-weight:800;color:var(--acc,#ff7a1a);background:#fff8f2;border-bottom:1px solid #f0f1f3}
+#uh-liste .uh-leer{padding:14px 12px;color:var(--dim)}
+@media (max-width:640px){#uh-liste .uh-gross{display:none}}
 #stl-wrap .main-stl{border-radius:var(--rs) 0 0 var(--rs)}
 #stl-wrap .spl{padding:5px 7px;border-left:1px solid rgba(255,255,255,.35);border-radius:0 var(--rs) var(--rs) 0}
 #stl-menu{display:none;position:absolute;right:0;top:calc(100% + 4px);background:var(--white);border:1px solid var(--border);border-radius:var(--rs);box-shadow:var(--shm);z-index:300;min-width:170px}
@@ -1612,8 +1637,9 @@ const firebaseConfig = {
     <div id="tbr">
       <div id="snp" onclick="cycleSnap()"><div id="sdot"></div><span id="slbl">SNAP AUS</span></div>
       <div class="sep"></div>
-      <button class="btn" id="btn-undo" onclick="undo()" title="Strg+Z">↩ Rückgängig</button>
-      <button class="btn" id="btn-redo" onclick="redo()" title="Strg+Y">↪ Wiederholen</button>
+      <button class="btn" id="btn-undo" onclick="undo()" title="Strg+Z" onmouseenter="_uhTip('undo',this)" onmouseleave="_uhTipZu()">↩ Rückgängig</button>
+      <button class="btn uh-spl" id="btn-undo-list" onclick="_uhListeAuf(event)" title="Verlauf: alle Schritte mit Vorschau – anklicken springt dorthin">▾</button>
+      <button class="btn" id="btn-redo" onclick="redo()" title="Strg+Y" onmouseenter="_uhTip('redo',this)" onmouseleave="_uhTipZu()">↪ Wiederholen</button>
       <button class="btn red" onclick="deleteSelected()" title="Del">🗑</button>
       <div id="stl-wrap">
         <button class="btn pri main-stl" onclick="exportSTL()" title="STL herunterladen — bei Auswahl nur die markierten Objekte, sonst alle">⬇ Export</button>
@@ -37129,7 +37155,8 @@ function _l3ApplySmooth(on){
 let _sceneRev = 0;   // zählt Änderungs-Checkpoints (Auto-Speichern erkennt daran „nichts passiert")
 function saveUndo() {
   _sceneRev++;
-  undoStack.push(objects.map(o => objectToData(o, 'undo')));
+  undoStack.push(_uhSnap());
+  _uhLiveMeta = null;
   if (undoStack.length > 50) undoStack.shift();
   redoStack = [];
   _trimUndoBudget();
@@ -37167,6 +37194,8 @@ function updateUndoRedoButtons() {
   const btnRedo = document.getElementById('btn-redo');
   if (btnUndo) btnUndo.disabled = undoStack.length === 0;
   if (btnRedo) btnRedo.disabled = redoStack.length === 0;
+  const bl = document.getElementById('btn-undo-list'); if (bl) bl.disabled = !undoStack.length && !redoStack.length;
+  if (_uhListe) _uhListeRender();
 }
 
 function restoreState(stateArr) {
@@ -37183,18 +37212,195 @@ function restoreState(stateArr) {
 
 function undo() {
   if (!undoStack.length) { notify('Nichts mehr', 'w'); return; }
-  if (_undoDebTimer !== null) { clearTimeout(_undoDebTimer); _undoDebTimer = null; }
-  redoStack.push(objects.map(o => objectToData(o, 'undo')));
-  restoreState(undoStack.pop());
-  notify('Undo', 'ok');
+  _uhSprung('undo', 1);
 }
 
 function redo() {
   if (!redoStack.length) { notify('Nichts', 'w'); return; }
+  _uhSprung('redo', 1);
+}
+
+// ═══ FEINER VERLAUF: Beschriftung + Vorschaubild je Schritt (_uh*) ═══════════
+// Jeder Schnappschuss im Verlauf (Array von objectToData) trägt _meta = {t, thumb,
+// hint}: Zeit, kleines Bild der Ansicht VOR der Aktion (= wo Rückgängig landet)
+// und die Erfolgsmeldung der Aktion. Was eine Aktion getan hat, wird nicht an den
+// ~200 saveUndo-Stellen beschriftet, sondern beim Anzeigen aus dem Vergleich zweier
+// Nachbar-Schnappschüsse abgeleitet (hinzugefügt/gelöscht/verschoben/…).
+let _uhThumbMs = 0, _uhThumbSkip = 0;
+let _uhLiveMeta = null;   // Meta des Stands, der gerade in der Szene steht (nach einem Sprung: Hinweis zur Folge-Aktion)
+function _uhThumb() {
+  try {
+    if (!renderer || !camera) return null;
+    if (_uhThumbMs > 120 && _uhThumbSkip++ % 8) return null;   // sehr große Szenen: nur gelegentlich
+    const t0 = performance.now();
+    renderer.render(scene, camera);
+    const src = renderer.domElement, w = 240, h = Math.max(60, Math.round(w * src.height / Math.max(1, src.width)));
+    const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+    cv.getContext('2d').drawImage(src, 0, 0, w, h);
+    const url = cv.toDataURL('image/jpeg', 0.62);
+    _uhThumbMs = performance.now() - t0;
+    return url;
+  } catch (e) { return null; }
+}
+function _uhSnap(mitHinweis) {   // aktueller Stand als Verlaufs-Eintrag (mit Bild)
+  const s = objects.map(o => objectToData(o, 'undo'));
+  s._meta = { t: Date.now(), thumb: _uhThumb(), hint: mitHinweis && _uhLiveMeta ? _uhLiveMeta.hint : null };
+  return s;
+}
+// Mehrere Schritte auf einmal: Zwischenstände wandern ohne Neuaufbau in den
+// Gegen-Stapel, nur der Zielstand wird einmal aufgebaut.
+function _uhSprung(art, n) {
+  const von = art === 'undo' ? undoStack : redoStack, nach = art === 'undo' ? redoStack : undoStack;
+  n = Math.max(1, Math.min(n | 0, von.length));
+  if (!n) return;
   if (_undoDebTimer !== null) { clearTimeout(_undoDebTimer); _undoDebTimer = null; }
-  undoStack.push(objects.map(o => objectToData(o, 'undo')));
-  restoreState(redoStack.pop());
-  notify('Redo', 'ok');
+  const label = _uhLabelAt(art, 0);
+  nach.push(_uhSnap(true));
+  let ziel = von.pop();
+  for (let i = 1; i < n; i++) { nach.push(ziel); ziel = von.pop(); }
+  _uhLiveMeta = ziel._meta || null;
+  restoreState(ziel);
+  _uhTipZu();
+  if (_uhListe) _uhListeRender();
+  notify((art === 'undo' ? '↩ ' : '↪ ') + (n > 1 ? n + ' Schritte' : (label ? label.text : (art === 'undo' ? 'Rückgängig' : 'Wiederholt'))), 'ok');
+}
+// Erfolgsmeldung kurz nach einem Checkpoint = Beschreibung der Aktion
+function _uhHint(msg, type) {
+  if (type && type !== 'ok') return;
+  const top = undoStack[undoStack.length - 1];
+  if (!top || !top._meta || top._meta.hint || Date.now() - top._meta.t > 4000) return;
+  const m = String(msg || '').trim();
+  if (!m || /^(↩|↪|Undo|Redo|Nichts|Gespeichert|Automatisch gespeichert|Neue Szene)/.test(m)) return;
+  top._meta.hint = m.length > 90 ? m.slice(0, 88) + '…' : m;
+}
+function _uhGleich(a, b) {
+  if (a === b) return true;
+  if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) < 1e-6;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  try { const x = JSON.stringify(a); return x.length < 40000 && x === JSON.stringify(b); } catch (e) { return false; }
+}
+// Was hat die Aktion von Stand a nach Stand b getan? → {icon, text}
+function _uhDiff(a, b) {
+  const nm = d => '„' + (d.name || 'Teil') + '“';
+  const A = new Map(a.map(d => [d.id, d])), B = new Map(b.map(d => [d.id, d]));
+  const neu = b.filter(d => !A.has(d.id)), weg = a.filter(d => !B.has(d.id));
+  const liste = (arr, max) => arr.slice(0, max).map(nm).join(', ') + (arr.length > max ? ' …' : '');
+  if (neu.length && weg.length) {
+    if (neu.length === 1 && weg.length >= 2) return { icon: '🔗', text: weg.slice(0, 3).map(nm).join(' + ') + (weg.length > 3 ? ' …' : '') + ' → ' + nm(neu[0]) };
+    if (neu.length === 1 && weg.length === 1) return { icon: '🛠', text: nm(weg[0]) + (weg[0].name === neu[0].name ? ' umgebaut' : ' → ' + nm(neu[0])) };
+    return { icon: '🛠', text: weg.length + ' Teile durch ' + neu.length + ' ersetzt' };
+  }
+  if (neu.length) return { icon: '➕', text: neu.length === 1 ? nm(neu[0]) + ' hinzugefügt' : neu.length + ' Teile hinzugefügt (' + liste(neu, 2) + ')' };
+  if (weg.length) return { icon: '🗑', text: weg.length === 1 ? nm(weg[0]) + ' gelöscht' : weg.length + ' Teile gelöscht (' + liste(weg, 2) + ')' };
+  const ART = [['verschoben', ['px', 'py', 'pz'], '✥'], ['gedreht', ['rx', 'ry', 'rz'], '⟳'], ['Größe geändert', ['sx', 'sy', 'sz'], '⤢'],
+               ['Form geändert', ['geometry'], '✏️'], ['Farbe geändert', ['color'], '🎨'], ['Bohrung/Körper umgeschaltet', ['isHole'], '◐'],
+               ['ein-/ausgeblendet', ['hidden'], '👁'], ['umbenannt', ['name'], '✎']];
+  const bekannt = new Set(ART.flatMap(x => x[1]).concat(['id']));
+  const geaendert = [], arten = new Set();
+  for (const db of b) {
+    const da = A.get(db.id); if (!da) continue;
+    const k = [];
+    for (const [wort, keys] of ART) if (keys.some(key => !_uhGleich(da[key], db[key]))) k.push(wort);
+    if (!k.length) {
+      const keys = new Set([...Object.keys(da), ...Object.keys(db)]);
+      for (const key of keys) if (!bekannt.has(key) && !_uhGleich(da[key], db[key])) { k.push('bearbeitet'); break; }
+    }
+    if (k.length) { geaendert.push({ d: db, k }); k.forEach(x => arten.add(x)); }
+  }
+  if (!geaendert.length) {
+    if (a.length !== b.length || a.some((d, i) => b[i] && d.id !== b[i].id)) return { icon: '↕', text: 'Reihenfolge geändert' };
+    return { icon: '·', text: 'keine sichtbare Änderung' };
+  }
+  const ersteArt = [...arten][0], icon = (ART.find(x => x[0] === ersteArt) || [, , '✏️'])[2];
+  const was = [...arten].slice(0, 2).join(' + ');
+  if (geaendert.length === 1) return { icon, text: nm(geaendert[0].d) + ' ' + was };
+  return { icon, text: geaendert.length + ' Teile ' + was };
+}
+// Beschriftung des i-ten Schritts von oben (0 = der nächste Klick).
+// undo: Aktion zwischen undoStack[k] und dem Stand danach; redo: zwischen Stand davor und redoStack[k].
+function _uhLabelAt(art, i) {
+  const live = () => objects.map(o => objectToData(o, 'undo'));
+  if (art === 'undo') {
+    const k = undoStack.length - 1 - i; if (k < 0) return null;
+    const danach = k + 1 < undoStack.length ? undoStack[k + 1] : live();
+    const meta = undoStack[k]._meta || {};
+    return Object.assign(_uhDiff(undoStack[k], danach), { hint: meta.hint, t: meta.t, thumb: meta.thumb });
+  }
+  const k = redoStack.length - 1 - i; if (k < 0) return null;
+  const davor = k + 1 < redoStack.length ? redoStack[k + 1] : live();
+  const meta = redoStack[k]._meta || {};
+  // Hinweistext gehört zur Aktion: beim Rückgängigmachen lag er am Vorher-Stand
+  const dm = k + 1 < redoStack.length ? davor._meta : _uhLiveMeta;
+  return Object.assign(_uhDiff(davor, redoStack[k]), { hint: (dm || {}).hint, t: meta.t, thumb: meta.thumb });
+}
+function _uhEsc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function _uhWann(t) {
+  if (!t) return '';
+  const s = Math.round((Date.now() - t) / 1000);
+  return s < 60 ? 'gerade eben' : s < 3600 ? 'vor ' + Math.round(s / 60) + ' Min.' : new Date(t).toLocaleTimeString('de', { hour: '2-digit', minute: '2-digit' });
+}
+// ── Hover über ↩/↪: wohin geht's? ──
+let _uhTipEl = null, _uhTipTimer = null;
+function _uhTip(art, btn) {
+  clearTimeout(_uhTipTimer);
+  _uhTipTimer = setTimeout(() => {
+    const L = _uhLabelAt(art, 0); if (!L || btn.disabled) return;
+    if (!_uhTipEl) { _uhTipEl = document.createElement('div'); _uhTipEl.id = 'uh-tip'; document.body.appendChild(_uhTipEl); }
+    _uhTipEl.innerHTML = '<div class="uh-k">' + (art === 'undo' ? '↩ Rückgängig macht' : '↪ Wiederholen macht wieder') + '</div>'
+      + '<div class="uh-t">' + L.icon + ' ' + _uhEsc(L.text) + '</div>' + (L.hint ? '<div class="uh-h">' + _uhEsc(L.hint) + '</div>' : '')
+      + (art === 'undo' && L.thumb ? '<div class="uh-k" style="margin-top:6px">So sieht es danach aus:</div><img src="' + L.thumb + '">' : '')
+      + '<div class="uh-k" style="margin-top:5px">' + (art === 'undo' ? undoStack.length : redoStack.length) + ' Schritt(e) verfügbar · ▾ zeigt alle</div>';
+    const r = btn.getBoundingClientRect();
+    _uhTipEl.style.left = Math.max(8, Math.min(innerWidth - 268, r.left)) + 'px'; _uhTipEl.style.top = (r.bottom + 6) + 'px';
+    _uhTipEl.classList.add('show');
+  }, 300);
+}
+function _uhTipZu() { clearTimeout(_uhTipTimer); if (_uhTipEl) _uhTipEl.classList.remove('show'); }
+// ── Verlaufsliste (▾) ──
+let _uhListe = null;
+function _uhListeAuf(ev) {
+  if (ev) ev.stopPropagation();
+  _uhTipZu();
+  if (_uhListe) { _uhListeZu(); return; }
+  _uhListe = document.createElement('div'); _uhListe.id = 'uh-liste';
+  document.body.appendChild(_uhListe);
+  const btn = document.getElementById('btn-undo-list') || document.getElementById('btn-undo');
+  const r = btn.getBoundingClientRect();
+  _uhListe.style.top = (r.bottom + 6) + 'px'; _uhListe.style.left = Math.max(8, Math.min(innerWidth - 560, r.right - 330)) + 'px';
+  _uhListeRender();
+  setTimeout(() => { document.addEventListener('mousedown', _uhListeAussen, true); document.addEventListener('keydown', _uhListeEsc, true); }, 0);
+}
+function _uhListeAussen(e) { if (_uhListe && !_uhListe.contains(e.target) && e.target.id !== 'btn-undo-list') _uhListeZu(); }
+function _uhListeEsc(e) { if (e.key === 'Escape') { e.stopPropagation(); _uhListeZu(); } }
+function _uhListeZu() {
+  if (_uhListe) { _uhListe.remove(); _uhListe = null; }
+  document.removeEventListener('mousedown', _uhListeAussen, true); document.removeEventListener('keydown', _uhListeEsc, true);
+}
+function _uhListeRender() {
+  if (!_uhListe) return;
+  const zeile = (art, i, L) => '<div class="uh-z ' + art + '" data-art="' + art + '" data-n="' + (i + 1) + '" onmouseenter="_uhVorschau(this)" onclick="_uhSprung(\'' + art + '\',' + (i + 1) + ');_uhListeRender()">'
+    + '<span class="uh-i">' + L.icon + '</span><span class="uh-m"><span class="uh-t">' + _uhEsc(L.text) + '</span>'
+    + (L.hint ? '<span class="uh-h">' + _uhEsc(L.hint) + '</span>' : '') + '<span class="uh-w">' + _uhWann(L.t) + '</span></span></div>';
+  let h = '<div class="uh-kopf">🕘 Verlauf <span>Zeile anklicken = dorthin springen</span></div><div class="uh-cols"><div class="uh-scroll">';
+  // Wiederholen-Schritte oben (weiter weg = weiter oben), dann „Jetzt“, dann Rückgängig-Schritte
+  const R = []; for (let i = 0; i < redoStack.length; i++) R.push(zeile('redo', i, _uhLabelAt('redo', i)));
+  h += R.reverse().join('');
+  h += '<div class="uh-jetzt">● Jetzt</div>';
+  for (let i = 0; i < undoStack.length; i++) h += zeile('undo', i, _uhLabelAt('undo', i));
+  if (!undoStack.length && !redoStack.length) h += '<div class="uh-leer">Noch keine Schritte.</div>';
+  h += '</div><div class="uh-gross"><div id="uh-gross-txt">Maus über einen Schritt halten – hier erscheint der Stand, auf dem man landet.</div><img id="uh-gross-img" style="display:none"></div></div>';
+  _uhListe.innerHTML = h;
+  const j = _uhListe.querySelector('.uh-jetzt'); if (j) j.scrollIntoView({ block: 'center' });
+}
+// Großes Bild: Stand NACH dem Sprung. undo n → Bild von undoStack[len-n];
+// redo n → Stand nach der n-ten Wiederholung = Bild des Eintrags darunter (redoStack[len-n-1]) bzw. ohne Bild
+function _uhVorschau(el) {
+  const art = el.dataset.art, n = +el.dataset.n, img = document.getElementById('uh-gross-img'), txt = document.getElementById('uh-gross-txt');
+  let thumb = null;
+  if (art === 'undo') thumb = (undoStack[undoStack.length - n] || {})._meta?.thumb;
+  else { const s = redoStack[redoStack.length - n - 1]; thumb = s ? s._meta?.thumb : null; }
+  txt.textContent = (art === 'undo' ? n + ' Schritt' + (n > 1 ? 'e' : '') + ' zurück' : n + ' Schritt' + (n > 1 ? 'e' : '') + ' vor') + (thumb ? ' – so sieht es dann aus:' : ' – (kein Bild für diesen Stand)');
+  if (thumb) { img.src = thumb; img.style.display = ''; } else img.style.display = 'none';
 }
 
 function newScene() {
@@ -41717,6 +41923,7 @@ function _fernwartung() {
 // die muss mitgezogen werden, sonst nützt die längere Frist nichts.
 // Mauszeiger darüber hält die Meldung an, Klick schließt sie sofort.
 function notify(msg, type, ms) {
+  try { _uhHint(msg, type); } catch (e) {}
   const el = document.createElement('div');
   el.className = 'ni ' + (type || 'ok');
   el.textContent = msg;
@@ -76161,8 +76368,11 @@ async function _mdOeffnen(fid){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.304';
+const VOLME3D_VERSION = '1.18.305';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.305', date:'2026-11-03', spots:[{id:'verlauf',sel:'#btn-undo-list'}], changes:[
+    ['🕘','<b>Rückgängig zeigt jetzt, wo du landest.</b> Hältst du die Maus über <b>↩ Rückgängig</b>, siehst du, was zurückgenommen wird, zum Beispiel „„Box 1“ verschoben“ oder „„Zylinder 2“ gelöscht“, und ein kleines Bild vom Stand danach. Über <b>↪ Wiederholen</b> geht das genauso. Der neue Knopf <b>▾</b> neben Rückgängig öffnet den <b>Verlauf</b>: Alle Schritte stehen dort mit Beschreibung und Uhrzeit. Fährst du mit der Maus über eine Zeile, erscheint ein großes Vorschaubild. Ein Klick springt direkt dorthin, auch zehn Schritte auf einmal, und Wiederholen funktioniert danach weiter.'],
+  ]},
   { version:'1.18.304', date:'2026-11-02', changes:[
     ['🛠','<b>Behoben: Bambu Studio meldete „Invalid configuration file“</b> beim Öffnen der neuen Projekt-3MF (danach „keine Geometriedaten“). Die Datei enthält jetzt alle Angaben, die die Bambu-Oberfläche je Filament verlangt. In Bambu Studio 02.08 geprüft mit A1, X1 Carbon (zwei Farben) und H2D.'],
   ]},
