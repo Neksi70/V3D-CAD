@@ -567,6 +567,16 @@ def r_formular(art, **_):
     return {"formular": erp.formular(DB, art), "spalten": erp.SPALTEN, "bloecke": erp.BLOECKE}
 
 
+@route("POST", "/api/adressen/(?P<aid>\\d+)/zusammenfuehren")
+def r_adr_zusammen(aid, body, benutzer, **_):
+    return erp.adressen_zusammenfuehren(DB, aid, int(body.get("weg") or 0), benutzer)
+
+
+@route("POST", "/api/adressen/(?P<aid>\\d+)/rolle_entfernen")
+def r_adr_rolle_weg(aid, body, benutzer, **_):
+    return erp.rolle_entfernen(DB, aid, body.get("rolle"), benutzer)
+
+
 @route("GET", "/api/offene_lieferscheine")
 def r_offene_ls(q, **_):
     return erp.offene_lieferscheine(DB, int(q["adresse"]) if q.get("adresse") else None)

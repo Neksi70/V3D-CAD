@@ -188,7 +188,8 @@ FORMULAR_JE_ART = {
     "LS": {"preise": False, "bloecke": {"verpackung": True, "quittung": True, "gewicht": True},
            "spalten": [{"key": k, "titel": t, "an": k in ("pos", "artikelnr", "text", "menge", "me", "ausschuss")} for k, t in SPALTEN],
            "unterschriften": "Ware erhalten | Datum, Unterschrift Empfänger"},
-    "WK": {"preise": False}}
+    "WK": {"preise": False},
+    "AB": {"bloecke": {"arbeitsplan": True}}}           # GSB: Arbeitsgänge auf der Auftragsbestätigung, nicht auf dem LS
 
 
 def formular(db, belegart, aenderung=None):
@@ -408,6 +409,66 @@ def adresse_speichern(db, daten, benutzer=None):
                           zahlungsbed_id=excluded.zahlungsbed_id, unsere_kundennr=excluded.unsere_kundennr,
                           mindestbestellwert=excluded.mindestbestellwert""",
                        (aid, nr, lf.get("zahlungsbed_id"), lf.get("unsere_kundennr"), lf.get("mindestbestellwert")))
+    return adresse_lesen(db, aid)
+
+
+
+def adressen_zusammenfuehren(db, bleibt, weg, benutzer=None):
+    """Dublette auflösen: alles von `weg` (Belege, OP, Chargen, Projekte, Preise, Ansprechpartner, Dokumente,
+    Kennzeichen …) auf `bleibt` umhängen, leere Felder ergänzen, Rollen vereinen, `weg` löschen.
+    Kunden-/Lieferantennummer von `bleibt` gilt; fehlt dort eine Rolle, wird die von `weg` übernommen."""
+    bleibt, weg = int(bleibt), int(weg)
+    if bleibt == weg:
+        raise Fehler("Bitte zwei verschiedene Adressen wählen.")
+    a = zeile(db.execute("SELECT * FROM adresse WHERE id=?", (bleibt,)))
+    b = zeile(db.execute("SELECT * FROM adresse WHERE id=?", (weg,)))
+    if not a or not b:
+        raise Fehler("Adresse nicht gefunden.")
+    with transaktion(db):
+        ergaenzt = {f: b[f] for f in ADRESS_FELDER if f != "kurz" and not (a.get(f) or "").strip() and (b.get(f) or "").strip()}
+        if ergaenzt:
+            db.execute(f"UPDATE adresse SET {', '.join(f + '=?' for f in ergaenzt)} WHERE id=?", list(ergaenzt.values()) + [bleibt])
+        for rolle in ("kunde", "lieferant"):
+            hat_a = db.execute(f"SELECT 1 FROM {rolle} WHERE adresse_id=?", (bleibt,)).fetchone()
+            hat_b = db.execute(f"SELECT 1 FROM {rolle} WHERE adresse_id=?", (weg,)).fetchone()
+            if hat_b and not hat_a:
+                db.execute(f"UPDATE {rolle} SET adresse_id=? WHERE adresse_id=?", (bleibt, weg))
+            elif hat_b:
+                db.execute(f"DELETE FROM {rolle} WHERE adresse_id=?", (weg,))
+        tabellen = [r["name"] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        for t in tabellen:
+            if t in ("adresse", "kunde", "lieferant"):
+                continue
+            spalten = [r["name"] for r in db.execute(f"PRAGMA table_info({t})")]
+            for sp in ("adresse_id", "kunde_id", "lieferant_id", "hauptlieferant_id"):
+                if sp in spalten:
+                    try:
+                        db.execute(f"UPDATE {t} SET {sp}=? WHERE {sp}=?", (bleibt, weg))
+                    except sqlite3.IntegrityError:
+                        raise Fehler(f"Zusammenführen nicht möglich: doppelter Eintrag in {t} (z. B. gleiche Charge bei beiden Adressen).")
+        db.execute("UPDATE dokument SET objekt_id=? WHERE objekt='adresse' AND objekt_id=?", (bleibt, weg))
+        defs = [r["id"] for r in db.execute("SELECT id FROM kennzeichen_def WHERE objekt='adresse'")]
+        for d in defs:
+            if db.execute("SELECT 1 FROM kennzeichen_wert WHERE def_id=? AND objekt_id=?", (d, bleibt)).fetchone():
+                db.execute("DELETE FROM kennzeichen_wert WHERE def_id=? AND objekt_id=?", (d, weg))
+            else:
+                db.execute("UPDATE kennzeichen_wert SET objekt_id=? WHERE def_id=? AND objekt_id=?", (bleibt, d, weg))
+        db.execute("DELETE FROM adresse WHERE id=?", (weg,))
+        protokoll(db, benutzer, "adresse", bleibt, "zusammengeführt", {"aufgeloest": weg, "name": b["name1"], "ergaenzt": list(ergaenzt)})
+    return adresse_lesen(db, bleibt)
+
+
+def rolle_entfernen(db, aid, rolle, benutzer=None):
+    """Kunden- oder Lieferantenrolle entfernen – nur, wenn es dazu keine Belege gibt."""
+    if rolle not in ("kunde", "lieferant"):
+        raise Fehler("Unbekannte Rolle.")
+    bereich = "VK" if rolle == "kunde" else "EK"
+    if db.execute("""SELECT 1 FROM beleg b JOIN belegart ba ON ba.code=b.belegart WHERE b.adresse_id=?
+                     AND (CASE WHEN b.belegart='WK' THEN 'VK' ELSE ba.bereich END)=? LIMIT 1""", (aid, bereich)).fetchone():
+        raise Fehler(f"Es gibt {'Verkaufs' if rolle == 'kunde' else 'Einkaufs'}belege zu dieser Adresse – Rolle bleibt.")
+    with transaktion(db):
+        db.execute(f"DELETE FROM {rolle} WHERE adresse_id=?", (aid,))
+        protokoll(db, benutzer, "adresse", aid, f"Rolle {rolle} entfernt")
     return adresse_lesen(db, aid)
 
 

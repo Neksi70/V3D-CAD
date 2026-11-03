@@ -212,3 +212,20 @@ class TestGsbFormular(Basis):
         self.assertIn("Ausschuss", t)
         self.assertNotIn("Gesamtbetrag", t)
         self.assertIn(ls["nummer"], t)
+
+
+class TestDubletten(Basis):
+    def test_zusammenfuehren_und_rolle(self):
+        b = erp.adresse_speichern(self.db, dict(name1="Sinterwerk Muster", strasse="Hafenweg 3", email="info@sw.example", lieferant=dict(zahlungsbed_id=1)))
+        ab = self.ab([dict(artikel_id=self.a1["id"], text="V", menge=10, einzelpreis=1)])
+        self.wk(ab, [10], "C-D1")
+        self.db.execute("INSERT INTO kundenpreis(adresse_id,artikel_id,ab_menge,preis) VALUES(?,?,1,0.5)", (b["id"], self.a1["id"]))
+        neu = erp.adressen_zusammenfuehren(self.db, self.kunde["id"], b["id"], "test")
+        self.assertEqual(neu["strasse"], "Hafenweg 3")                     # leeres Feld ergänzt
+        self.assertTrue(neu["kunde"] and neu["lieferant"])                 # Rollen vereint
+        self.assertIsNone(self.db.execute("SELECT 1 FROM adresse WHERE id=?", (b["id"],)).fetchone())
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM kundenpreis WHERE adresse_id=?", (self.kunde["id"],)).fetchone()[0], 1)
+        with self.assertRaises(erp.Fehler):                                 # Kunde hat Belege → Rolle bleibt
+            erp.rolle_entfernen(self.db, self.kunde["id"], "kunde")
+        r = erp.rolle_entfernen(self.db, self.kunde["id"], "lieferant")
+        self.assertIsNone(r["lieferant"])

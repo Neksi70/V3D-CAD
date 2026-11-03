@@ -1259,6 +1259,21 @@ async function seiteAdressen(rolle, sel){
   $('#aLo').onclick = async () => { if (!brauche()) return; if (!confirm(`„${akt.kurz}“ wirklich löschen?`)) return;
     await api('adressen/' + akt.id, {method:'DELETE'}); toast('Gelöscht.'); akt = null; $('#ad').innerHTML = ''; laden(); };
   $('#aMemo').onclick = () => { if (!brauche()) return; memoDialog(akt.kurz, akt.notiz, async v => { akt.notiz = v; Object.assign(akt, await api('adressen', {body: akt})); }); };
+  if (!$('#aZus')) $('#aLo').insertAdjacentHTML('afterend', '<button class="btn" id="aZus" title="Doppelt angelegte Firma in diese Adresse übernehmen, Rollen bereinigen">Dublette / Rollen…</button>');
+  $('#aZus').onclick = async () => { if (!brauche()) return;
+    const alle = (await api('adressen')).filter(x => x.id !== akt.id);
+    const aehnlich = alle.filter(x => (x.name1||'').toLowerCase().split(/[\s,]+/)[0] === (akt.name1||'').toLowerCase().split(/[\s,]+/)[0]);
+    dialog('Dublette zusammenführen', esc(`bleibt: ${akt.name1} (${[akt.kunde&&'Kunde '+akt.kunde.kundennr, akt.lieferant&&'Lieferant '+akt.lieferant.lieferantennr].filter(Boolean).join(', ')})`),
+      `<p>Welche Adresse soll in <b>${esc(akt.name1)}</b> aufgehen? Belege, offene Posten, Chargen, Preise, Ansprechpartner und Dokumente werden übernommen, leere Felder ergänzt, die Dublette danach gelöscht.</p>
+       <select id="zuW" style="width:100%"><option value="">– bitte wählen –</option>${[...aehnlich, ...alle.filter(x => !aehnlich.includes(x))].map(x => `<option value="${x.id}">${esc(x.name1)}${x.ort?' · '+esc(x.ort):''}${x.kundennr?' · Kunde '+esc(x.kundennr):''}${x.lieferantennr?' · Lieferant '+esc(x.lieferantennr):''}${aehnlich.includes(x)?'  ← ähnlicher Name':''}</option>`).join('')}</select>
+       <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap"><span class="hinweis" style="align-self:center">Rollen dieser Adresse:</span>
+         ${akt.kunde ? '<button class="btn" id="zuK">Kundenrolle entfernen</button>' : ''}${akt.lieferant ? '<button class="btn" id="zuL">Lieferantenrolle entfernen</button>' : ''}</div>`,
+      [['Abbrechen',''], ['Zusammenführen','pri', async () => { const w = +document.getElementById('zuW').value; if (!w){ toast('Bitte die Dublette wählen.', true); return false; }
+        if (!confirm('Zusammenführen kann nicht rückgängig gemacht werden. Fortfahren?')) return false;
+        Object.assign(akt, await api(`adressen/${akt.id}/zusammenfuehren`, {body:{weg: w}})); toast('Zusammengeführt.'); laden(); oeffne(akt.id); }]]);
+    const rolleWeg = async r => { if (!confirm(`${r === 'kunde' ? 'Kunden' : 'Lieferanten'}rolle entfernen?`)) return; await api(`adressen/${akt.id}/rolle_entfernen`, {body:{rolle: r}}); document.getElementById('dlg').close(); toast('Rolle entfernt.'); laden(); oeffne(akt.id); };
+    if (document.getElementById('zuK')) document.getElementById('zuK').onclick = () => rolleWeg('kunde');
+    if (document.getElementById('zuL')) document.getElementById('zuL').onclick = () => rolleWeg('lieferant'); };
   menueAuf('#aDat', r => { if (brauche()) oeffne(akt.id, { reiter: r }); });
   menueAuf('#aInf', async r => { if (!brauche()) return; const a = await api('adressen/' + akt.id);
     if (r === 'umsatz'){ const re = a.belege.filter(b => b.status==='verarbeitet' && ['RE','ER'].includes(b.belegart)); const summe = re.reduce((s,b)=>s+b.brutto,0); const offen = a.op.reduce((s,o)=>s+o.offen,0);
