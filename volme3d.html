@@ -1403,6 +1403,34 @@ const firebaseConfig = {
   // Gast einer gemeinsamen Sitzung (?sitzung=...): kommt ueber einen
   // Einladungslink und braucht bewusst KEIN Konto. Fuer ihn bleibt das
   // Anmeldefenster zu, sonst kaeme er gar nicht bis zur Code-Abfrage.
+// Designs gehören einem Konto (3.11.26, Volker: „abmelden, anders anmelden → Projekte des
+  // Vorgängers da“). Die Browser-Ablage (Liste, offenes Design, Tabs, Cloud-Status) war für alle
+  // Konten gemeinsam – und der Cloud-Abgleich lud sie sogar ins NEUE Konto hoch. Jetzt hat sie einen
+  // Besitzer: beim Kontowechsel wird der Stand des Vorgängers unter seiner ID weggelegt (nichts wird
+  // gelöscht) und der eigene zurückgeholt. Besitzer '' = abgemeldet; fehlt der Eintrag ganz, ist es
+  // Altbestand von vor dieser Änderung → das erste Konto übernimmt ihn, lädt aber nichts Fremdes hoch.
+  function _v3dKontoAblage(uid) {
+    try {
+      var LS = localStorage, OWN = 'volme3d_owner';
+      var KEYS = ['volme3d_designs', 'volme3d_cur', 'volme3d_tabs', 'volme3d_cloudst'];
+      uid = uid || '';
+      var alt = LS.getItem(OWN);
+      if (alt === null) {                     // Altbestand
+        if (uid) { LS.setItem(OWN, uid); if ((LS.getItem('volme3d_designs') || '[]') !== '[]') LS.setItem('volme3d_owner_alt', '1'); }
+        return false;
+      }
+      if (alt === uid) return false;
+      if (alt) KEYS.forEach(function (k) { var v = LS.getItem(k); if (v != null) LS.setItem(k + '__' + alt, v); else LS.removeItem(k + '__' + alt); });
+      KEYS.forEach(function (k) {
+        var v = uid ? LS.getItem(k + '__' + uid) : null;
+        if (v != null) { LS.setItem(k, v); LS.removeItem(k + '__' + uid); } else LS.removeItem(k);
+      });
+      LS.removeItem('volme3d_owner_alt');
+      LS.setItem(OWN, uid);
+      return true;
+    } catch (e) { return false; }
+  }
+  window._v3dKontoAblage = _v3dKontoAblage;
   try { window._mitGuestMode = !!new URLSearchParams(location.search).get('sitzung'); }
   catch (e) { window._mitGuestMode = false; }
 
@@ -1441,6 +1469,9 @@ const firebaseConfig = {
     var logoutSep = document.getElementById('auth-sep');
     var fb = document.getElementById('beta-fb');
     if (user) {
+      // Anderes Konto als die Browser-Ablage (z. B. ohne Abmelden gewechselt)? Ablage umschalten
+      // und neu laden, damit nichts vom Vorgänger offen bleibt oder hochgeladen wird.
+      if (_v3dKontoAblage(user.uid)) { location.reload(); return; }
       overlay.classList.add('hidden');
       // Serverseitige Sitzung auffrischen: der Server liefert den Editor nur
       // gegen ein gueltiges Cookie aus. Firebase-Login allein reicht nicht —
@@ -1496,6 +1527,13 @@ const firebaseConfig = {
     auth.createUserWithEmailAndPassword(email, pw).catch(function(e){ window._authShowErr(e.message); });
   };
   window._authLogout = function() {
+    // Designs dieses Kontos aus der Browser-Ablage weglegen (unter seiner ID) – der Nächste am
+    // selben Rechner sieht sie nicht und lädt sie nicht in sein Konto hoch.
+    try {
+      if (typeof _doAutoSave === 'function') { try { _doAutoSave(); } catch (e) {} }
+      if (localStorage.getItem('volme3d_owner') === null && window._fbUser) localStorage.setItem('volme3d_owner', window._fbUser.uid);
+      _v3dKontoAblage('');
+    } catch (e) {}
     // Erst das Server-Cookie loeschen, dann Firebase: sonst bliebe die
     // Sitzung auf dem Server bestehen und ein Reload liesse einen wieder rein.
     fetch('/auth/logout', {method: 'POST', credentials: 'same-origin'})
@@ -43972,11 +44010,13 @@ async function _fsLoadAllToCache() {
   const _vorher = new Map(_dsIdx().map(e => [e.id, e]));   // lokaler Stand VOR dem Abgleich
   const _anderswo = [];                                      // auf einem anderen Gerät geändert
   try {
-    // 1. Lokale Designs, die noch nicht in Firestore sind, hochladen
+    // 1. Lokale Designs, die noch nicht in Firestore sind, hochladen – NICHT beim Altbestand
+    //    (Ablage ohne Besitzer von vor 3.11.26): dort könnten sie einem anderen Konto gehören
+    const _altbestand = localStorage.getItem('volme3d_owner_alt') === '1';
     const snap  = await ref.get();
     const fsIds = new Set(snap.docs.map(d => d.id));
     for (const entry of _dsIdx()) {
-      if (!fsIds.has(entry.id)) {
+      if (!fsIds.has(entry.id) && !_altbestand) {
         const data = dsLoadData(entry.id);
         if (data) await _fsSaveDesign(entry.id, data, dsThumb(entry.id), entry.name, true, undefined, true);  // still, auch vor Abgleich-Ende
       }
@@ -44004,9 +44044,28 @@ async function _fsLoadAllToCache() {
       if (d.updated && neuer && d.device !== _DS_DEVICE)
         _anderswo.push({ id: doc.id, name: d.name, updated: d.updated, thumb: d.thumb || '', cached });
     });
-    // Nur lokal vorhandene Designs (zu groß für die Cloud) NICHT aus der Liste werfen
-    for (const [id, e] of _vorher) if (!inCloud.has(id) && localStorage.getItem(_dsDataKey(id))) idx.push(e);
+    // Nur lokal vorhandene Designs (zu groß für die Cloud) NICHT aus der Liste werfen.
+    // Altbestand: was nicht in DIESER Cloud liegt (und nicht „zu groß“ war), gehört womöglich
+    // einem anderen Konto → weglegen statt zeigen/hochladen (bleibt im Browser unter „__unzugeordnet“).
+    const _weg = [];
+    for (const [id, e] of _vorher) if (!inCloud.has(id) && localStorage.getItem(_dsDataKey(id))) {
+      if (_altbestand && _dsCloudGet(id) !== 'big') _weg.push(e); else idx.push(e);
+    }
+    if (_weg.length) {
+      try {
+        const alt = JSON.parse(localStorage.getItem('volme3d_designs__unzugeordnet') || '[]');
+        localStorage.setItem('volme3d_designs__unzugeordnet', JSON.stringify(alt.concat(_weg)));
+      } catch (_) {}
+      console.info('[Konto] ' + _weg.length + ' Designs ohne Besitzer weggelegt');
+    }
+    if (_altbestand) localStorage.removeItem('volme3d_owner_alt');
     _dsSetIdx(idx);
+    // Offenes Design war eines der weggelegten → nicht weiter anzeigen/speichern
+    if (currentDesignId && _weg.some(e => e.id === currentDesignId)) {
+      try { localStorage.removeItem('volme3d_cur'); } catch (_) {}
+      _fsSyncDone = true; _fsSyncLauft = false;
+      location.reload(); return;
+    }
     if (document.getElementById('ds-modal')?.classList.contains('show')) _renderGallery();
   } catch(e) { console.warn('[Firestore] sync:', e); }
   _fsSyncDone = true; _fsSyncLauft = false;
@@ -76368,8 +76427,11 @@ async function _mdOeffnen(fid){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.305';
+const VOLME3D_VERSION = '1.18.306';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.306', date:'2026-11-03', changes:[
+    ['🔒','<b>Designs gehören jetzt fest zum Konto.</b> Wer sich an einem gemeinsam genutzten Rechner abmeldet und jemand anderes meldet sich an, sieht die Projekte des Vorgängers nicht mehr. Bisher blieben sie im Browser stehen und wurden beim Anmelden sogar ins neue Konto übernommen. Beim Abmelden werden deine Designs im Browser beiseitegelegt. Meldest du dich wieder an, sind sie sofort zurück, auch solche, die nur auf diesem Rechner lagen. Wichtig für Kurs-PCs: Bitte nach der Arbeit immer abmelden.'],
+  ]},
   { version:'1.18.305', date:'2026-11-03', spots:[{id:'verlauf',sel:'#btn-undo-list'}], changes:[
     ['🕘','<b>Rückgängig zeigt jetzt, wo du landest.</b> Hältst du die Maus über <b>↩ Rückgängig</b>, siehst du, was zurückgenommen wird, zum Beispiel „„Box 1“ verschoben“ oder „„Zylinder 2“ gelöscht“, und ein kleines Bild vom Stand danach. Über <b>↪ Wiederholen</b> geht das genauso. Der neue Knopf <b>▾</b> neben Rückgängig öffnet den <b>Verlauf</b>: Alle Schritte stehen dort mit Beschreibung und Uhrzeit. Fährst du mit der Maus über eine Zeile, erscheint ein großes Vorschaubild. Ein Klick springt direkt dorthin, auch zehn Schritte auf einmal, und Wiederholen funktioniert danach weiter.'],
   ]},

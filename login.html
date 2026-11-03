@@ -108,6 +108,34 @@ if (params.get('grund') === 'sitzung')
 else if (params.get('grund') === 'abgelaufen')
   note('Deine Anmeldung ist abgelaufen. Bitte melde dich neu an.');
 
+// Designs gehören einem Konto (3.11.26, Volker: „abmelden, anders anmelden → Projekte des
+// Vorgängers da“). Die Browser-Ablage (Liste, offenes Design, Tabs, Cloud-Status) war für alle
+// Konten gemeinsam – und der Cloud-Abgleich lud sie sogar ins NEUE Konto hoch. Jetzt hat sie einen
+// Besitzer: beim Kontowechsel wird der Stand des Vorgängers unter seiner ID weggelegt (nichts wird
+// gelöscht) und der eigene zurückgeholt. Besitzer '' = abgemeldet; fehlt der Eintrag ganz, ist es
+// Altbestand von vor dieser Änderung → das erste Konto übernimmt ihn, lädt aber nichts Fremdes hoch.
+function _v3dKontoAblage(uid) {
+  try {
+    var LS = localStorage, OWN = 'volme3d_owner';
+    var KEYS = ['volme3d_designs', 'volme3d_cur', 'volme3d_tabs', 'volme3d_cloudst'];
+    uid = uid || '';
+    var alt = LS.getItem(OWN);
+    if (alt === null) {                     // Altbestand
+      if (uid) { LS.setItem(OWN, uid); if ((LS.getItem('volme3d_designs') || '[]') !== '[]') LS.setItem('volme3d_owner_alt', '1'); }
+      return false;
+    }
+    if (alt === uid) return false;
+    if (alt) KEYS.forEach(function (k) { var v = LS.getItem(k); if (v != null) LS.setItem(k + '__' + alt, v); else LS.removeItem(k + '__' + alt); });
+    KEYS.forEach(function (k) {
+      var v = uid ? LS.getItem(k + '__' + uid) : null;
+      if (v != null) { LS.setItem(k, v); LS.removeItem(k + '__' + uid); } else LS.removeItem(k);
+    });
+    LS.removeItem('volme3d_owner_alt');
+    LS.setItem(OWN, uid);
+    return true;
+  } catch (e) { return false; }
+}
+
 // Name aus der Registrierung — geht mit der Sitzung an den Server (Ordner in
 // „📥 Meine Dateien“ heißt „Nachname, Vorname“; E-Mails sind oft kryptisch)
 let neuName = null;
@@ -127,6 +155,7 @@ async function sessionAnlegen(user){
     try { msg = (await r.json()).error || msg; } catch (e) {}
     throw new Error(msg);
   }
+  _v3dKontoAblage(user.uid);   // Designs des Vorgängers weglegen, eigene zurückholen
   location.replace(ziel);
 }
 
