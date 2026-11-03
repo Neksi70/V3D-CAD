@@ -111,3 +111,69 @@ def abbrechen(db, iid, benutzer=None):
         db.execute("UPDATE inventur SET status='abgebrochen', abgeschlossen=?, abgeschlossen_von=? WHERE id=?", (jetzt(), benutzer, iid))
         erp.protokoll(db, benutzer, "inventur", iid, "abgebrochen")
     return lesen(db, iid)
+
+
+# ---------------------------------------------------------------- Kundenmaterial (Chargen ohne Wareneingang)
+# Für den Start: Material, das schon im Haus liegt, wird je Kunde, Artikel und Charge gezählt und als Charge ohne
+# Wareneingang erfasst. Lieferscheine aus der AB greifen darauf zu, wenn die AB selbst keinen Wareneingang hat.
+CHARGE_HINWEIS = "Auftragsnr. / Prüfnr. / Bestellnr. / Prüfnr. / Lieferschein Kunde"
+
+
+def kundenmaterial(db, adresse_id):
+    """Kundenmaterial im Haus (offene Chargen) eines Kunden, mit Hinweis aus der myfactory-Übernahme."""
+    out = []
+    for c in erp.chargen_liste(db, adresse_id=adresse_id, nur_offen=True):
+        c["herkunft_text"] = f"Wareneingang {c['eingang_nummer']}" if c.get("eingang_nummer") else "Bestandsaufnahme"
+        out.append(c)
+    return sorted(out, key=lambda c: (c.get("artikelnr") or "", c["chargennr"]))
+
+
+def _bearbeitungsartikel(db, artikel_id):
+    """myfactory führt Kundenmaterial als „Rohstoff“ R<Nr>; die Charge gehört an den Bearbeitungsartikel <Nr> (wie im Wareneingang)."""
+    a = zeile(db.execute("SELECT id, artikelnr FROM artikel WHERE id=?", (artikel_id,)))
+    if not a:
+        raise Fehler("Artikel nicht gefunden.")
+    if a["artikelnr"].startswith("R"):
+        b = db.execute("SELECT id FROM artikel WHERE artikelnr=?", (a["artikelnr"][1:],)).fetchone()
+        if b:
+            return b["id"]
+    return a["id"]
+
+
+def kundenmaterial_erfassen(db, adresse_id, artikel_id, chargennr, menge, kunden_ls=None, datum=None, benutzer=None):
+    """Gezählte Menge einer Charge eintragen. Neue Charge → Eingang „Bestandsaufnahme“; vorhandene → Korrektur auf die gezählte Menge."""
+    chargennr = (chargennr or "").strip()
+    if not chargennr:
+        raise Fehler("Bitte die Charge angeben.")
+    try:
+        menge = float(menge)
+    except (TypeError, ValueError):
+        raise Fehler("Menge bitte als Zahl.")
+    if menge < 0:
+        raise Fehler("Die Menge kann nicht negativ sein.")
+    if not db.execute("SELECT 1 FROM kunde WHERE adresse_id=?", (adresse_id,)).fetchone():
+        raise Fehler("Die Adresse ist kein Kunde.")
+    artikel_id = _bearbeitungsartikel(db, artikel_id)
+    datum = datum or heute()
+    with transaktion(db):
+        c = zeile(db.execute("SELECT * FROM charge WHERE chargennr=? AND adresse_id=? AND artikel_id=?", (chargennr, adresse_id, artikel_id)))
+        if not c:
+            if menge <= 0:
+                raise Fehler("Für eine neue Charge bitte die gezählte Menge eintragen.")
+            cid = db.execute("""INSERT INTO charge(chargennr,adresse_id,artikel_id,herkunft,kunden_ls,datum,bemerkung)
+                                VALUES(?,?,?,?,?,?,?)""", (chargennr, adresse_id, artikel_id, "kunde", (kunden_ls or "").strip() or None, datum,
+                                                           "Bestandsaufnahme Kundenmaterial")).lastrowid
+            db.execute("INSERT INTO charge_bewegung(charge_id,datum,art,menge,text,benutzer) VALUES(?,?,?,?,?,?)",
+                       (cid, datum, "eingang", menge, "Bestandsaufnahme Kundenmaterial", benutzer))
+        else:
+            cid = c["id"]
+            diff = round(menge - erp.charge_rest(db, cid), 6)
+            if abs(diff) > 1e-9:
+                db.execute("INSERT INTO charge_bewegung(charge_id,datum,art,menge,text,benutzer) VALUES(?,?,?,?,?,?)",
+                           (cid, datum, "korrektur", diff, f"Bestandsaufnahme: gezählt {menge:g}", benutzer))
+            if kunden_ls and not c["kunden_ls"]:
+                db.execute("UPDATE charge SET kunden_ls=? WHERE id=?", (kunden_ls.strip(), cid))
+        erp.protokoll(db, benutzer, "charge", cid, "Bestandsaufnahme", {"menge": menge})
+    r = zeile(db.execute("SELECT * FROM charge WHERE id=?", (cid,)))
+    r["rest"] = erp.charge_rest(db, cid)
+    return r

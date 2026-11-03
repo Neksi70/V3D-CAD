@@ -1088,11 +1088,21 @@ def ab_angleichen(db, wk_id, benutzer=None):
 
 
 # ---------------------------------------------------------------- Sammel-Lieferschein aus offenen Auftragspositionen
+def _chargen_ab_pos(db, ab_pos_id):
+    """Chargen, aus denen eine Auftragsposition beliefert wird: zuerst die aus dem eigenen Wareneingang (WK),
+    dann per Bestandsaufnahme erfasstes Kundenmaterial desselben Kunden und Artikels (ohne Wareneingang) – jeweils älteste zuerst."""
+    eigen = zeilen(db.execute("""SELECT c.id, c.chargennr FROM charge c JOIN beleg_position wp ON wp.id=c.eingang_pos_id
+                                 WHERE wp.vorgaenger_pos_id=? ORDER BY c.datum, c.id""", (ab_pos_id,)))
+    bestand = zeilen(db.execute("""SELECT c.id, c.chargennr FROM charge c JOIN beleg_position p ON p.id=? JOIN beleg b ON b.id=p.beleg_id
+                                   WHERE c.adresse_id=b.adresse_id AND c.artikel_id=p.artikel_id AND c.eingang_pos_id IS NULL
+                                   ORDER BY c.datum, c.id""", (ab_pos_id,)))
+    return eigen + bestand
+
+
 def _im_haus(db, ab_pos_id):
     """Kundenmaterial dieser Auftragsposition, das noch im Haus und nicht in einem LS-Entwurf verplant ist."""
     summe, nrn, hat_wk = 0.0, [], False
-    for c in db.execute("""SELECT c.id, c.chargennr FROM charge c JOIN beleg_position wp ON wp.id=c.eingang_pos_id
-                           WHERE wp.vorgaenger_pos_id=? ORDER BY c.datum, c.id""", (ab_pos_id,)):
+    for c in _chargen_ab_pos(db, ab_pos_id):
         hat_wk = True
         rest = charge_lieferbar(db, c["id"])
         if rest > 1e-9:
@@ -1265,10 +1275,7 @@ def _charge_finden_oder_anlegen(db, nr, adresse_id, artikel_id, beleg_id, pos_id
 
 def _chargen_zuordnen(db, pos, ab_pos_id):
     """Lieferschein-Position auf die eingegangenen Chargen dieser Auftragsposition verteilen (älteste zuerst)."""
-    chargen = zeilen(db.execute("""SELECT c.id, c.chargennr FROM charge c JOIN beleg_position wp ON wp.id=c.eingang_pos_id
-                                   WHERE wp.vorgaenger_pos_id=? ORDER BY c.datum, c.id""", (ab_pos_id,)))
-    if not chargen:     # Charge evtl. über eine andere Position eingegangen – gleiche Kunde/Artikel
-        chargen = []
+    chargen = _chargen_ab_pos(db, ab_pos_id)
     offen, teile = pos["menge"], []
     for c in chargen:
         rest = charge_lieferbar(db, c["id"])

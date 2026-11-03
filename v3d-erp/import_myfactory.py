@@ -254,6 +254,12 @@ def importieren(db, art, pfad, ausfuehren=False, protokoll=print):
                         nr_rolle = vorh[schluessel] if vorh else erp.naechste_stammnr(db, tab, schluessel, 10000 if art == "kunden" else 70000)
                     else:
                         vorh = db.execute(f"SELECT adresse_id FROM {tab} WHERE {schluessel}=?", (w(z, schluessel),)).fetchone()
+                        if not vorh and w(z, "adressnr"):
+                            # Adresse kam schon aus einem Bericht ohne Nummer (vorläufige Nummer) → echte Nummer übernehmen
+                            vorh = db.execute(f"SELECT r.adresse_id FROM {tab} r JOIN adresse a ON a.id=r.adresse_id WHERE a.adressnr=?",
+                                              (w(z, "adressnr"),)).fetchone()
+                            if vorh:
+                                db.execute(f"UPDATE {tab} SET {schluessel}=? WHERE adresse_id=?", (w(z, schluessel), vorh["adresse_id"]))
                         nr_rolle = w(z, schluessel)
                     adr = {f: (w(z, f) or None) for f in erp.ADRESS_FELDER if f in zu}
                     adressnr = w(z, "adressnr") or None

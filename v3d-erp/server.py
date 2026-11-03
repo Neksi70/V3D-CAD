@@ -823,6 +823,19 @@ def r_inventur_abbruch(iid, benutzer, **_):
     return inventur.abbrechen(DB, iid, benutzer)
 
 
+# ---------------------------------------------------------------- Kundenmaterial (Bestandsaufnahme Chargen)
+@route("GET", "/api/kundenmaterial")
+def r_kundenmaterial(q, **_):
+    return dict(chargen=inventur.kundenmaterial(DB, int(q["adresse"])) if (q.get("adresse") or "").isdigit() else [],
+                charge_hinweis=inventur.CHARGE_HINWEIS)
+
+
+@route("POST", "/api/kundenmaterial")
+def r_kundenmaterial_erfassen(body, benutzer, **_):
+    return inventur.kundenmaterial_erfassen(DB, int(body.get("adresse_id") or 0), int(body.get("artikel_id") or 0), body.get("chargennr"),
+                                            body.get("menge"), body.get("kunden_ls"), body.get("datum") or None, benutzer)
+
+
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8820
     host = os.environ.get("V3D_ERP_HOST", "127.0.0.1")

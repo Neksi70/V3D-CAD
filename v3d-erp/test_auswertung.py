@@ -184,7 +184,8 @@ class TestArbeitsplan(Basis):
         a = erp.artikel_speichern(self.db, dict(bezeichnung="Ventilgehäuse", vk_preis=1, lagerfuehrung=0,
                                                 arbeitsplan=[dict(nr="AG000019", text="Nut fräsen", toleranz="12 mm ±0,1")]))
         b = erp.beleg_speichern(self.db, dict(belegart="AB", adresse_id=self.kunde["id"], positionen=[dict(artikel_id=a["id"], menge=10, einzelpreis=1)]))
-        ohne, _ = bericht.beleg_pdf(self.db, b["id"])
+        self.assertTrue(erp.formular(self.db, "AB")["bloecke"]["arbeitsplan"])          # GSB: auf der AB standardmäßig an
+        ohne, _ = bericht.beleg_pdf(self.db, b["id"], fo=erp.formular(self.db, "AB", {"bloecke": {"arbeitsplan": False}}))
         mit, _ = bericht.beleg_pdf(self.db, b["id"], fo=erp.formular(self.db, "AB", {"bloecke": {"arbeitsplan": True}}))
         self.assertGreater(len(mit), len(ohne))
 

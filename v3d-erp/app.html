@@ -329,7 +329,7 @@ const MENUE = [
   ['Auswertungen', [['#/umsatz','Umsatzauswertung']]],
   ['Projekte', [['#/projekte','Projekte & Zeitstrahl'],['#/werkstatt','Werkstatt-Ansicht']]],
   ['Produktion', [['#/produktion','Produktion (Paletten/Chargen)']]],
-  ['Lager', [['#/chargen','Chargen (Kundenmaterial)'],['#/inventur','Inventur']]],
+  ['Lager', [['#/chargen','Chargen (Kundenmaterial)'],['#/inventur','Inventur'],['#/kundenmaterial','Kundenmaterial erfassen']]],
   ['Stammdaten', [['#/adressen/kunde','Kunden'],['#/adressen/lieferant','Lieferanten'],['#/adressen/','Alle Adressen'],['#/artikel','Artikel & Lager']]],
   ['System', [['#/einstellungen','Firmendaten & Briefkopf'],['#/formulare','Formulare (Druck)'],['#/kennzeichen','Kennzeichen (Zusatzfelder)']]],
 ];
@@ -499,6 +499,7 @@ async function navigiere(){
     else if (teil==='umsatz') await seiteUmsatz(Q.get('jahr'));
     else if (teil==='datev') await seiteDatev();
     else if (teil==='inventur') await seiteInventur(a ? +a : null);
+    else if (teil==='kundenmaterial') await seiteKundenmaterial(a ? +a : null);
     else if (teil==='kennzeichen') await seiteKennzeichen();
     else if (teil==='produktion') await seiteProduktion();
     else if (teil==='formulare') await seiteFormulare(a);
@@ -864,6 +865,46 @@ async function seiteInventur(id){
       <h2>Zählliste – ${esc(i.bezeichnung)}</h2><p>Stichtag ${fmt(i.stichtag)} · ${esc(E.firma_name||'')}</p><table><thead><tr><th>Artikel</th><th>Bezeichnung</th><th>ME</th><th>gezählt</th><th>Bemerkung</th></tr></thead><tbody>
       ${i.positionen.map(p => `<tr><td>${esc(p.artikelnr)}</td><td>${esc(p.bezeichnung)}</td><td>${esc(p.me)}</td><td class="z">${p.ist==null?'':zahl(p.ist)}</td><td></td></tr>`).join('')}</tbody></table>
       <p style="margin-top:30px">Gezählt von: ______________________ &nbsp; Datum/Unterschrift: ______________________</p><script>print()<\/script></body></html>`); w.document.close(); };
+}
+
+// ================================================================ Kundenmaterial erfassen (Bestandsaufnahme Chargen)
+async function seiteKundenmaterial(kundeId){
+  const [kunden, artikel] = await Promise.all([api('adressen?rolle=kunde'), api('artikel')]);
+  const nr = Object.fromEntries(artikel.map(a => [a.artikelnr, a]));
+  const memo = a => { if (!a) return ''; const r = nr['R' + a.artikelnr]; return [a.memo, r && r.memo].filter(x => x && x.startsWith('myfactory-Bestand')).map(x => x.split(' Kundenmaterial')[0])[0] || ''; };
+  M().innerHTML = `<div class="kopfzeile"><h1>Kundenmaterial erfassen</h1><span class="sp"></span><a class="btn" href="#/inventur">Inventur (eigenes Lager)</a></div>
+    <div class="card"><div class="raster"><div class="feld"><label>Kunde</label><select id="kmK"><option value="">– Kunde wählen –</option>
+      ${kunden.map(k => `<option value="${k.id}" ${k.id===kundeId?'selected':''}>${esc(k.kundennr)} · ${esc(k.kurz)}</option>`).join('')}</select></div></div>
+      <p class="hinweis" style="margin:6px 0 0">Material, das schon bei euch liegt, je Charge zählen und eintragen. Ein Lieferschein aus der Auftragsbestätigung nimmt diese Chargen,
+      wenn die AB keinen eigenen Wareneingang hat (älteste zuerst). Neue Lieferungen weiter über „Wareneingang Kundenmaterial“ aus der AB buchen.</p></div>
+    <div id="kmI"></div>`;
+  $('#kmK').onchange = e => location.hash = '#/kundenmaterial/' + e.target.value;
+  if (!kundeId) return;
+  const d = await api('kundenmaterial?adresse=' + kundeId);
+  $('#kmI').innerHTML = `<div class="card"><b>Neue Charge erfassen</b>
+      <div class="raster" style="margin-top:8px"><div class="feld"><label>Artikel (Bearbeitungsartikel)</label><input id="kmA" list="kmAL" placeholder="Artikelnummer oder Name"></div>
+        <div class="feld"><label>Charge</label><input id="kmC" placeholder="${esc(d.charge_hinweis)}"></div>
+        <div class="feld"><label>Lieferschein des Kunden</label><input id="kmL" placeholder="optional"></div>
+        <div class="feld"><label>gezählte Menge</label><input id="kmM" class="zahl"></div></div>
+      <div class="hinweis" id="kmH" style="margin-top:6px"></div>
+      <datalist id="kmAL">${artikel.filter(a => !a.inaktiv).map(a => `<option value="${esc(a.artikelnr)}">${esc(a.bezeichnung)}</option>`).join('')}</datalist>
+      <div class="fussreihe"><button class="btn pri" id="kmNeu" data-ak="s">Erfassen</button></div></div>
+    <div class="card"><b>Im Haus</b> <span class="hinweis">zum Nachzählen neue Menge eintragen (0 = nicht mehr da)</span>
+      <div class="quer" style="margin-top:6px"><table><thead><tr><th>Artikel</th><th>Charge</th><th>Lieferschein Kunde</th><th>Herkunft</th><th class="r">im Haus</th><th class="r" style="width:120px">gezählt</th></tr></thead><tbody id="kmT">
+      ${d.chargen.map(c => `<tr data-a="${c.artikel_id}" data-c="${esc(c.chargennr)}"><td>${esc(c.artikelnr||'')} <span class="hinweis">${esc(c.artikel_kurz||'')}</span></td><td>${esc(c.chargennr)}</td>
+        <td>${esc(c.kunden_ls||'')}</td><td class="hinweis">${esc(c.herkunft_text)}</td><td class="r">${zahl(c.rest)}</td><td class="r"><input class="kmZ zahl" style="width:100px"></td></tr>`).join('')
+        || '<tr><td colspan="6" class="hinweis">Für diesen Kunden ist kein Kundenmaterial erfasst.</td></tr>'}</tbody></table></div>
+      ${d.chargen.length ? '<div class="fussreihe"><button class="btn" id="kmZsp">Zählung übernehmen</button></div>' : ''}</div>`;
+  const artikelZu = () => nr[$('#kmA').value.trim()] || artikel.find(a => a.bezeichnung === $('#kmA').value.trim());
+  $('#kmA').oninput = () => { const a = artikelZu(); const r = a && a.artikelnr.startsWith('R') && nr[a.artikelnr.slice(1)];
+    $('#kmH').textContent = !a ? '' : [r ? `Rohstoff-Artikel – die Charge wird beim Bearbeitungsartikel ${r.artikelnr} geführt.` : '', memo(r || a)].filter(Boolean).join(' · '); };
+  $('#kmNeu').onclick = async () => { const a = artikelZu(); if (!a) return toast('Bitte einen Artikel aus der Liste wählen.', true);
+    const c = await api('kundenmaterial', {body:{adresse_id:kundeId, artikel_id:a.id, chargennr:$('#kmC').value, kunden_ls:$('#kmL').value, menge:num($('#kmM').value)}});
+    toast(`Charge ${c.chargennr}: ${zahl(c.rest)} im Haus.`); seiteKundenmaterial(kundeId); };
+  if ($('#kmZsp')) $('#kmZsp').onclick = async () => { const z = [...$$('#kmT tr')].filter(tr => tr.querySelector('.kmZ').value.trim() !== '');
+    if (!z.length) return toast('Keine gezählte Menge eingetragen.', true);
+    for (const tr of z) await api('kundenmaterial', {body:{adresse_id:kundeId, artikel_id:+tr.dataset.a, chargennr:tr.dataset.c, menge:num(tr.querySelector('.kmZ').value)}});
+    toast(`${z.length} Charge(n) nachgezählt.`); seiteKundenmaterial(kundeId); };
 }
 
 // ================================================================ Belege
