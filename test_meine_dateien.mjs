@@ -84,11 +84,11 @@ try {
   chk(true, 'Löschen entfernt die Datei');
   // 8) Anmeldeseite: Namensfelder beim Registrieren
   await pg.goto('http://127.0.0.1:' + CAD + '/login');
-  chk(await pg.evaluate(() => getComputedStyle(document.getElementById('auth-name')).display === 'none'), 'Login: Namensfelder erst verborgen');
+  const sichtbar = id => pg.evaluate(i => { const e = document.getElementById(i); return getComputedStyle(e).display !== 'none' && e.offsetHeight > 0; }, id);
+  chk(await sichtbar('auth-name'), 'Login: Vor-/Nachname von Anfang an sichtbar (Registrieren mit einem Klick)');
+  await pg.fill('#auth-email', 'x@beispiel.de'); await pg.fill('#auth-pw', 'geheim123');
   await pg.click('#auth-btn-register');
-  chk(await pg.evaluate(() => getComputedStyle(document.getElementById('auth-name')).display === 'flex' && document.activeElement.id === 'auth-vorname'), 'Registrieren zeigt Vorname/Nachname');
-  await pg.click('#auth-btn-register');
-  chk((await pg.textContent('#auth-err')).includes('Vorname und Nachname'), 'ohne Namen keine Registrierung');
+  chk((await pg.textContent('#auth-err')).includes('Vorname und Nachname') && await sichtbar('auth-err'), 'ohne Namen keine Registrierung – Meldung SICHTBAR');
   chk(!errs.filter(e => !/firebase|auth\//i.test(e)).length, 'keine Seitenfehler ' + JSON.stringify(errs));
 } finally { await b.close(); mimi.kill(); cad.kill(); fs.rmSync(T, { recursive: true, force: true }); }
 console.log(fail ? 'FEHLER: ' + fail : 'ALLES OK'); process.exit(fail ? 1 : 0);

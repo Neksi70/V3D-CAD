@@ -23,7 +23,8 @@ body{background:#fff;display:flex;align-items:center;justify-content:center;font
 #auth-google svg{width:18px;height:18px;flex-shrink:0}
 .auth-divider{display:flex;align-items:center;gap:10px;width:100%;font-size:11px;font-weight:700;color:var(--dim)}
 .auth-divider::before,.auth-divider::after{content:'';flex:1;height:1px;background:var(--border)}
-#auth-name{display:none;gap:8px;width:100%}
+#auth-name{display:flex;gap:8px;width:100%}
+.auth-hint{width:100%;font-size:11px;color:#6b7280;margin:-4px 0 0 2px}
 #auth-name input{flex:1;min-width:0}
 #auth-email,#auth-pw,#auth-name input{width:100%;padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-family:var(--font);font-size:13px;color:var(--text);outline:none;transition:border-color .15s;box-sizing:border-box}
 #auth-email:focus,#auth-pw:focus,#auth-name input:focus{border-color:var(--acc)}
@@ -32,8 +33,8 @@ body{background:#fff;display:flex;align-items:center;justify-content:center;font
 #auth-btn-login:hover{background:var(--ahov)}
 #auth-btn-register{flex:1;padding:10px;background:#fff;color:var(--mid);border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .15s}
 #auth-btn-register:hover{border-color:var(--acc);color:var(--acc)}
-#auth-err{width:100%;padding:8px 12px;background:#fff0f0;border:1.5px solid var(--red);border-radius:6px;font-size:12px;color:var(--red);font-weight:600;display:none}
-#auth-note{width:100%;padding:8px 12px;background:#FFF7ED;border:1.5px solid var(--acc);border-radius:6px;font-size:12px;color:#9a3412;font-weight:600;display:none}
+#auth-err{width:100%;box-sizing:border-box;padding:8px 12px;background:#fff0f0;border:1.5px solid var(--red);border-radius:6px;font-size:12px;color:var(--red);font-weight:600;display:none}
+#auth-note{width:100%;box-sizing:border-box;padding:8px 12px;background:#FFF7ED;border:1.5px solid var(--acc);border-radius:6px;font-size:12px;color:#9a3412;font-weight:600;display:none}
 </style>
 </head>
 <body>
@@ -50,6 +51,7 @@ body{background:#fff;display:flex;align-items:center;justify-content:center;font
   </button>
   <div class="auth-divider">oder</div>
   <div id="auth-name"><input type="text" id="auth-vorname" placeholder="Vorname" autocomplete="given-name"><input type="text" id="auth-nachname" placeholder="Nachname" autocomplete="family-name"></div>
+  <div class="auth-hint">Vor- und Nachname nur beim Registrieren nötig</div>
   <input type="email" id="auth-email" placeholder="E-Mail-Adresse" autocomplete="email">
   <input type="password" id="auth-pw" placeholder="Passwort" autocomplete="current-password">
   <div class="auth-btns">
@@ -74,8 +76,26 @@ firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 
 const $ = id => document.getElementById(id);
-function showErr(m){ const e = $('auth-err'); e.textContent = m; e.style.display = ''; }
-function note(m){ const e = $('auth-note'); e.textContent = m; e.style.display = ''; }
+// Firebase-Fehler auf Deutsch (die englischen Rohtexte verstand keiner)
+function deutsch(e){
+  const c = (e && e.code) || '';
+  const t = {
+    'auth/invalid-credential': 'Kein Konto mit dieser E-Mail oder das Passwort ist falsch. Neu hier? Dann Vor- und Nachname eintragen und „Registrieren“ klicken.',
+    'auth/user-not-found': 'Kein Konto mit dieser E-Mail. Neu hier? Dann Vor- und Nachname eintragen und „Registrieren“ klicken.',
+    'auth/wrong-password': 'Das Passwort ist falsch.',
+    'auth/invalid-email': 'Bitte eine gültige E-Mail-Adresse eingeben.',
+    'auth/missing-password': 'Bitte ein Passwort eingeben.',
+    'auth/weak-password': 'Das Passwort ist zu kurz – bitte mindestens 6 Zeichen.',
+    'auth/email-already-in-use': 'Mit dieser E-Mail gibt es schon ein Konto – bitte „Anmelden“ klicken.',
+    'auth/too-many-requests': 'Zu viele Versuche – bitte kurz warten und dann noch einmal.',
+    'auth/network-request-failed': 'Keine Verbindung – bitte Internet prüfen.',
+    'auth/popup-closed-by-user': 'Google-Anmeldung abgebrochen.',
+    'auth/popup-blocked': 'Das Google-Fenster wurde blockiert – bitte Pop-ups für diese Seite erlauben.',
+  }[c];
+  return t || ((e && e.message) || String(e)).replace(/^Firebase:\s*/, '');
+}
+function showErr(m){ const e = $('auth-err'); e.textContent = typeof m === 'string' ? m : deutsch(m); e.style.display = 'block'; }
+function note(m){ const e = $('auth-note'); e.textContent = m; e.style.display = 'block'; }
 
 // Wohin nach dem Anmelden? Nur eigene Pfade, damit der Parameter nicht als
 // Weiterleitung auf fremde Seiten missbraucht werden kann.
@@ -119,28 +139,23 @@ auth.onAuthStateChanged(function(user){
 $('auth-google').onclick = function(){
   $('auth-err').style.display = 'none';
   auth.signInWithPopup(new firebase.auth.GoogleAuthProvider())
-      .catch(e => showErr((e.code ? e.code + ': ' : '') + e.message));
+      .catch(e => showErr(e));
 };
 $('auth-btn-login').onclick = function(){
   $('auth-err').style.display = 'none';
   auth.signInWithEmailAndPassword($('auth-email').value.trim(), $('auth-pw').value)
-      .catch(e => showErr(e.message));
+      .catch(e => showErr(e));
 };
 $('auth-btn-register').onclick = function(){
   $('auth-err').style.display = 'none';
-  const box = $('auth-name');
-  // Erster Klick zeigt die Namensfelder, der zweite registriert
-  if (getComputedStyle(box).display === 'none') {
-    box.style.display = 'flex'; $('auth-vorname').focus();
-    note('Zum Registrieren bitte Vorname und Nachname angeben, dann E-Mail und Passwort.');
-    return;
-  }
+  // Ein Klick genügt: die Namensfelder stehen von Anfang an da (der Zwei-Klick-Weg vom 2.11.
+  // wirkte bei unsichtbaren Meldungen wie „Registrieren geht nicht“)
   const vn = $('auth-vorname').value.trim(), nn = $('auth-nachname').value.trim();
   if (!vn || !nn) { showErr('Bitte Vorname und Nachname eingeben.'); (vn ? $('auth-nachname') : $('auth-vorname')).focus(); return; }
   neuName = {vorname: vn, nachname: nn};
   auth.createUserWithEmailAndPassword($('auth-email').value.trim(), $('auth-pw').value)
       .then(c => c.user.updateProfile({displayName: vn + ' ' + nn}).catch(() => {}))
-      .catch(e => { neuName = null; showErr(e.message); });
+      .catch(e => { neuName = null; showErr(e); });
 };
 $('auth-pw').addEventListener('keydown', e => { if (e.key === 'Enter') $('auth-btn-login').click(); });
 </script>
