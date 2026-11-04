@@ -2411,10 +2411,13 @@ const firebaseConfig = {
   </div>
 
   <div id="vcs">
-    <button class="vcb" onclick="setView('top')">OBEN</button>
-    <button class="vcb" onclick="setView('front')">VORNE</button>
-    <button class="vcb" onclick="setView('right')">RECHTS</button>
-    <button class="vcb" onclick="setView('iso')">ISO</button>
+    <button class="vcb" onclick="setView('top')" title="Genau von oben, ohne Perspektive">OBEN</button>
+    <button class="vcb" onclick="setView('bottom')" title="Genau von unten, ohne Perspektive">UNTEN</button>
+    <button class="vcb" onclick="setView('front')" title="Genau von vorne, ohne Perspektive">VORNE</button>
+    <button class="vcb" onclick="setView('back')" title="Genau von hinten, ohne Perspektive">HINTEN</button>
+    <button class="vcb" onclick="setView('left')" title="Genau von links, ohne Perspektive">LINKS</button>
+    <button class="vcb" onclick="setView('right')" title="Genau von rechts, ohne Perspektive">RECHTS</button>
+    <button class="vcb" onclick="setView('iso')" title="Schräg von oben, mit Perspektive">ISO</button>
   </div>
   <div id="vcube-wrap" title="Fläche anklicken: Ansicht von dort · ziehen: frei drehen"><button onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" class="vca vca-u" onclick="_vcStep('up')" title="Ansicht nach oben schwenken (90°)">▲</button><button onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" class="vca vca-d" onclick="_vcStep('down')" title="Ansicht nach unten schwenken (90°)">▼</button><button onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" class="vca vca-l" onclick="_vcStep('left')" title="Ansicht nach links schwenken (90°)">◀</button><button onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" class="vca vca-r" onclick="_vcStep('right')" title="Ansicht nach rechts schwenken (90°)">▶</button></div>
   <button id="ttb" onclick="toggleTurntable()">⟳ Turntable</button>
@@ -8282,8 +8285,29 @@ function toggleGrid(force) {
 const orbitTarget = new THREE.Vector3(0, 0, 0);
 let sph = { theta: 0.6, phi: 0.75, r: Math.max(buildplateW, buildplateH) / 10 * 0.55 };
 
+// Ansichten genau von oben/unten/vorne/hinten/links/rechts: Kamera wird automatisch
+// orthogonal (keine Perspektive → man sieht NUR diese Seite). Sobald man wegdreht,
+// wieder perspektivisch. _camModus: 'auto' (Standard) | 'ortho' | 'persp' (von Hand
+// mit dem Umschalter erzwungen; ein Klick auf OBEN/VORNE/… oder den Würfel → wieder 'auto').
+// Volker 4.11.: „keine richtige Draufsicht, immer sieht man noch etwas vom Seitenteil“
+// – Ursache außerdem: phi war auf ≥ 0,04 rad begrenzt (2,3° schräg von oben).
+let _camModus = 'auto';
+function _camIstStandard() {
+  const P = Math.PI, e = 1e-6;
+  if (sph.phi < e || sph.phi > P - e) return true;   // oben/unten
+  if (Math.abs(sph.phi - P / 2) > e) return false;
+  const t = sph.theta / (P / 2); return Math.abs(t - Math.round(t)) < e;
+}
+function _camAutoOrtho() {
+  const willOrtho = _camModus === 'ortho' || (_camModus === 'auto' && _camIstStandard());
+  if (willOrtho === _camIsPerspective) toggleCameraMode(true);
+}
 function sph2cam() {
-  sph.phi = Math.max(0.04, Math.min(Math.PI - 0.04, sph.phi));
+  sph.phi = Math.max(0, Math.min(Math.PI, sph.phi));
+  _camAutoOrtho();
+  // „Oben“ der Kamera aus der Kugel-Tangente: auch genau von oben/unten (phi 0/π) eindeutig;
+  // für alle anderen Winkel identisch mit der bisherigen Welt-Y-Ausrichtung
+  camera.up.set(-Math.cos(sph.phi) * Math.sin(sph.theta), Math.sin(sph.phi), -Math.cos(sph.phi) * Math.cos(sph.theta));
   camera.position.x = orbitTarget.x + sph.r * Math.sin(sph.phi) * Math.sin(sph.theta);
   camera.position.y = orbitTarget.y + sph.r * Math.cos(sph.phi);
   camera.position.z = orbitTarget.z + sph.r * Math.sin(sph.phi) * Math.cos(sph.theta);
@@ -8300,8 +8324,16 @@ function sph2cam() {
 sph2cam();
 
 function setView(v) {
-  const VS = { top:[0,0.02,22], front:[0,Math.PI/2,22], right:[Math.PI/2,Math.PI/2,22], iso:[0.6,0.75,22] };
-  const [t,p,r] = VS[v]; sph.theta=t; sph.phi=p; sph.r=r; sph2cam();
+  const H = Math.PI / 2;
+  const VS = { top:[0,0], bottom:[0,Math.PI], front:[0,H], back:[Math.PI,H], right:[H,H], left:[-H,H], iso:[0.6,0.75] };
+  const [t,p] = VS[v];
+  _camModus = 'auto';
+  // Modell einpassen statt fester Entfernung (sonst lag es je nach Größe winzig oder angeschnitten)
+  if (objects.length) {
+    const box = new THREE.Box3(); objects.forEach(o => box.expandByObject(o));
+    if (!box.isEmpty()) { box.getCenter(orbitTarget); const sz = box.getSize(new THREE.Vector3()); sph.r = Math.max(sz.x, sz.y, sz.z, 0.5) * 2.4; }
+  } else sph.r = 22;
+  sph.theta = t; sph.phi = p; sph2cam();
 }
 
 function fitView() {
@@ -8324,7 +8356,8 @@ function fitToObjects(objs) {
   sph2cam();
 }
 
-function toggleCameraMode() {
+function toggleCameraMode(auto) {
+  if (!auto) _camModus = _camIsPerspective ? 'ortho' : 'persp';   // von Hand: gilt, bis eine Ansicht (OBEN/…) gewählt wird
   const W = vpEl.clientWidth, H = vpEl.clientHeight;
   const aspect = W / H;
   if (_camIsPerspective) {
@@ -41903,8 +41936,9 @@ function _creaseNormals(geo, angleDeg) {
       const hit = rc.intersectObject(cubeMesh, false)[0];
       if (hit && hit.face) {
         // BoxGeometry-Reihenfolge +X, -X, +Y, -Y, +Z, -Z
-        const V = [[Math.PI/2, Math.PI/2], [-Math.PI/2, Math.PI/2], [null, 0.02],
-                   [null, Math.PI - 0.04], [0, Math.PI/2], [Math.PI, Math.PI/2]][hit.face.materialIndex];
+        const V = [[Math.PI/2, Math.PI/2], [-Math.PI/2, Math.PI/2], [null, 0],
+                   [null, Math.PI], [0, Math.PI/2], [Math.PI, Math.PI/2]][hit.face.materialIndex];
+        _camModus = 'auto';
         _vcAnimTo(V[0] === null ? Math.round(sph.theta / (Math.PI/2)) * (Math.PI/2) : V[0], V[1]);
       }
     }
@@ -41949,12 +41983,13 @@ function _vcStep(dir) {
   const Q = Math.PI / 2, near = (a, b) => Math.abs(a - b) < 0.12;
   // Läuft noch ein Schwenk (schnelles Doppelklicken), vom Ziel aus weiterrechnen
   let th = _vcAnim ? _vcAnim.theta : sph.theta, ph = _vcAnim ? _vcAnim.phi : sph.phi;
+  _camModus = 'auto';
   if (dir === 'left' || dir === 'right') {
     const s = Math.round(th / Q) * Q;
     if (near(th, s)) th = s;
     th += dir === 'left' ? -Q : Q;
   } else {
-    const top = 0.02, side = Q, bot = Math.PI - 0.04;
+    const top = 0, side = Q, bot = Math.PI;
     if (dir === 'up')   ph = ph < 0.3 ? top : (ph > side + 0.12 ? side : top);
     else                ph = ph < side - 0.12 ? side : bot;
   }
@@ -76938,8 +76973,11 @@ async function _mdOeffnen(fid){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.307';
+const VOLME3D_VERSION = '1.18.308';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.308', date:'2026-11-04', spots:[{id:'ansichten',sel:'#vcs'}], changes:[
+    ['🧊','<b>Echte Draufsicht und Seitenansichten.</b> OBEN, VORNE, RECHTS und die Flächen des Ansichtswürfels schauen jetzt <b>genau gerade</b> und <b>ohne Perspektive</b> auf das Modell. Von oben siehst du nur noch die Oberseite, von der Seite nur die Seite, kein Stück der Seitenwände mehr. Bisher stand die Kamera immer etwas schräg und perspektivisch. Neu sind auch die Knöpfe <b>UNTEN</b>, <b>HINTEN</b> und <b>LINKS</b>. Die Ansicht passt das Modell gleich ins Bild ein. Drehst du weg, wird es wieder perspektivisch, ISO bleibt perspektivisch. Außerdem überdeckt das Eigenschaften-Feld die Ansichtsknöpfe nicht mehr.'],
+  ]},
   { version:'1.18.307', date:'2026-11-04', changes:[
     ['⊕','<b>Neu: Auf Fläche setzen.</b> Körper auswählen, zum Beispiel eine Box als Bohrung, auf <b>⊕ Auf Fläche</b> klicken und eine ebene Fläche eines anderen Teils anklicken. Das geht auch bei importierten STL- und 3MF-Dateien. Der Körper sitzt dann mittig auf der Fläche und ist an ihren Kanten ausgerichtet, auch bei schrägen Flächen. Danach wählst du <b>Aufsetzen</b>, <b>Bündig versenkt</b> (Tasche so tief wie die Box hoch ist) oder eine eigene Tiefe, drehst um 90° und ziehst mit <b>⊖ Gleich abziehen</b> sofort ab.'],
     ['📐','<b>Messen: Flächenabstand.</b> Klickst du zwei parallele Flächen an, zum Beispiel beide Wände einer Nut, zeigt das Messen den <b>senkrechten Abstand</b> der Flächen, egal wo genau du klickst. Andere Abstände bekommen jetzt zusätzlich ihre X-, Y- und Z-Anteile.'],
@@ -84273,14 +84311,16 @@ function _panelFitHeight(panelId, bodyId) {
   const b = document.getElementById(bodyId); if (!b || !b.offsetParent) return;
   // kleines Fenster: Feld lieber nach oben rücken, als den Inhalt auf ein Guckloch zu quetschen
   const fp = document.getElementById(panelId), want = Math.min(b.scrollHeight, 260);
-  const room = innerHeight - b.getBoundingClientRect().top - 10;
+  // Eigenschaften-Feld (links unten) endet über der Ansichtsleiste OBEN/VORNE/…, sonst lag es darüber
+  const unten = panelId === 'fp' ? 48 : 10;
+  const room = innerHeight - b.getBoundingClientRect().top - unten;
   if (room < want && !fp._userMoved) {
     // nicht unter die Werkzeugleiste schieben — die liegt darüber und schluckt Klicks/Mausrad
     const tb = document.getElementById('tb'), floor = (tb ? tb.getBoundingClientRect().bottom : 0) + 6;
     const top = parseInt(fp.style.top || 120), up = Math.min(want - room, Math.max(0, fp.getBoundingClientRect().top - floor));
     if (up > 0) fp.style.top = (top - up) + 'px';
   }
-  const mh = Math.max(120, Math.floor(innerHeight - b.getBoundingClientRect().top - 10)) + 'px';
+  const mh = Math.max(120, Math.floor(innerHeight - b.getBoundingClientRect().top - unten)) + 'px';
   if (b.style.maxHeight !== mh) b.style.maxHeight = mh;
 }
 window.addEventListener('resize', () => { _fpFitHeight(); _texFitHeight(); });
