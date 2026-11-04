@@ -1,6 +1,6 @@
 /* Kursvideo: Schlüsselanhänger (Grundkurs Tag 2, Aufgabe 2).
- * Box 50×25×3 mit runden Ecken (Radius 5), Loch Ø5 per Bohrung + Abziehen.
- * Lehrziel: Position (cm, Mitte) statt Teile verschieben; ○ Bohrung + ⊖ Abziehen.
+ * Box 50×25×3 mit runden Ecken (Radius 5), Loch Ø5 per Cutter + Abziehen.
+ * Lehrziel: Position (cm, Mitte) statt Teile verschieben; ○ Cutter + ⊖ Abziehen.
  */
 import { schild, taste, schwenk, blick, bereit, neueForm, tippFeld } from '../lib/kurs.mjs';
 
@@ -22,7 +22,7 @@ export default {
 
   introText: 'Moin! Aufgabe zwei: ein Schlüsselanhänger mit Loch. Du lernst: Teile über die Position genau hinsetzen und ein Loch abziehen.',
   outroTitle: 'Anhänger fertig!',
-  outroText: 'Grundform, Bohrung an die richtige Stelle, abziehen – fertig. Das Loch sitzt sechs Millimeter vom Rand. Viel Spaß beim Drucken!',
+  outroText: 'Grundform, Cutter an die richtige Stelle, abziehen – fertig. Das Loch sitzt sechs Millimeter vom Rand. Viel Spaß beim Drucken!',
   tags: ['grundkurs', 'schluesselanhaenger', 'bohrung', 'abziehen', 'position', 'anfaenger'],
 
   async ready(v) { await bereit(v); },
@@ -43,10 +43,10 @@ export default {
       },
     },
     {
-      kapitel: '2 · Bohrung',
-      say: 'Jetzt oben rechts auf Bohrung umschalten. Dann ein Zylinder: Durchmesser fünf, Höhe zehn – er ist rot. Danach wieder zurück auf Solid.',
+      kapitel: '2 · Cutter',
+      say: 'Jetzt oben rechts auf Cutter umschalten. Dann ein Zylinder: Durchmesser fünf, Höhe zehn – er ist rot. Danach wieder zurück auf Solid.',
       run: async (v) => {
-        await schild(v, 2, '<b>○ Bohrung</b> → Zylinder Ø <b>5</b>, Höhe <b>10</b> (rot) → zurück <b>● Solid</b>');
+        await schild(v, 2, '<b>○ Cutter</b> → Zylinder Ø <b>5</b>, Höhe <b>10</b> (rot) → zurück <b>● Solid</b>');
         await v.click('#mb-h', { after: 500 });
         await neueForm(v, 'cylinder');
         await tippFeld(v, '#fp-r', 5);

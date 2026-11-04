@@ -11,11 +11,25 @@ immer mindestens so lange stehen, wie ihr Satz gesprochen wird.
 """
 import json
 import os
+import re
 import sys
 import wave
 
 DEFAULT_VOICE = os.path.expanduser(
     '~/.local/share/piper-voices/de_DE-thorsten-medium.onnx')
+
+
+# Nur für die Stimme: englische Begriffe so schreiben, wie sie klingen sollen.
+# Die Untertitel behalten die echte Schreibweise (sie kommen aus make.mjs).
+AUSSPRACHE = {
+    'Cutter': 'Katter',   # V3D-CAD-Modus „Solid | Cutter“ (seit v1.18.309)
+}
+
+
+def sprich(text):
+    for wort, laut in AUSSPRACHE.items():
+        text = re.sub(r'\b' + re.escape(wort) + r'(\w*)', lambda m: laut + m.group(1), text)
+    return text
 
 
 def main():
@@ -42,7 +56,7 @@ def main():
             result.append({'id': line['id'], 'file': None, 'dur': 0.0})
             continue
         with wave.open(path, 'wb') as wf:
-            voice.synthesize_wav(text, wf, syn_config=syn)
+            voice.synthesize_wav(sprich(text), wf, syn_config=syn)
         with wave.open(path, 'rb') as wf:
             dur = wf.getnframes() / float(wf.getframerate())
         result.append({'id': line['id'], 'file': path, 'dur': round(dur, 3)})

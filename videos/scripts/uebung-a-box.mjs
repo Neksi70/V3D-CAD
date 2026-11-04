@@ -1,7 +1,7 @@
 /* Kursvideo: Übung A (Grundkurs Tag 1) — Box mit Schiebedeckel.
  *
  * Folgt Folie „Box mit Schiebedeckel" im Foliensatz grundkurs (V3D Tafel) Schritt für
- * Schritt: Hohlkörper per Bohrung + Ausrichten, Nut über Arbeitsebene mit Versatz,
+ * Schritt: Hohlkörper per Cutter + Ausrichten, Nut über Arbeitsebene mit Versatz,
  * Deckel mit Spielraum −0,2 und vertieftem Namen, dann Schnitt und Druck-Check.
  * Bauweg und Maße wie im getesteten Kursweg (~/bau_uebung_a_stl.mjs).
  * Oben steht je Schritt ein Schild mit Nummer und Maßen wie auf der Folie.
@@ -177,10 +177,10 @@ export default {
       },
     },
     {
-      kapitel: '1 · Bohrung',
-      say: 'Jetzt oben rechts auf Bohrung umschalten — alles, was jetzt kommt, wird ein Loch. Dann noch eine Box: vierundfünfzig, vierundsiebzig, dreiunddreißig. Das wird der Innenraum. Danach wieder zurück auf Solid.',
+      kapitel: '1 · Cutter',
+      say: 'Jetzt oben rechts auf Cutter umschalten — alles, was jetzt kommt, wird ein Loch. Dann noch eine Box: vierundfünfzig, vierundsiebzig, dreiunddreißig. Das wird der Innenraum. Danach wieder zurück auf Solid.',
       run: async (v) => {
-        await schild(v, 1, 'Auf <b>○ Bohrung</b> umschalten · Box <b>54 × 74 × 33 mm</b>');
+        await schild(v, 1, 'Auf <b>○ Cutter</b> umschalten · Box <b>54 × 74 × 33 mm</b>');
         await v.click('#mb-h', { after: 600 });
         await neueBox(v);
         await masse(v, 54, 74, 33);
@@ -225,9 +225,9 @@ export default {
     },
     {
       kapitel: '2 · Nut',
-      say: 'Wieder auf Bohrung, und eine Box sechsundfünfzig, achtundsiebzig, drei Komma vier. Sie liegt automatisch auf der Arbeitsebene — also genau dort, wo die Nut hin soll.',
+      say: 'Wieder auf Cutter, und eine Box sechsundfünfzig, achtundsiebzig, drei Komma vier. Sie liegt automatisch auf der Arbeitsebene — also genau dort, wo die Nut hin soll.',
       run: async (v) => {
-        await schild(v, 2, '<b>○ Bohrung</b> · Box <b>56 × 78 × 3,4 mm</b>');
+        await schild(v, 2, '<b>○ Cutter</b> · Box <b>56 × 78 × 3,4 mm</b>');
         await v.click('#mb-h', { after: 500 });
         await neueBox(v);
         await masse(v, 56, 78, 3.4);
@@ -258,9 +258,9 @@ export default {
     },
     {
       kapitel: '3 · Griffkante (optional)',
-      say: 'Schritt drei ist freiwillig: eine Griffkante vorne. Gleicher Weg, Versatz minus zwei, Bohrung sechsundfünfzig mal fünf mal vier. Wir lassen sie hier weg.',
+      say: 'Schritt drei ist freiwillig: eine Griffkante vorne. Gleicher Weg, Versatz minus zwei, Cutter sechsundfünfzig mal fünf mal vier. Wir lassen sie hier weg.',
       run: async (v) => {
-        await schild(v, 3, '<b>Optional – Griffkante:</b> Versatz −2 mm · Bohrung 56 × 5 × 4 mm · mittig + Vorne', true);
+        await schild(v, 3, '<b>Optional – Griffkante:</b> Versatz −2 mm · Cutter 56 × 5 × 4 mm · mittig + Vorne', true);
         await v.sleep(800);
       },
     },
