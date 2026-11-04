@@ -697,6 +697,9 @@ body.devmode .dev-only{display:flex!important}
 /* Flächen-Pick-Modi (Arbeitsebene, Schale …): Anfasser des gewählten Körpers
    dürfen den Klick auf dessen Fläche nicht abfangen */
 #dim-handles.face-pick > *{pointer-events:none!important}
+/* Kanten bearbeiten: Größen-Griffe weg – in den geraden Ansichten (orthogonal) lagen die
+   schwarzen Kanten-Griffe genau auf den Kanten und schluckten den Klick (Volker 5.11.) */
+#dim-handles.edge-pick > *{display:none!important}
 #dim-handles.handles-off .h-white,
 #dim-handles.handles-off .h-black,
 #dim-handles.handles-off .h-lift { pointer-events:none !important; cursor:default !important; }
@@ -11508,6 +11511,7 @@ function enterEdgeMode(quiet = false) {
   }
   const _isBox = o.userData.shapeType === 'box' || o.geometry instanceof THREE.BoxGeometry || !!o.userData.edgeBevels;
   _edgeObj = o; _edgeSel.clear(); _edgeHover = -1; _edgeMode = true; _edgeGlobal = false;
+  { const dh = document.getElementById('dim-handles'); if (dh) dh.classList.add('edge-pick'); }
   if (o.userData._globalChamferOrigGeo) delete o.userData._globalChamferOrigGeo;
 
   // Ausgehöhlt (▣ Gehäuse): die festen 12 Quaderkanten kennen keine Innenkanten —
@@ -11764,6 +11768,7 @@ function enterEdgeMode(quiet = false) {
 }
 
 function exitEdgeMode() {
+  { const dh = document.getElementById('dim-handles'); if (dh) dh.classList.remove('edge-pick'); }
   _ebPrevEnd();
   _edgeFeatEditKey = null;
   if (_edgeLines) { _edgeObj.remove(_edgeLines); _edgeLines.geometry.dispose(); _edgeLines = null; }
@@ -12301,8 +12306,21 @@ function _skSnapFull(p){
     else if (hint!=='V' && hint!=='45°'){ for (const ep of _skAllVertices()){ if (Math.abs(ep.u-u)<at){ u=ep.u; hint=hint?hint+'⋮':'⋮'; break; } } }
     if (hint!=='H' && hint!=='45°' && hint!=='∥' && hint!=='⟂'){ for (const ep of _skAllVertices()){ if (Math.abs(ep.v-v)<at){ v=ep.v; hint=(hint&&hint!=='⋮')?hint+'⋯':(hint==='⋮'?'⋮⋯':'⋯'); break; } } }
   }
-  // 4) Raster-Fallback für noch freie Achsen
+  // 4) Raster für die Richtung, die der Fang noch frei lässt (Volker 5.11.: „rastet nichts ein“ –
+  //    eine waagerechte Linie wurde 19,8 statt 20 mm lang, weil nach „H“ das Raster aussetzte)
   if (!hint){ u=snapV(u); v=snapV(v); }
+  else {
+    const festU = hint.includes('⋮') || hint[0]==='V', festV = hint.includes('⋯') || hint[0]==='H';
+    const ref = ((_sk.tool==='line'||_sk.tool==='spline') && _sk.pending.length) ? _sk.pending[_sk.pending.length-1] : null;
+    if (hint==='45°' || hint==='∥' || hint==='⟂'){
+      // Richtung steht fest → die LÄNGE rastet im Raster
+      if (ref){ const dx=u-ref.u, dy=v-ref.v, L=Math.hypot(dx,dy), L2=snapV(L);
+        if (L>1e-6 && L2>0){ u=ref.u+dx/L*L2; v=ref.v+dy/L*L2; } }
+    } else {
+      if (!festU) u=snapV(u);
+      if (!festV) v=snapV(v);
+    }
+  }
   _sk.hint=hint;
   return { u, v };
 }
@@ -12671,10 +12689,18 @@ function _skClick(e){
   }
   if (T==='trim'){ _skTrimAt(cur); _skRender(); return; }
   if (T==='line'){
+    if (!P.length) _sk.lineStart = { u: cur.u, v: cur.v, n: _sk.ents.length };   // Anfang des Linienzugs
     P.push(cur);
     if (P.length>=2){ const a=P[P.length-2], b=P[P.length-1];
       if (Math.hypot(a.u-b.u,a.v-b.v)>1e-5){ const ln={type:'line', a:{u:a.u,v:a.v}, b:{u:b.u,v:b.v}}; _sk.ents.push(ln); _skcAutoHV(ln, _sk.hint, _sk.hintRef); }
-      _sk.pending=[b]; }
+      _sk.pending=[b];
+      // Zurück auf den Anfangspunkt geklickt (mind. 2 Linien) → Kontur geschlossen, Linienzug endet
+      // (wie in Fusion). Vorher lief die Linie einfach weiter (Volker 5.11.: „kann nichts beenden“).
+      const L0 = _sk.lineStart;
+      if (L0 && Math.hypot(b.u-L0.u, b.v-L0.v) < 1e-6 && _sk.ents.length - L0.n >= 2) {
+        _sk.pending = []; _sk.lineStart = null;
+        notify('Kontur geschlossen ✓ – jetzt „✓ Extrudieren“ oder die nächste Form zeichnen', 'ok');
+      } }
   } else if (T==='rect'){
     P.push(cur);
     if (P.length===2){ const r=_skRectPts(P[0],P[1]);
@@ -16252,7 +16278,7 @@ function _revolvePickPoint(e, ref, axisSnap) {
   if (ref === undefined) ref = _revolvePoints.length ? _revolvePoints[_revolvePoints.length - 1] : null;
   if (axisSnap === undefined) axisSnap = _revolvePoints.length === 0;
   if (axisSnap) {
-    const visW = 2 * sph.r * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    const visW = 2 * sph.r * Math.tan(THREE.MathUtils.degToRad((camera.fov || 45) / 2));   // orthogonal: fov fehlt, Ausschnitt = 45°
     if (rawR < visW * 0.05) rawR = 0;
   }
   let r = snapV(rawR);
@@ -16261,7 +16287,7 @@ function _revolvePickPoint(e, ref, axisSnap) {
   let ortho = null;
   if (ref) {
     const last = ref;
-    const visW = 2 * sph.r * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    const visW = 2 * sph.r * Math.tan(THREE.MathUtils.degToRad((camera.fov || 45) / 2));   // orthogonal: fov fehlt, Ausschnitt = 45°
     const tol = visW * 0.015;
     const dh = Math.abs(h - last.h), dr = Math.abs(r - last.r);
     if (dh < tol && dr > dh)      { h = last.h; ortho = 'h'; }
@@ -36584,7 +36610,7 @@ function _flgPickChain(e){
   objects.forEach(o => o.traverse(c => { if (c.userData && c.userData.isEdgeLines && c.visible !== false) lines.push(c); }));
   if (!lines.length) return null;
   const r = vpEl.getBoundingClientRect();
-  const dist = camera.position.distanceTo(orbitTarget), wpp = 2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / r.height;
+  const dist = camera.position.distanceTo(orbitTarget), wpp = 2 * dist * Math.tan(THREE.MathUtils.degToRad((camera.fov || 45) / 2)) / r.height;
   const old = raycaster.params.Line ? raycaster.params.Line.threshold : 1;
   raycaster.params.Line = { threshold: 7 * wpp };
   let hits; try { hits = raycaster.intersectObjects(lines, false); } finally { raycaster.params.Line = { threshold: old }; }
@@ -38356,7 +38382,7 @@ canvas.addEventListener('touchmove', e => {
     // tests/pan_direction_test.mjs; der Dreh vom 1.9. (a575fef) hatte es
     // genau verkehrt herum gemacht — Nutzer-Meldung 10.9.: „wieder gegenläufig".
     const mid = _midpoint(_touches);
-    const ppu = sph.r * 2 * Math.tan(camera.fov * Math.PI / 360) / (canvas.clientHeight || 800);
+    const ppu = sph.r * 2 * Math.tan((camera.fov || 45) * Math.PI / 360) / (canvas.clientHeight || 800);
     _queuePan(-(mid.x - orbitStart.x) * ppu, (mid.y - orbitStart.y) * ppu);
     orbitStart = mid;
   }
@@ -76990,8 +77016,12 @@ async function _mdOeffnen(fid){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.309';
+const VOLME3D_VERSION = '1.18.310';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.310', date:'2026-11-05', changes:[
+    ['🛠','<b>Fase und Rundung gehen wieder.</b> Seit den geraden Ansichten (1.18.308) lagen in OBEN, VORNE usw. die schwarzen Größen-Griffe genau auf den Kanten und schluckten den Klick bei „⬡ Kanten bearbeiten“. Im Kantenmodus sind die Größen-Griffe jetzt ausgeblendet, danach kommen sie wieder.'],
+    ['✏️','<b>Skizze: Linien rasten wieder ein und lassen sich schließen.</b> Rastete eine Linie waagerecht, senkrecht oder in 45° ein, galt das Raster für die Länge nicht mehr (19,8 statt 20 mm). Jetzt rastet auch die Länge. Klickst du wieder auf den Anfangspunkt, ist die Kontur geschlossen und der Linienzug endet wie in Fusion, statt endlos weiterzulaufen.'],
+  ]},
   { version:'1.18.309', date:'2026-11-05', spots:[{id:'cutter',sel:'#mb-h'}], changes:[
     ['✂️','<b>„Bohrung“ heißt jetzt „Cutter“.</b> Der Schalter <b>Solid | Cutter</b> markiert ein Teil zum Herausschneiden, egal ob Zylinder, Quader oder Text. „Bohrung“ passte zum Beispiel bei einem abgezogenen Quader nicht. Taste <b>H</b> und die Bedienung bleiben gleich. Echte Bohrungen (🕳️ Loch, Gewinde, Schraubenloch-Maße) heißen weiter Bohrung.'],
     ['⌨️','<b>Gleiche Tastenkürzel wie Fusion, in allen drei Arbeitsweisen:</b> <b>I</b> = Messen, <b>V</b> = Auswahl ein-/ausblenden, <b>Pos1</b> = Ansicht zurücksetzen (ISO, eingepasst). Die Übersicht unter ⌨️ zeigt sie im neuen Abschnitt „In allen Arbeitsweisen gleich“.'],
