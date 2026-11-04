@@ -327,9 +327,16 @@ window.V3D_HILFE = [
     wo: 'GENERATOREN → KI-Modell.', s: ['Beschreibung eintippen.', 'Erzeugen und warten.'], run: 'kiTogglePanel()' },
 
   // ── Prüfen ─────────────────────────────────────────────────────────────
-  { b: 'Prüfen', i: '📐', t: 'Messen', k: 'messen abstand durchmesser maß lineal',
+  { b: 'Prüfen', i: '📐', t: 'Messen', k: 'messen abstand durchmesser maß lineal nut nutbreite wand fläche flächenabstand parallel',
     was: 'Misst Abstände und Durchmesser in mm.',
-    wo: 'Prüfen → 📐 Messen, oder Rechtsklick → Messen.', s: ['Messen starten.', 'Kreiskante anklicken = Durchmesser, zwei Punkte = Abstand.', 'Esc beendet.'], run: 'measureTool()' },
+    wo: 'Prüfen → 📐 Messen, oder Rechtsklick → Messen.', s: ['Messen starten.', 'Kreiskante anklicken = Durchmesser, zwei Punkte = Abstand (mit X/Y/Z-Anteilen).', 'Zwei <b>parallele Flächen</b> anklicken (z. B. beide Wände einer Nut) = senkrechter <b>Flächenabstand</b>, egal wo genau geklickt.', 'Esc beendet.'], run: 'measureTool()' },
+  { b: 'Prüfen', i: '🔍', t: 'Maße abgreifen', k: 'maße abgreifen vermessen untersuchen alle maße bohrung durchmesser nut wandstärke bodenstärke innenmaß außenmaß import stl 3mf',
+    was: 'Untersucht ein Bauteil, auch ein importiertes STL/3MF, und listet alle Maße: Außenmaße, Bohrungen und Zapfen (Ø + Tiefe), Nuten/Innenmaße, Wand- und Bodenstärken. Gleiche Maße werden zusammengefasst (z. B. „4× Ø 5,0“).',
+    wo: 'Prüfen → 🔍 Maße abgreifen, Rechtsklick → Maße abgreifen oder Suche (Strg+K).', s: ['Bauteil auswählen.', '<b>🔍 Maße abgreifen</b> klicken.', 'Zeile anklicken: die Stelle wird im Modell orange gezeigt.', '<b>📋 Als Text kopieren</b> für Notizen oder Nachbau.'],
+    tipp: 'Bohrungen erkennt es am kreisrunden Rand im Netz. Bei Scans und frei geformten Teilen gibt es weniger ebene Flächen – dann bleibt 📐 Messen.', run: '_mabOpen()' },
+  { b: 'Anordnen', i: '⊕', t: 'Auf Fläche setzen (mittig)', k: 'auf fläche setzen mittig zentriert box bohrung tasche abziehen import stl 3mf',
+    was: 'Setzt einen Körper (z. B. eine Box als Bohrung) mittig auf eine angeklickte ebene Fläche eines anderen Körpers, an deren Kanten ausgerichtet – auch auf importierten STL/3MF.',
+    wo: 'Anordnen → ⊕ Auf Fläche, oder Rechtsklick → Auf Fläche setzen.', s: ['Körper auswählen (z. B. Box, als Bohrung).', '<b>⊕ Auf Fläche</b> klicken, dann die Fläche anklicken.', 'Eintauchen wählen: Aufsetzen, Bündig versenkt (Tasche so tief wie der Körper hoch) oder eigene Tiefe; ↻ 90° dreht.', '<b>⊖ Gleich abziehen</b> zieht die Bohrung sofort ab.'], run: '_afsStart()' },
   { b: 'Prüfen', i: '◪', t: 'Schnittansicht', k: 'schnitt schnittansicht aufschneiden innen wandstärke',
     was: 'Schneidet das Modell zum Hineinschauen auf — nur Ansicht, ändert nichts.',
     wo: 'Prüfen → ◪ Schnitt.', s: ['Schnitt starten.', 'Ebene verschieben/drehen.', 'Esc beendet.'], run: 'sectionTool()' },
