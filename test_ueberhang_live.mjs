@@ -1,6 +1,7 @@
 // Funktionstest 📐 Überhänge live: bekannte Fläche, Nachführen bei Bewegung, Klickpfad, kein Export des Overlays
 import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 const PORT = 8876;
 const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { cwd: '/home/v3da', stdio: 'ignore', env: { ...process.env, V3D_DB: '/tmp/v3d_ohl_test.db' } });
 await new Promise(r => setTimeout(r, 1200));
@@ -46,7 +47,8 @@ try {
     pressed: document.getElementById('ohl-btn').getAttribute('aria-pressed'), inObjects: objects.some(o => o.userData.isOverlay) }));
   ok(r4.an && r4.gespeichert && r4.pressed === 'true', 'Klick auf 📐 schaltet an, merkt es sich, aria-pressed', r4);
   ok(!r4.inObjects, 'Overlay ist kein Objekt (kein Export/Speichern)');
-  await page.screenshot({ path: '/home/v3da/replica/simpcadx/clone-screens/S15-ueberhaenge-live.png' });
+  fs.mkdirSync(process.env.V3D_SHOTS || '/tmp/v3d-test-screens', { recursive: true });
+  await page.screenshot({ path: (process.env.V3D_SHOTS || '/tmp/v3d-test-screens') + '/S15-ueberhaenge-live.png' });
   await page.click('#ohl-btn');
   ok(await page.evaluate(() => !_ohl.an && _ohlVis.length === 0 && _ohlTimer === null), 'zweiter Klick schaltet aus und räumt auf');
   await page.setViewportSize({ width: 390, height: 844 });

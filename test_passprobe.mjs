@@ -9,7 +9,7 @@ fs.rmSync(DB, { force: true });
 const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'],
   { cwd: '/home/v3da', stdio: 'inherit', env: { ...process.env, V3D_DB: DB } });
 await new Promise(r => setTimeout(r, 1200));
-const SHOTS = '/home/v3da/replica/simpcadx/clone-screens';
+const SHOTS = process.env.V3D_SHOTS || '/tmp/v3d-test-screens';
 fs.mkdirSync(SHOTS, { recursive: true });
 
 let fehler = 0;
