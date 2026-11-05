@@ -193,6 +193,10 @@ ALLOW = {
     '/lib/leaflet.js':                    ('lib/leaflet.js', 'text/javascript; charset=utf-8'),
     '/lib/manifold.js':                   ('lib/manifold.js', 'text/javascript; charset=utf-8'),
     '/lib/manifold.wasm':                 ('lib/manifold.wasm', 'application/wasm'),
+    # Strebe → Spline (Leitkurven aus Scan): Kern + Worker + Panel
+    '/lib/strebenspline-kern.js':         ('lib/strebenspline-kern.js', 'text/javascript; charset=utf-8'),
+    '/lib/strebenspline-worker.js':       ('lib/strebenspline-worker.js', 'text/javascript; charset=utf-8'),
+    '/lib/strebenspline-ui.js':           ('lib/strebenspline-ui.js', 'text/javascript; charset=utf-8'),
     '/lib/leaflet.css':                   ('lib/leaflet.css', 'text/css; charset=utf-8'),
     '/lib/leaflet-marker-icon.png':       ('lib/leaflet-marker-icon.png', 'image/png'),
     '/lib/leaflet-marker-icon-2x.png':    ('lib/leaflet-marker-icon-2x.png', 'image/png'),
