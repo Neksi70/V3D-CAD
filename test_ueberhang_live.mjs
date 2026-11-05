@@ -24,6 +24,8 @@ try {
   await page.waitForTimeout(1000);
   const r2 = await page.evaluate(() => ({ f: _ohlInfo.flaeche, txt: document.getElementById('ohl-btn').textContent }));
   ok(r2.f < 1 && /✓/.test(r2.txt), 'Platte auf dem Boden → keine Überhänge, Knopf zeigt ✓ (live nachgeführt)', r2);
+  const rU = await page.evaluate(async () => { await v3dApi.execute('edit.undo', {}); await new Promise(r => setTimeout(r, 1000)); return _ohlInfo.flaeche; });
+  ok(Math.abs(rU - 1600) <= 2, 'Rückgängig → Platte wieder oben, 1600 mm² live zurück', rU);
   // Keil-Unterseite 40° gegen die Waagrechte: Grenze 45 → rot, 35 → knapp (35–45), 25 → frei (über 25+10)
   const r3 = await page.evaluate(async () => {
     _newCreate(false);

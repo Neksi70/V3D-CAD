@@ -145,6 +145,48 @@ try {
     const g = document.querySelector('#pf-modal .pf-grid').getBoundingClientRect(); return { box: [b.left, b.right], grid: [g.left, g.right] }; });
   ok(r7.box[0] >= 0 && r7.box[1] <= 390 && r7.grid[1] <= r7.box[1], 'Dialog und Lochraster passen in 390 px', r7);
 
+  console.log('8) Druckerwechsel: Passung gilt nur für ihren Drucker');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const r8 = await page.evaluate(async () => {
+    await v3dApi.execute('fit.set', { loch_nr: 6 });                       // A1 / P1S / X1C
+    localStorage.setItem('printerName', 'SV08 Max');
+    const andere = _pfAktiv();
+    const box = objects.find(o => !/^Passprobe/.test(o.userData.name || '')) || objects[0];
+    const rB = _build3mfBlob([box]);
+    localStorage.setItem('printerName', 'A1 / P1S / X1C');
+    return { andere, passung: rB.passung, zurueck: _pfAktiv() && _pfAktiv().loch_korr_mm };
+  });
+  ok(r8.andere === null && !r8.passung, 'anderer Drucker → keine Korrektur im Export', r8);
+  ok(r8.zurueck === 0.15, 'zurück auf A1 → Passung gilt wieder', r8.zurueck);
+
+  console.log('9) Auslösepfad „An den Slicer“: einfarbig + Passung → 3MF mit Eintrag');
+  const r9 = await page.evaluate(async () => {
+    _newCreate(false);
+    await v3dApi.execute('shape.add', { type: 'box', size: [20, 20, 10] });
+    let fang = null; const orig = window._downloadBlob, meld = [];
+    window._downloadBlob = (b, n) => { fang = { b, n }; };
+    const origN = window.notify; window.notify = (m, t) => { meld.push(m); return origN(m, t); };
+    _stlHelperOk = false;
+    await _sendCurrentToSlicer();
+    window._downloadBlob = orig; window.notify = origN;
+    if (!fang) return { fehler: 'kein Download', meld };
+    const u = new Uint8Array(await fang.b.arrayBuffer());
+    const cfg = fflate.strFromU8(fflate.unzipSync(u)['Metadata/model_settings.config'] || new Uint8Array());
+    return { name: fang.n, eintrag: /xy_hole_compensation" value="0\.150"/.test(cfg), meld };
+  });
+  ok(r9.name && /\.3mf$/.test(r9.name) && r9.eintrag, 'Download ist .3mf mit xy_hole_compensation 0.150', r9);
+  ok(!(r9.meld || []).some(m => /1 Farben/.test(m)), 'keine Meldung „1 Farben“ (ohne Helfer)', r9.meld);
+  const r9b = await page.evaluate(async () => {
+    const meld = [], origN = window.notify, origF = window.fetch, origP = window._stlPingHelper;
+    window.notify = (m, t) => { meld.push(m); return origN(m, t); };
+    window._stlPingHelper = async () => {};
+    window.fetch = async (u, o) => /\/print$/.test(String(u)) ? new Response(JSON.stringify({ ok: true, slicer: _stlHelperSlicers[0] }), { status: 200 }) : origF(u, o);
+    _stlHelperOk = true; _stlHelperSlicers.splice(0, _stlHelperSlicers.length, 'bambu');
+    try { await _sendCurrentToSlicer(); } finally { window.notify = origN; window.fetch = origF; window._stlPingHelper = origP; _stlHelperOk = false; }
+    return meld;
+  });
+  ok(r9b.some(m => /3MF/.test(m) && /geöffnet/.test(m)) && !r9b.some(m => /1 Farben/.test(m)), 'mit Druck-Helfer: „als 3MF … geöffnet“, ohne „1 Farben“', r9b);
+
   ok(errs.length === 0, 'keine Fehler in der Konsole', errs.slice(0, 5));
 } catch (e) { console.log('  ✗ Abbruch:', e.message); fehler++; }
 finally { await browser.close(); srv.kill(); }
