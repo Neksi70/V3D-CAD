@@ -26,6 +26,7 @@ import v3d_nutzung
 import v3d_kichat
 # Vorname/Nachname je Konto + „📥 Meine Dateien“ (Ordner in Mimi share)
 import v3d_profil
+import v3d_fit
 
 # Mimi share (~/v3dteilen, 127.0.0.1:8807) hält je Nutzer einen Ordner
 # „Nachname, Vorname“; wir reichen /api/dateien* mit gemeinsamem Schlüssel durch.
@@ -665,6 +666,33 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return None
 
+    def _fit_get(self):
+        """🎯 Passprobe: eigene Korrekturprofile (Gäste: nur lokal im Browser)."""
+        sess = self._konto()
+        if not sess:
+            return
+        self._json(200, {'profile': v3d_fit.liste(sess['u'])})
+
+    def _fit_post(self, loeschen=False):
+        sess = self._konto()
+        if not sess:
+            return
+        b = self._body()
+        if b is None:
+            self._json(400, {'error': 'Ungültige Anfrage.'})
+            return
+        try:
+            d = v3d_fit.pruefen(b)
+        except ValueError as e:
+            self._json(400, {'error': str(e)})
+            return
+        if loeschen:
+            n = v3d_fit.loeschen(sess['u'], d['drucker'], d['duese_mm'], d['material'])
+            self._json(200, {'ok': True, 'geloescht': n})
+            return
+        ok, ts = v3d_fit.speichern(sess['u'], d)
+        self._json(200 if ok else 409, {'ok': ok, 'geaendert_ts': ts})
+
     def _profil_get(self):
         sess = self._session()
         if not sess:
@@ -889,6 +917,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == '/api/profil':
             self._profil_post()
+            return
+        if self.path in ('/api/fit-profil', '/api/fit-profil/loeschen'):
+            self._fit_post(loeschen=self.path.endswith('/loeschen'))
             return
         if self.path.startswith('/api/dateien/'):
             self._dateien('POST')
@@ -1178,6 +1209,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == '/api/profil':
             self._profil_get()
+            return
+        if path == '/api/fit-profil':
+            self._fit_get()
             return
         if path == '/api/dateien' or path.startswith('/api/dateien/'):
             self._dateien('GET')
