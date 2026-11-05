@@ -555,6 +555,10 @@ body.devmode .dev-only{display:flex!important}
 #ttb{position:absolute;bottom:12px;right:12px;padding:4px 11px;background:var(--white);border:1.5px solid var(--border);border-radius:20px;font-size:10px;font-weight:700;color:var(--dim);cursor:pointer;box-shadow:var(--sh);transition:all .12s;z-index:20}
 #scene-settings-btn{position:absolute;bottom:12px;right:130px;padding:4px 12px;background:var(--white);border:1.5px solid var(--border);border-radius:20px;font-size:10px;font-weight:700;color:var(--mid);cursor:pointer;box-shadow:var(--sh);transition:all .12s;z-index:20}
 #scene-settings-btn:hover{border-color:var(--acc);color:var(--acc)}
+#ohl-btn{position:absolute;bottom:44px;right:12px;padding:4px 12px;background:var(--white);border:1.5px solid var(--border);border-radius:20px;font-size:10px;font-weight:700;color:var(--mid);cursor:pointer;box-shadow:var(--sh);transition:all .12s;z-index:20;white-space:nowrap}
+#ohl-btn:hover{border-color:var(--c-accent-strong);color:var(--c-accent-strong)}
+#ohl-btn.on{border-color:var(--c-danger-strong);color:var(--c-danger-strong);background:#fff5f5}
+#ohl-btn:focus-visible{outline:2px solid var(--c-accent-strong);outline-offset:1px}
 #ttb.on{border-color:var(--grn);color:var(--grn);background:#f0fff8}
 #vcube-wrap{position:absolute;top:22px;right:26px;z-index:20;width:110px;height:110px;cursor:pointer}
 .vca{position:absolute;width:18px;height:18px;padding:0;border:0;background:transparent;color:#8898b8;font-size:12px;line-height:18px;text-align:center;cursor:pointer;border-radius:4px;transition:all .12s}
@@ -2446,6 +2450,7 @@ const firebaseConfig = {
   <div id="vcube-wrap" title="Fläche anklicken: Ansicht von dort · ziehen: frei drehen"><button onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" class="vca vca-u" onclick="_vcStep('up')" title="Ansicht nach oben schwenken (90°)">▲</button><button onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" class="vca vca-d" onclick="_vcStep('down')" title="Ansicht nach unten schwenken (90°)">▼</button><button onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" class="vca vca-l" onclick="_vcStep('left')" title="Ansicht nach links schwenken (90°)">◀</button><button onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" class="vca vca-r" onclick="_vcStep('right')" title="Ansicht nach rechts schwenken (90°)">▶</button></div>
   <button id="ttb" onclick="toggleTurntable()">⟳ Turntable</button>
   <button id="scene-settings-btn" onclick="_openSceneSettings()">Einstellungen</button>
+  <button id="ohl-btn" aria-pressed="false" onclick="_ohlSchalten()" oncontextmenu="_ohlGrenze(event)">📐 Überhänge</button>
   <div id="bp-hud-printer" style="position:absolute;bottom:14px;left:12px;font-size:10px;font-weight:700;color:#8aa4bc;pointer-events:none;display:none"></div>
   <div id="bp-hud-dim" style="position:absolute;bottom:14px;right:220px;font-size:10px;font-weight:700;color:#8aa4bc;pointer-events:none"></div>
 </div>
@@ -77452,8 +77457,11 @@ async function _mdOeffnen(fid){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.313';
+const VOLME3D_VERSION = '1.18.314';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.314', date:'2026-11-06', changes:[
+    ['📐','<b>Überhänge live.</b> Neuer Schalter unten rechts: <b>📐 Überhänge</b>. Solange er an ist, färbt V3D beim Konstruieren alles, was ohne Stütze nicht sauber druckt – <b>rot gestreift</b> braucht Stütze, <b>orange gestreift</b> ist knapp. Die Färbung folgt jeder Änderung, Teile auf der Platte zählen nicht, und der Knopf zeigt, wie viel Fläche betroffen ist. Rechtsklick auf den Knopf stellt den Grenzwinkel ein (Standard 45°). Die Färbung ist nur Anzeige – sie wird weder gespeichert noch exportiert.'],
+  ]},
   { version:'1.18.313', date:'2026-11-06', changes:[
     ['🎯','<b>Passung einmessen.</b> Fast jeder Drucker macht Löcher etwas zu eng und Außenkanten etwas zu breit – Deckel klemmen, Stifte passen nicht. Unter <b>⚙ Arbeitsbereich → 🎯 Passung</b> (oder Strg+K „Passung“) legt V3D eine <b>Lochplatte mit 9 Löchern</b> und einen <b>Zapfen</b> auf die Platte. Einmal drucken, antippen, in welches Loch der Zapfen passt (oder mit dem Messschieber nachmessen) – fertig. Ab dann trägt jeder <b>3MF-Export</b> und „An den Slicer“ die Korrektur für deinen Drucker als Slicer-Einstellung ein (Bambu Studio und Orca). Dein Modell selbst bleibt unverändert, mit Konto gilt die Passung auf all deinen Geräten.'],
   ]},
@@ -89252,6 +89260,118 @@ function _pfAus() {
 }
 setTimeout(() => { _pfSsSub(); _pfHolen(); }, 4000);
 
+// ═══ 📐 ÜBERHÄNGE LIVE ══════════════════════════════════════════════════════════
+// Schalter unten rechts: färbt beim Konstruieren alles, was ohne Stütze kritisch
+// wird – orange gestreift = knapp (bis 10° steiler als die Grenze), rot gestreift = braucht
+// Stütze. Gleiche Regel wie der Druck-Check (_pcShowOverhangs): Flächen auf der
+// Platte zählen nicht. Overlay liegt in der Szene (nicht in objects) → wird nie
+// exportiert, gespeichert oder bemalt. Neu gerechnet, wenn sich Szene oder Lage
+// ändern (alle 400 ms ein billiger Prüfwert); sehr große Szenen erst, wenn das
+// Ziehen vorbei ist.
+const _OHL_KEY = 'v3d_overhang', _OHL_MAXTRI = 200000;
+let _ohl = (() => { try { const j = JSON.parse(localStorage.getItem(_OHL_KEY) || '{}'); return { an: !!j.an, grenze: +j.grenze >= 20 && +j.grenze <= 80 ? +j.grenze : 45 }; } catch (_) { return { an: false, grenze: 45 }; } })();
+let _ohlVis = [], _ohlSig = '', _ohlStabil = 0, _ohlTimer = null, _ohlTex = null, _ohlInfo = { flaeche: 0, knapp: 0, gekappt: false };
+
+function _ohlStreifen() {
+  if (_ohlTex) return _ohlTex;
+  const c = document.createElement('canvas'); c.width = c.height = 32;
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, 32, 32);
+  g.strokeStyle = 'rgba(0,0,0,.55)'; g.lineWidth = 6;
+  for (let k = -32; k <= 64; k += 16) { g.beginPath(); g.moveTo(k, 0); g.lineTo(k + 32, 32); g.stroke(); }
+  _ohlTex = new THREE.CanvasTexture(c); _ohlTex.wrapS = _ohlTex.wrapT = THREE.RepeatWrapping;
+  return _ohlTex;
+}
+function _ohlLeeren() { _ohlVis.forEach(m => { scene.remove(m); m.geometry.dispose(); m.material.dispose(); }); _ohlVis = []; }
+function _ohlMeshes() {
+  const out = [];
+  objects.forEach(o => { if (o.visible !== false) o.traverse(n => { if (n.isMesh && n.visible && !n.userData.isEdgeLines && !n.userData.isHole && n.geometry && n.geometry.attributes.position) out.push(n); }); });
+  return out;
+}
+function _ohlSignatur(ms) {   // ändert sich bei jeder Bewegung, Drehung, neuem Netz
+  let s = _sceneRev + ':' + ms.length;
+  ms.forEach(m => { m.updateWorldMatrix(true, false); const e = m.matrixWorld.elements; s += '|' + m.geometry.uuid + (e[0] + e[5] * 3 + e[10] * 7 + e[12] * 11 + e[13] * 13 + e[14] * 17 + e[4] * 19 + e[8] * 23).toFixed(5); });
+  return s;
+}
+function _ohlRechne(ms) {
+  _ohlLeeren();
+  if (!ms.length) { _ohlInfo = { flaeche: 0, knapp: 0, gekappt: false }; _ohlKnopf(); return; }
+  const box = new THREE.Box3(); ms.forEach(m => box.expandByObject(m));
+  // Winkel θ = Neigung der Fläche gegen die Waagrechte (= Normale gegen „nach unten“), wie Bambu/Orca:
+  // θ < Grenze → braucht Stütze; Grenze ≤ θ < Grenze + 10° → knapp
+  const minY = box.min.y, ROT = Math.cos(_ohl.grenze * Math.PI / 180), ORA = Math.cos(Math.min(89, _ohl.grenze + 10) * Math.PI / 180);
+  const bad = [], warn = [], uvB = [], uvW = [];
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), ab = new THREE.Vector3(), ac = new THREE.Vector3(), n = new THREE.Vector3();
+  let tris = 0, flBad = 0, flWarn = 0, gekappt = false;
+  outer:
+  for (const m of ms) {
+    const pos = m.geometry.attributes.position, idx = m.geometry.index, tc = (idx ? idx.count : pos.count) / 3;
+    for (let t = 0; t < tc; t++) {
+      if (++tris > _OHL_MAXTRI) { gekappt = true; break outer; }
+      a.fromBufferAttribute(pos, idx ? idx.getX(t * 3) : t * 3).applyMatrix4(m.matrixWorld);
+      b.fromBufferAttribute(pos, idx ? idx.getX(t * 3 + 1) : t * 3 + 1).applyMatrix4(m.matrixWorld);
+      c.fromBufferAttribute(pos, idx ? idx.getX(t * 3 + 2) : t * 3 + 2).applyMatrix4(m.matrixWorld);
+      ab.subVectors(b, a); ac.subVectors(c, a); n.crossVectors(ab, ac);
+      const len = n.length(); if (len < 1e-12) continue;
+      n.multiplyScalar(1 / len);
+      if (n.y >= -ORA) continue;                                   // nicht steil genug nach unten
+      if ((a.y + b.y + c.y) / 3 <= minY + 0.05) continue;           // liegt auf der Platte
+      const ziel = n.y < -ROT ? bad : warn, uv = ziel === bad ? uvB : uvW, e = 0.006;
+      for (const v of [a, b, c]) { ziel.push(v.x + n.x * e, v.y + n.y * e, v.z + n.z * e); uv.push((v.x + v.z) * 2.2, v.y * 2.2); }
+      if (ziel === bad) flBad += len / 2; else flWarn += len / 2;
+    }
+  }
+  const tex = _ohlStreifen();
+  [[bad, uvB, 0xdc2626], [warn, uvW, 0xf59e0b]].forEach(([v, uv, col]) => {
+    if (!v.length) return;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: col, map: tex, side: THREE.DoubleSide, transparent: true, opacity: 0.9,
+      depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+    mesh.renderOrder = 997; mesh.raycast = () => {}; mesh.userData.isOverlay = true;
+    scene.add(mesh); _ohlVis.push(mesh);
+  });
+  _ohlInfo = { flaeche: flBad * 100, knapp: flWarn * 100, gekappt };   // cm² intern → mm²
+  _ohlKnopf();
+}
+function _ohlTick() {
+  if (!_ohl.an) return;
+  const ms = _ohlMeshes(), sig = _ohlSignatur(ms);
+  if (sig === _ohlSig) { _ohlStabil++; return; }
+  // große Szenen: erst rechnen, wenn sich zwei Ticks lang nichts mehr bewegt hat
+  const gross = ms.reduce((s, m) => s + (m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count) / 3, 0) > 60000;
+  if (gross && _ohlStabil < 1 && _ohlSig) { _ohlSig = sig; _ohlStabil = 0; return; }
+  _ohlSig = sig; _ohlStabil = 0;
+  _ohlRechne(ms);
+}
+function _ohlKnopf() {
+  const k = document.getElementById('ohl-btn'); if (!k) return;
+  k.classList.toggle('on', _ohl.an);
+  k.setAttribute('aria-pressed', String(_ohl.an));
+  const f = v => v >= 100 ? (v / 100).toFixed(1).replace('.', ',') + ' cm²' : Math.round(v) + ' mm²';
+  k.textContent = '📐 Überhänge' + (_ohl.an ? ' ' + _ohl.grenze + '°' + (_ohlInfo.flaeche > 0.5 ? ' · ' + f(_ohlInfo.flaeche) : ' ✓') : '');
+  k.title = _ohl.an
+    ? `Rot gestreift: flacher als ${_ohl.grenze}° gegen die Waagrechte – braucht Stütze (${f(_ohlInfo.flaeche)}). Orange: knapp (${f(_ohlInfo.knapp)}).${_ohlInfo.gekappt ? ' Sehr großes Modell – nur ein Teil geprüft.' : ''} Rechtsklick: Grenzwinkel ändern. Tipp: ⊥ Aufstellen sucht die Lage mit den wenigsten Überhängen.`
+    : 'Überhänge live anzeigen – färbt beim Konstruieren, was ohne Stütze kritisch wird';
+}
+function _ohlSchalten(an) {
+  _ohl.an = an == null ? !_ohl.an : !!an;
+  localStorage.setItem(_OHL_KEY, JSON.stringify(_ohl));
+  clearInterval(_ohlTimer); _ohlTimer = null; _ohlSig = '';
+  if (_ohl.an) { _ohlTick(); _ohlTimer = setInterval(_ohlTick, 400); }
+  else _ohlLeeren();
+  _ohlKnopf();
+}
+function _ohlGrenze(ev) {
+  if (ev) ev.preventDefault();
+  const v = prompt('Ab welcher Neigung (gegen die Waagrechte gemessen) druckt dein Drucker Überhänge noch ohne Stütze? Flachere Flächen werden rot. Üblich 45°, Bambu Studio rechnet mit 30°.', String(_ohl.grenze));
+  if (v == null) return;
+  const g = Math.round(parseFloat(String(v).replace(',', '.')));
+  if (!(g >= 20 && g <= 80)) { notify('Bitte einen Winkel zwischen 20 und 80° eingeben', 'w'); return; }
+  _ohl.grenze = g; _ohlSchalten(true);
+}
+setTimeout(() => { _ohlKnopf(); if (_ohl.an) _ohlSchalten(true); }, 1500);
+
 function _3mfSpeichern() {
   document.getElementById('stl-menu')?.classList.remove('show');
   if (!_exportSrc().length) { notify('Keine Objekte', 'w'); return; }
@@ -89779,6 +89899,7 @@ const CMDK = [
   {i:'🩹',g:'Druck',t:'Reparieren',k:'repair loch wasserdicht',run:()=>repairSelected()},
   {i:'🖨',g:'Druck',t:'Druck-Check',k:'print check druckbar',run:()=>_printCheckOpen()},
   {i:'🎯',g:'Druck',t:'Passung einmessen (Lochplatte + Zapfen)',k:'passung toleranz spiel loch zapfen kalibrieren testkarte passprobe fit maßhaltig klemmt wackelt xy kompensation',run:()=>_pfOpen()},
+  {i:'📐',g:'Druck',t:'Überhänge live anzeigen (an/aus)',k:'überhang live anzeigen färben stütze support overhang karte streifen winkel',run:()=>_ohlSchalten()},
   {i:'📐',g:'Druck',t:'Ohne Stützen (45°-Schräge unter Überhänge)',k:'überhang stützen support 45 schräge fase overhang',run:()=>_ohfOpen()},
   {i:'💾',g:'Druck',t:'3MF speichern (mit Druck-Check / Bambu-Projekt)',k:'3mf bambu projekt speichern export',run:()=>_3mfSpeichern()},
   {i:'↻',g:'Druck',t:'Für Druck ausrichten',k:'orient',run:()=>autoOrientForPrint()},
@@ -92453,6 +92574,12 @@ function _fillHoles(mesh) {
     } },
     'scene.inspect': { undo: false, doc: '{measure?: bool=false} — alle Körper mit id, Name, Typ, Cutter?, Mitte/Größe/BBox (mm), Drehung (°); mit measure auch Volumen/Fläche', fn(p) {
       return { units: 'mm, Z oben', bodies: objects.map(o => info(o, !!p.measure)) };
+    } },
+    'overhang.live': { undo: false, doc: '{an?: bool, grenze?: 20–80 ° (Standard 45)} — 📐 Überhänge live färben (rot = braucht Stütze, orange = knapp); liefert Flächen in mm²', fn(p) {
+      if (p.grenze != null) { const g = Math.round(+p.grenze); if (!(g >= 20 && g <= 80)) fail('grenze 20–80'); _ohl.grenze = g; }
+      _ohlSchalten(p.an == null ? true : !!p.an);
+      if (_ohl.an) _ohlRechne(_ohlMeshes());
+      return { an: _ohl.an, grenze: _ohl.grenze, stuetze_mm2: Math.round(_ohlInfo.flaeche), knapp_mm2: Math.round(_ohlInfo.knapp), gekappt: _ohlInfo.gekappt };
     } },
     'fit.card': { doc: '{} — 🎯 Passprobe auf die Platte: Lochplatte (9 Löcher Ø 7,8–8,6 mm, Pfeil = Loch 1, Strich = 8,0) + Zapfen Ø 8 × 10 mm; danach drucken und mit fit.set eintragen', async fn(p, log) {
       return _pfKarteBauen((c, q) => CMDS[c].fn(q, log));
