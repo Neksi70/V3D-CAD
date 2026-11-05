@@ -85,3 +85,17 @@ Nach Aktionen liefert Playwright im HTTP-Modus den Snapshot nur als Datei; `brow
 dann per `browser_snapshot` und setzt ihn in die Antwort ein.
 
 Unit-Dateien liegen in `browser/` und sind nach `~/.config/systemd/user/` verlinkt.
+
+## 3D-Drucker SV08 Max (seit 05.11.2026)
+
+`v3dmcp/drucker.py` spricht Moonraker direkt per HTTP an (V3DA im selben LAN, kein Notebook nötig).
+Einstellungen in `.env`: `DRUCKER_URL` (Standard `http://192.168.178.155`), optional `DRUCKER_API_KEY`,
+`DRUCKER_UPLOAD_DIRS` (Standard `~/tools/orcaslicer/ausgabe,~/Ablage,/srv/v3dmail/files`).
+
+Werkzeuge: `drucker_status`, `drucker_gcode`, `drucker_dateien`, `drucker_datei_loeschen`,
+`drucker_upload`, `drucker_druck`, `drucker_kamera`, `drucker_mesh`.
+
+Schutz: Start nur mit `bett_frei=true` und nicht während eines Drucks; Bewegungs-/Kalibrier-/
+Neustart-G-Code während eines Drucks nur mit `erzwingen=true` (M112 geht immer); Upload nur
+G-Code-Endungen aus den freigegebenen Ordnern; die gerade gedruckte Datei lässt sich nicht löschen.
+Während eines Makros (z. B. Heat Soak) stellt Klipper G-Code hinten an → `fertig: false`, läuft später.
