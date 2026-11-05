@@ -10905,6 +10905,19 @@ function _applyDisplacementNow(param, val) {
     return;
   }
 
+  // Körper ohne Grundform-Bauplan (nach Schale, Vereinen, Abrunden …): die
+  // AKTUELLE Form ist die Basis. Vorher fiel das auf _buildHighResGeo('custom')
+  // zurück — einen Standard-Quader: die Schale war weg und das Muster saß auf
+  // einem falschen Körper (Josy 5.11.: „er lässt was weg"). Die Basis wird als
+  // _origGeo gemerkt (gespeichert wie bei Importen); hat ein späterer Schritt das
+  // Netz ersetzt (andere uuid als unsere Textur-Ausgabe), gilt die neue Form.
+  const st = o.userData.shapeType || 'box';
+  if (!_BUILDGEO_GRUNDFORMEN.has(st) &&
+      (!o.userData._origGeo || (o.userData._texBasisAuf && o.geometry.uuid !== o.userData._texGeoUuid))) {
+    o.userData._origGeo = o.geometry.clone();
+    o.userData._texBasisAuf = true;
+    o.userData._warpCache = null;
+  }
   let geo;
   if (pat === 'keine') {
     o.userData._warpCache = null;
@@ -10921,7 +10934,7 @@ function _applyDisplacementNow(param, val) {
     if (o.userData._origGeo) {
       base = o.userData._origGeo.clone();
     } else {
-      base = _buildHighResGeo(o.userData.shapeType || 'box', o.userData.coneTop || 0, o.userData.coneFlip);
+      base = _buildHighResGeo(st, o.userData.coneTop || 0, o.userData.coneFlip);
     }
     geo = _displaceForMesh(o, base, pat, amp, freq, inv, sym, ori, whr);
     base.dispose();
@@ -10929,6 +10942,7 @@ function _applyDisplacementNow(param, val) {
   }
   o.geometry.dispose();
   o.geometry = geo;
+  if (o.userData._texBasisAuf) o.userData._texGeoUuid = geo.uuid;
   _updateObjEdgeLines(o);
   _fpCurType = null;
   updateFP();
@@ -24133,6 +24147,7 @@ function buildObjectFromData(data) {
     ? _geoFromSnap(data._origGeoData.__snap)
     : new THREE.BufferGeometryLoader().parse(data._origGeoData);
   else if (data._origSameAsGeo && obj.isMesh && obj.geometry) obj.userData._origGeo = obj.geometry;
+  if (data._texBasisAuf && obj.userData._origGeo && obj.isMesh) { obj.userData._texBasisAuf = true; obj.userData._texGeoUuid = obj.geometry.uuid; }
   // Rohr aus Parametern neu bauen (Geometrie nicht als JSON gespeichert):
   // Parametrische Primitive, deren Geometrie NICHT als JSON gebacken wird (Maße/Param
   // stecken in userData, nicht in der Skalierung): buildGeo() liefert nur Defaults
@@ -24680,6 +24695,7 @@ function objectToData(o, modus) {
     d.geometry = _cachedGeoJSON(o.geometry, modus);
   }
   if (o.userData._dispKeep) d._dispKeep = o.userData._dispKeep;
+  if (o.userData._texBasisAuf) d._texBasisAuf = true;   // Textur-Basis = Form vor der Textur (Schale, Vereinen …)
   if (o.userData._origGeo) {
     if (o.userData._origGeo === o.geometry) d._origSameAsGeo = true;  // Doppelspeicherung vermeiden
     else d._origGeoData = _cachedGeoJSON(o.userData._origGeo, modus);  // gerundet wie d.geometry
@@ -77398,8 +77414,11 @@ async function _mdOeffnen(fid){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.311';
+const VOLME3D_VERSION = '1.18.312';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.312', date:'2026-11-05', changes:[
+    ['🧱','<b>Textur auf ausgehöhlten Kästen.</b> Wer einen Kasten mit <b>Schale</b> ausgehöhlt (oder Körper vereint, Kanten gerundet …) und danach eine <b>Textur</b> gewählt hat, bekam ein Muster mit Lücken oder fast gar keins – und die Schale war wieder zu. Die Textur baute dort auf einem Standard-Quader statt auf der echten Form auf. Jetzt nimmt sie die aktuelle Form: Kasten bleibt hohl, das Muster läuft über alle Wände. „Keine“ stellt die Schale wieder her, und auch nach dem Speichern und Öffnen wird beim Musterwechsel nichts doppelt eingeprägt.'],
+  ]},
   { version:'1.18.311', date:'2026-11-05', changes:[
     ['💸','<b>Neuer Generator: Geld-Schiebekarte.</b> Eine Karte zum Drucken, hinter deren Fenstern Geldscheine stecken – etwa „Ein paar Mäuse für dich“ mit vier Mäusen, durch die man das Geld sieht. Die <b>Schiebeplatte</b> wird von der Seite in zwei Schienen geschoben und hält die Scheine; zum Öffnen schiebt man sie an der Daumenmulde wieder heraus. Vorderseite: zwei Textzeilen, wahlweise <b>durchbrochen</b> (wie eine Schablone, das Geld scheint durch, Innenteile von o, a, e hängen an feinen Stegen) oder <b>graviert</b>, dazu eine Reihe Motiv-Fenster: Maus, Herz, Stern, Kleeblatt, Geschenk, Ballon, Tanne, Hirsch oder ein eigenes SVG. Die Rückseite bekommt auf Wunsch einen gravierten Gruß. Vorlagen für Mäuse, Geburtstag, Hochzeit, Glück und Weihnachten, Fachgröße für Euroscheine bis 20, 50, 100 oder 200 € ungefaltet. Beide Teile drucken <b>ohne Stützen</b>.'],
   ]},
