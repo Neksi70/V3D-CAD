@@ -1627,6 +1627,7 @@ const firebaseConfig = {
         <div class="sli-item" onclick="tutorMenu()" title="Geführte Kurse: Schritt für Schritt lernen">🎓 Kurs</div>
         <div class="sli-item" onclick="_dfdOpen()" title="Druckfehler-Doktor: Fehlerbild antippen (Fäden, Warping, Elefantenfuß …) → wahrscheinliche Ursachen und passende Bambu-Studio-Einstellungen">🩺 Druckfehler-Doktor</div>
         <div class="sli-item" onclick="switchTab('keys')" title="Alle Tastenkürzel und Mausbefehle auf einen Blick">⌨ Tastenkürzel</div>
+        <div class="sli-item" id="btn-laser" onclick="_laserSchalten()" title="F8 — Laserpointer zum Vorführen: roter Punkt mit Leuchtspur folgt der Maus (z. B. am Beamer). Klicks gehen weiter ans Modell">🔴 Laserpointer (F8)</div>
         <div class="sli-item" onclick="_fernwartung()" title="Fernwartung: lädt V3D Remote herunter, damit dein Betreuer dir per Fernzugriff helfen kann">🛟 Fernwartung</div>
         <div class="sli-item" onclick="_mitOpen()" title="Gemeinsam arbeiten: ihr seht beide alles, bearbeiten darf einer — den Stift reicht ihr euch weiter. Der andere braucht kein Konto">👥 Gemeinsam arbeiten</div>
         <div class="sli-sep"></div>
@@ -2957,6 +2958,7 @@ const firebaseConfig = {
         <div class="kr"><div class="kk"><span class="key">L</span><span class="key">A</span><span class="key">R</span><span class="key">C</span></div><span class="kl">In der Skizze: Linie / Bogen / Rechteck / Kreis</span></div>
         <div class="kr"><div class="kk"><span class="key">Strg+U</span><span class="key">B</span><span class="key">I</span></div><span class="kl">Vereinigung / Subtrahieren / Schneiden</span></div>
         <div class="kr"><div class="kk"><span class="key">Strg+F</span></div><span class="kl">Befehl suchen</span></div>
+        <div class="kr"><div class="kk"><span class="key">F8</span></div><span class="kl">Laserpointer an/aus (zum Vorführen)</span></div>
         <div class="kr"><div class="kk"><span class="key">Rechte Taste</span></div><span class="kl">Drehen (Orbit) — mittlere Taste verschieben</span></div>
       </div>
       <div class="kg umg-beg"><div class="kt">Werkzeuge</div>
@@ -22742,6 +22744,67 @@ function applyTF(changed) {
     exitEdgeMode(); enterEdgeMode(true);
   }
 }
+
+// ═══ LASERPOINTER (F8) ══════════════════════════════════════════════════════
+// Zum Vorführen am Beamer: roter Punkt mit verblassender Leuchtspur folgt der Maus.
+// Liegt als Leinwand über allem, fängt keine Klicks ab. Läuft V3D CAD in der
+// Tafel-Referentenansicht (die hat einen eigenen Laser), überlässt es ihr F8.
+const _laser = { an: false, spur: [], x: 0, y: 0, drin: false, lauf: false, cv: null };
+function _laserFremd() {
+  try { return window.parent !== window && !!window.parent.document.getElementById('laser'); } catch (e) { return false; }
+}
+function _laserCv() {
+  if (_laser.cv) return _laser.cv;
+  const c = document.createElement('canvas');
+  c.id = 'laser-cad';
+  c.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;pointer-events:none;z-index:2147483000';
+  document.body.appendChild(c);
+  return (_laser.cv = c);
+}
+function _laserSchalten(an) {
+  _laser.an = an === undefined ? !_laser.an : !!an;
+  _laser.spur = [];
+  const b = document.getElementById('btn-laser'); if (b) b.classList.toggle('active', _laser.an);
+  _laserMalen();
+  notify(_laser.an ? '🔴 Laserpointer an – F8 schaltet aus' : 'Laserpointer aus', 'ok');
+}
+function _laserMalen() {
+  const c = _laserCv(), d = window.devicePixelRatio || 1;
+  const w = Math.round(innerWidth * d), h = Math.round(innerHeight * d);
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  const g = c.getContext('2d'), jetzt = performance.now();
+  g.clearRect(0, 0, w, h);
+  _laser.spur = _laser.spur.filter(p => jetzt - p.t < 450);
+  if (_laser.an && _laser.spur.length > 1) {        // Leuchtspur: zum Ende dünner und blasser
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    for (let i = 1; i < _laser.spur.length; i++) {
+      const a = _laser.spur[i - 1], p = _laser.spur[i], k = 1 - (jetzt - p.t) / 450;
+      g.strokeStyle = `rgba(255,40,40,${0.55 * k})`; g.lineWidth = (3 + 7 * k) * d;
+      g.beginPath(); g.moveTo(a.x * d, a.y * d); g.lineTo(p.x * d, p.y * d); g.stroke();
+    }
+  }
+  if (_laser.an && _laser.drin) {                    // Punkt mit Lichthof
+    const x = _laser.x * d, y = _laser.y * d, hof = g.createRadialGradient(x, y, 0, x, y, 26 * d);
+    hof.addColorStop(0, 'rgba(255,60,60,.95)'); hof.addColorStop(0.25, 'rgba(255,30,30,.55)'); hof.addColorStop(1, 'rgba(255,0,0,0)');
+    g.fillStyle = hof; g.beginPath(); g.arc(x, y, 26 * d, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff'; g.beginPath(); g.arc(x, y, 3.5 * d, 0, Math.PI * 2); g.fill();
+  }
+  _laser.lauf = _laser.an && _laser.spur.length > 1;
+  if (_laser.lauf) requestAnimationFrame(_laserMalen);
+}
+window.addEventListener('pointermove', e => {
+  if (!_laser.an) return;
+  _laser.x = e.clientX; _laser.y = e.clientY; _laser.drin = true;
+  _laser.spur.push({ x: e.clientX, y: e.clientY, t: performance.now() });
+  if (_laser.spur.length > 60) _laser.spur.shift();
+  if (!_laser.lauf) _laserMalen();
+}, { capture: true, passive: true });
+document.addEventListener('pointerleave', () => { if (_laser.an) { _laser.drin = false; _laserMalen(); } });
+window.addEventListener('keydown', e => {
+  if (e.key !== 'F8' || e.repeat || _laserFremd()) return;
+  e.preventDefault(); e.stopPropagation(); _laserSchalten();
+}, true);
+window.addEventListener('resize', () => { if (_laser.an) _laserMalen(); });
 
 function renameObj() {
   const o = getFirst(); if (!o) return;
@@ -78101,8 +78164,11 @@ async function _mdOeffnen(fid){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.320';
+const VOLME3D_VERSION = '1.18.321';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.321', date:'2026-11-06', changes:[
+    ['🔴','<b>Laserpointer zum Vorführen.</b> Taste <b>F8</b> (oder ☰ Menü → 🔴 Laserpointer): Ein roter Punkt mit kurzer Leuchtspur folgt der Maus – am Beamer sehen alle sofort, worauf du zeigst. Du arbeitest dabei ganz normal weiter. Nochmal F8 schaltet ihn aus.'],
+  ]},
   { version:'1.18.320', date:'2026-11-06', changes:[
     ['📍','<b>Positionsfelder verschieben nur noch die Achse, die du änderst.</b> Wer im Reiter <b>Eigenschaften → Position</b> z. B. nur X eintippte, hat das Teil bisher unbemerkt auch in der Höhe verrückt – eine 3 mm dünne Platte schwebte danach 0,5 mm über der Druckplatte. Jetzt bleiben die anderen Achsen genau, wo sie waren. Komma geht auch (−1,9).'],
   ]},
