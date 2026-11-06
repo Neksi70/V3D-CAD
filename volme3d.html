@@ -6775,6 +6775,24 @@ Patrick</textarea>
           <button class="vtb" data-v="zuschneiden" title="Jedes Bild füllt sein ganzes Feld; Ausschnitt per Klick aufs Vorschaubild oben" onclick="_lithoStr('kFit','zuschneiden')">Ausschnitt (füllt alles)</button>
           <button class="vtb" data-v="strecken" title="Foto auf das ganze Feld ziehen (verzerrt)" onclick="_lithoStr('kFit','strecken')">Strecken</button>
         </div>
+        <div id="litho-boden-box">
+        <span class="vsec">Boden &amp; Fuß</span>
+        <div class="vtbrow" id="litho-mBoden-bg" style="display:flex;gap:4px;margin:2px 0 7px">
+          <button class="vtb on" data-v="0" title="Unten offen – als Lampenschirm oder Windlicht über eine LED" onclick="_lithoStr('mBoden',0)">Unten offen</button>
+          <button class="vtb" data-v="1" title="Mit Boden – z. B. als Übertopf für eine Pflanze oder als Stifteköcher" onclick="_lithoStr('mBoden',1)">Mit Boden (Topf)</button>
+        </div>
+        <div class="vrow" id="litho-row-mBodenD"><label title="Stärke des Bodens">Bodenstärke</label> <input type="range" id="lp-mBodenD" min="1" max="5" value="2" step="0.2" oninput="document.getElementById('lv-mBodenD').textContent=this.value;_lithoSet('mBodenD',this.value)"><span class="vv" id="lv-mBodenD">2</span><span class="vu">mm</span></div>
+        <div class="vtbrow" id="litho-mFuss-bg" style="display:flex;gap:4px;margin:2px 0 7px">
+          <button class="vtb on" data-v="0" title="Ohne Fuß" onclick="_lithoStr('mFuss',0)">Ohne Fuß</button>
+          <button class="vtb" data-v="1" title="Fuß-Ring als eigenes Teil (z. B. Holz-Filament), in den die Lithophane gesteckt wird. Ohne Boden bekommt er eine Mulde für ein LED-Teelicht" onclick="_lithoStr('mFuss',1)">🪵 Fuß-Ring</button>
+        </div>
+        <div id="litho-fuss-box">
+          <div class="vrow"><label title="Höhe des Fuß-Rings">Fuß-Höhe</label> <input type="range" id="lp-mFussH" min="5" max="30" value="10" step="1" oninput="document.getElementById('lv-mFussH').textContent=this.value;_lithoSet('mFussH',this.value)"><span class="vv" id="lv-mFussH">10</span><span class="vu">mm</span></div>
+          <div class="vrow"><label title="So weit steht der Fuß rundum über">Überstand</label> <input type="range" id="lp-mFussRand" min="3" max="25" value="8" step="1" oninput="document.getElementById('lv-mFussRand').textContent=this.value;_lithoSet('mFussRand',this.value)"><span class="vv" id="lv-mFussRand">8</span><span class="vu">mm</span></div>
+          <div class="vrow"><label title="So tief steckt die Lithophane im Fuß">Einsatztiefe</label> <input type="range" id="lp-mFussT" min="2" max="10" value="4" step="0.5" oninput="document.getElementById('lv-mFussT').textContent=this.value;_lithoSet('mFussT',this.value)"><span class="vv" id="lv-mFussT">4</span><span class="vu">mm</span></div>
+          <div class="vrow"><label title="Luft je Seite zwischen Lithophane und Fuß">Passung</label> <input type="range" id="lp-mFussPass" min="0.1" max="1.2" value="0.4" step="0.05" oninput="document.getElementById('lv-mFussPass').textContent=this.value;_lithoSet('mFussPass',this.value)"><span class="vv" id="lv-mFussPass">0.4</span><span class="vu">mm</span></div>
+        </div>
+        </div>
         </div>
         <div id="litho-kugel-box" style="display:none">
         <div class="vrow"><label>Durchmesser</label> <input type="range" id="lp-kD" min="40" max="150" value="80" step="1" oninput="document.getElementById('lv-kD').textContent=this.value;_lithoSet('kD',this.value)"><span class="vv" id="lv-kD">80</span><span class="vu">mm</span></div>
@@ -69136,7 +69154,8 @@ const _litho = { img:null, lum:null, cols:0, rows:0, aspect:1,
        form:'flach', kD:80, kUnten:30, kOben:0, kVon:-45, kBis:60, kWinkel:360, kWdh:1,
        kRand:3, kFit:'einpassen', kInnen:false, kOese:true, kDeckel:true, kDeckelForm:'flach', tlD:38, tlSpiel:0.4,
        kFarbe:false, kFarbN:4, kFarbTiefe:0.8, kPalette:[],
-       mD:80, mH:100, mOben:70, mEcke:12, mBogen:120, mRand:3, umriss:'rechteck' } };
+       mD:80, mH:100, mOben:70, mEcke:12, mBogen:120, mRand:3, umriss:'rechteck',
+       mBoden:0, mBodenD:2, mFuss:0, mFussH:10, mFussRand:8, mFussT:4, mFussPass:0.4 } };
 function _lithoSampleIn(T){
   if(!T.img) return;
   // Der Deckel lag bei 360 Spalten — damit blieb das Relief auch am Reglerende
@@ -69365,6 +69384,66 @@ function _lithoMantelFelder(P, L, Hb){
   }
   return felder;
 }
+// ── Boden + Fuß-Ring für Zylinder, Kegel, Laterne (Volker 6.11.26, Übertopf mit Foto-Relief auf Holzring) ──
+// Unterkante = Umriss U bei y = 0 (Kegel-Faktor dort 1). Versatz d entlang der Normalen — die
+// Umrisse sind konvex (Kreis, Rundum-Quadrat), dann ist das ein sauberer Parallel-Umriss.
+function _lithoFussKontur(P, d, n, fk){
+  const U=_lithoMantelUmriss(P), pts=[]; fk=fk||1;
+  for(let i=0;i<n;i++){ const c=U.at(-U.L/2+U.L*i/n); pts.push([c.x*fk+c.nx*d, c.z*fk+c.nz*d]); }
+  return pts;
+}
+// Ein Kegel, der nach oben weiter wird, ist an der Oberkante des Einsatzes schon breiter als unten —
+// die Vertiefung im Fuß richtet sich nach der breitesten Stelle im Einsatz (Faktor wie im Mantel-Bau).
+function _lithoEinsatzFk(P, T){
+  const kon=(P.form==='kegel'||P.form==='laterne') ? (P.mOben/100-1)/Math.max(10,P.mH) : 0;
+  return Math.max(1, 1+kon*T);
+}
+function _lithoBodenAn(P){ return _LITHO_MANTEL.includes(P.form) && P.form!=='bogen' && !!+P.mBoden; }
+function _lithoFussAn(P){ return _LITHO_MANTEL.includes(P.form) && P.form!=='bogen' && !!+P.mFuss; }
+function _lithoFussMasse(P){
+  const H=Math.max(4,P.mFussH), T=Math.max(1,Math.min(P.mFussT,H-1.5)), rand=Math.max(2,P.mFussRand), pass=Math.max(0,P.mFussPass);
+  let rIn=Infinity;                                                         // kleinster Innenabstand des Mantels
+  for(const [x,z] of _lithoFussKontur(P,-Math.max(0.2,P.maxT),96)) rIn=Math.min(rIn,Math.hypot(x,z));
+  const tl=(P.tlD||38)+1.5, led=tl/2<=rIn-1 && H-T>=4;
+  let w=0; for(const [x] of _lithoFussKontur(P,rand,96)) w=Math.max(w,Math.abs(x));
+  return {H,T,rand,pass,rIn,tl,led,aussen:2*w};
+}
+// Boden: Platte innen am unteren Rand, reicht bis in die halbe Wand (wird beim Erstellen verschmolzen). mm, Y oben.
+function _lithoBodenGeo(P){
+  const pts=_lithoFussKontur(P,-Math.max(0.2,P.maxT)*0.5,192);
+  const g=new THREE.ExtrudeGeometry(new THREE.Shape(pts.map(([x,z])=>new THREE.Vector2(x,-z))),{depth:Math.max(0.6,+P.mBodenD||2),bevelEnabled:false,curveSegments:1});
+  g.rotateX(-Math.PI/2);                                                    // (x, −z, e) → (x, e, z)
+  return g;
+}
+// Fuß-Ring (Manifold, mm): Oberkante gerundet, Einsatz für die Lithophane; ohne Boden Teelicht-Mulde + Schalterloch.
+// Ergebnis in Drucklage, Y oben, Unterseite y = 0.
+function _lithoFussMf(w, P){
+  const M=w.Manifold, CS=w.CrossSection, tmp=[], keep=x=>{ tmp.push(x); return x; }, F=_lithoFussMasse(P);
+  const cs=d=>keep(new CS([_lithoFussKontur(P,d,192).map(([x,z])=>[x,-z])],'EvenOdd'));
+  try{
+    let f=_nwkPlatte(M,keep,cs(F.rand),F.H,Math.min(3,F.rand*0.4,F.H/3),6);
+    const ein=keep(new CS([_lithoFussKontur(P,F.pass,192,_lithoEinsatzFk(P,F.T+1)).map(([x,z])=>[x,-z])],'EvenOdd'));
+    f=keep(f.subtract(keep(keep(ein.extrude(F.T+1)).translate([0,0,F.H-F.T]))));
+    if(!_lithoBodenAn(P) && F.led){
+      f=keep(f.subtract(keep(M.cylinder(6.1,F.tl/2,F.tl/2,96).translate([0,0,F.H-F.T-6]))));
+      f=keep(f.subtract(keep(M.cylinder(F.H+2,8,8,48).translate([0,0,-1]))));
+    }
+    return f.rotate([-90,0,0]);                                             // (x, −z, z_oben) → (x, z_oben, z)
+  } finally { for(const x of tmp){ try{ x.delete(); }catch(e){} } }
+}
+// Vorschau-Teile (mm, in Topf-Koordinaten: Topf steht mit y = 0 im Einsatz): [Geometrie, Farbe]
+function _lithoBodenFussVorschau(P){
+  const teile=[];
+  if(_lithoBodenAn(P)) teile.push([_lithoBodenGeo(P),'#e9dcc6']);
+  if(_lithoFussAn(P)){
+    const F=_lithoFussMasse(P), sh=pts=>new THREE.Shape(pts.map(([x,z])=>new THREE.Vector2(x,-z)));
+    const ring=sh(_lithoFussKontur(P,F.rand,160)); ring.holes.push(new THREE.Path(_lithoFussKontur(P,F.pass,160,_lithoEinsatzFk(P,F.T)).map(([x,z])=>new THREE.Vector2(x,-z))));
+    const g1=new THREE.ExtrudeGeometry(ring,{depth:F.T,bevelEnabled:false,curveSegments:1}); g1.rotateX(-Math.PI/2);
+    const g2=new THREE.ExtrudeGeometry(sh(_lithoFussKontur(P,F.rand,160)),{depth:F.H-F.T,bevelEnabled:false,curveSegments:1}); g2.rotateX(-Math.PI/2); g2.translate(0,-(F.H-F.T),0);
+    teile.push([g1,'#c8a26b'],[g2,'#c8a26b']);
+  }
+  return teile;
+}
 function _buildLithoMantelGeo(vorschau){
   const P=_litho.p, U=_lithoMantelUmriss(P), L=U.L, H=Math.max(10,P.mH);
   const tMax=Math.max(0.2,P.maxT), tMin=Math.max(0.1,Math.min(P.minT,P.maxT-0.1)), rand=Math.max(0,Math.min(P.mRand,H/3));
@@ -69424,6 +69503,11 @@ function _buildLithoMantelGeo(vorschau){
   if(U.offen){                                                           // Seitenkanten des Bogens
     const t0=U.at(s0), t1=U.at(s0+L), d0=[-t0.nz,0,t0.nx], d1=[t1.nz,0,-t1.nx];
     for(let j=0;j<Nv;j++){ quad(O(j,0),O(j+1,0),I(j+1,0),I(j,0), d0); quad(O(j,Nu),O(j+1,Nu),I(j+1,Nu),I(j,Nu), d1); }
+  }
+  if(vorschau) for(const [tg,hex] of _lithoBodenFussVorschau(P)){        // Boden/Fuß nur zur Ansicht (Erstellen verschmilzt den Boden exakt)
+    const nx=tg.index?tg.toNonIndexed():tg, a=nx.attributes.position.array, base=pos.length/3, c=new THREE.Color(hex);
+    for(let k=0;k<a.length;k+=3){ pos.push(a[k],a[k+1],a[k+2]); idx.push(base+k/3); col.push(c.r,c.g,c.b); }
+    tg.dispose(); if(nx!==tg) nx.dispose();
   }
   const g=new THREE.BufferGeometry();
   g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
@@ -69871,6 +69955,8 @@ function _lithoInfo(){
     let tm=(nB>1?`${nB} Bilder nebeneinander`:`Bild ${img.width}×${img.height}`)+` · Umfang ${Math.round(U.L)} mm × ${P.mH} mm`;
     tm+=' · Druck: aufrecht stehend, weißes Filament, 100 % Füllung, 0,12 mm Schichten'+(P.form==='kegel'&&Math.abs(P.mOben-100)>45?' – bei so starker Neigung Stützen einschalten':', ohne Stützen')+'. Innen ein LED-Teelicht oder eine LED-Lichterkette.';
     if(P.form==='laterne' && nB>1 && nB!==4) tm+=' Tipp: 4 Bilder = je eine Seite.';
+    if(_lithoBodenAn(P)) tm+=` Mit ${P.mBodenD} mm Boden – als Übertopf oder Köcher.`;
+    if(_lithoFussAn(P)){ const fz=_lithoFussMasse(P); tm+=` Fuß-Ring ${Math.round(fz.aussen)} mm breit, ${P.mFussH} mm hoch (eigenes Teil, flach drucken, z. B. Holz-Filament)`+(_lithoBodenAn(P)?'.':fz.led?' mit Mulde für ein LED-Teelicht Ø '+fz.tl+' mm und Schalterloch.':' – für ein LED-Teelicht ist innen zu wenig Platz.'); }
     info.textContent=tm; return;
   }
   let t=nB>1 ? `${nB} Bilder` + (_litho.p.form==='kugel' ? '' : ' – die flache Platte nutzt nur das erste')
@@ -69977,7 +70063,9 @@ function _lithoSyncUI(){
   bg('litho-form-bg',P.form); bg('litho-form2-bg',P.form); bg('litho-umriss-bg',P.umriss||'rechteck'); bg('litho-fit-bg',P.kFit); bg('litho-mfit-bg',P.kFit); bg('litho-dform-bg',P.kDeckelForm||'flach');
   const show=(id,on)=>{ const e=document.getElementById(id); if(e) e.style.display=on?'':'none'; };
   const mantel=_LITHO_MANTEL.includes(P.form);
-  for(const k of ['mD','mH','mOben','mEcke','mBogen','mRand']) set('lp-'+k,'lv-'+k,P[k]);
+  for(const k of ['mD','mH','mOben','mEcke','mBogen','mRand','mBodenD','mFussH','mFussRand','mFussT','mFussPass']) set('lp-'+k,'lv-'+k,P[k]);
+  bg('litho-mBoden-bg',+P.mBoden||0); bg('litho-mFuss-bg',+P.mFuss||0);
+  show('litho-boden-box',mantel && P.form!=='bogen'); show('litho-row-mBodenD',!!+P.mBoden); show('litho-fuss-box',!!+P.mFuss);
   show('litho-kugel-box',kugel); show('litho-mantel-box',mantel); show('litho-umriss-bg',!kugel&&!mantel); show('litho-row-width',!kugel&&!mantel); show('litho-row-frame',!kugel&&!mantel);
   show('litho-row-mOben',P.form==='kegel'||P.form==='laterne'); show('litho-row-mEcke',P.form==='laterne'); show('litho-row-mBogen',P.form==='bogen');
   { const l=document.getElementById('litho-lbl-mD'); if(l) l.textContent=P.form==='laterne'?'Breite':P.form==='bogen'?'Breite (Bogen)':'Durchmesser'; }
@@ -70117,6 +70205,22 @@ async function _createLitho(){
     }
     if(btn) btn.disabled=false;
   }
+  // Mantel-Formen: Boden fest anschmelzen, Fuß-Ring als eigenes Teil (Manifold)
+  let fussGeo=null;
+  if(_lithoBodenAn(_litho.p) || _lithoFussAn(_litho.p)){
+    const btn=document.getElementById('litho-create-btn'); if(btn) btn.disabled=true;
+    try{
+      const w=await _mfInit();
+      if(_lithoBodenAn(_litho.p)){
+        const bg=_lithoBodenGeo(_litho.p); bg.scale(0.1,0.1,0.1);
+        const mf=await _mfRetry(async()=>{ const w2=await _mfInit(), a=_mfFromSoup(w2,_lithoTris(geo)), b=_mfFromSoup(w2,_lithoTris(bg)); const u=w2.Manifold.union(a,b); a.delete(); b.delete(); return u; });
+        const g2=_mfToGeo(mf); try{ mf.delete(); }catch(_){}
+        g2.computeVertexNormals(); g2.computeBoundingBox(); bg.dispose(); geo.dispose(); geo=g2;
+      }
+      if(_lithoFussAn(_litho.p)){ const fm=_lithoFussMf(w,_litho.p); fussGeo=_mfToGeo(fm); fm.delete(); fussGeo.scale(0.1,0.1,0.1); fussGeo.computeVertexNormals(); fussGeo.computeBoundingBox(); }
+    }catch(e){ console.error('Lithophane Boden/Fuß:',e); notify('Boden/Fuß konnten nicht gebaut werden – Lithophane ohne erstellt','w'); }
+    if(btn) btn.disabled=false;
+  }
   saveUndo();
   // farbige Kugel: Körper = Filament 1 = Weiß (das Lithophane), Farben = Filament 2 …
   const color=(kugel && _litho.p.kFarbe && _litho.p.kPalette.length) ? '#ffffff' : currentColor;
@@ -70136,6 +70240,14 @@ async function _createLitho(){
   }
   scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
   const neu=[mesh];
+  if(fussGeo){                                                              // Fuß-Ring neben die Lithophane
+    geo.computeBoundingBox(); const rB=(fussGeo.boundingBox.max.x-fussGeo.boundingBox.min.x)/2, FC='#c8a26b';
+    const fm=new THREE.Mesh(fussGeo, new THREE.MeshStandardMaterial({color:new THREE.Color(FC),roughness:0.7,metalness:0.0,side:THREE.DoubleSide}));
+    fm.castShadow=true; fm.receiveShadow=true; fm.quaternion.copy(mesh.quaternion); fm.position.copy(workplanePoint);
+    fm.position.add(new THREE.Vector3(geo.boundingBox.max.x+1.0+rB,0,0).applyQuaternion(mesh.quaternion));
+    fm.userData={id:idCtr++,type:'litho',shapeType:'custom',name:'Lithophane-Fuß-Ring #'+typeCounts['litho'],color:FC,isHole:false,fillet:0,chamfer:0};
+    scene.add(fm); objects.push(fm); _updateObjEdgeLines(fm); neu.push(fm);
+  }
   if(deckelGeo && deckelGeo.length){               // Deckel neben der Kugel (flach: Platte unten, rund: Kappe oben)
     geo.computeBoundingBox();
     const M=_lithoDeckelMasse(), dmFarbe=(_litho.p.kFarbe&&_litho.p.kPalette.length)?'#ffffff':color;
@@ -78423,8 +78535,11 @@ async function _mdOeffnen(fid){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.323';
+const VOLME3D_VERSION = '1.18.324';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.324', date:'2026-11-06', changes:[
+    ['🪴','<b>Lithophane: Boden und Fuß-Ring für Zylinder, Kegel und Laterne.</b> Unter <i>Boden &amp; Fuß</i> wird aus der Lithophane mit <b>Mit Boden (Topf)</b> ein richtiger Übertopf oder Köcher – das Foto sitzt außen als Relief, wie bei den Foto-Töpfen. Dazu gibt es einen <b>🪵 Fuß-Ring</b> als eigenes Teil (z. B. in Holz-Filament): Die Lithophane steckt in einer passgenauen Vertiefung, die Oberkante ist gerundet, Höhe, Überstand, Einsatztiefe und Passung sind einstellbar. Ohne Boden wird es ein Windlicht: Der Fuß bekommt dann eine Mulde für ein LED-Teelicht und ein Loch zum Einschalten. Auch ein Kegel, der nach oben weiter wird, passt sauber in den Fuß.'],
+  ]},
   { version:'1.18.323', date:'2026-11-06', changes:[
     ['🏠','<b>Neuer Generator: Lichthaus mit LED-Halter.</b> Ein helles Satteldach-Haus als Windlicht: Wahlweise mit senkrechten <b>Lichtschlitzen</b>, die am Giebel der Dachlinie folgen (wie die skandinavischen Deko-Häuser), mit <b>Spitzbogen-Fenstern und Tür</b> oder ganz geschlossen. Breite, Tiefe, Wandhöhe, Dachneigung, Schlitzbreite und -abstand sowie der geschlossene Sockelstreifen sind einstellbar. Dazu gibt es eine <b>Bodenplatte</b> mit Kragen, über den das Haus gesteckt wird – mit Mulde für ein <b>LED-Teelicht</b> und einem Loch darunter, um es einzuschalten, oder mit Kabelweg für eine <b>Lichterkette</b>. Haus und Platte drucken <b>ohne Stützen</b> (Dach ab 45°, Öffnungen mit 45°-Spitze).'],
   ]},
