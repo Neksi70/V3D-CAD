@@ -76,8 +76,20 @@ FELDER = {
     },
 }
 FELDER["op-lieferanten"] = dict(FELDER["op-kunden"], partnernr=["Lieferantennummer", "Lieferanten-Nr", "Kreditor", "Kontonummer"])
+FELDER["kundenpreise"] = {
+    "artikelnr": ["Artikelnummer", "Artikel-Nr", "Artikelnr"],
+    "bezeichnung": ["Artikelbezeichnung", "Bezeichnung"],
+    "kunde": ["Kunde", "Kundenname", "Name"],
+    "kundennr": ["Kundennummer", "Kunden-Nr", "Kundennr"],
+    "preis": ["Preis", "Kundenpreis", "VK-Preis", "Verkaufspreis", "Einzelpreis"],
+    "ab_menge": ["Ab Menge", "Abmenge", "Staffel", "Menge ab"],
+    "gueltig_ab": ["Gültig ab", "Gueltig ab", "Gültig von"],
+    "gueltig_bis": ["Gültig bis", "Gueltig bis"],
+    "gewicht": ["Gewicht (in kg)", "Gewicht", "Gewicht kg", "Stückgewicht"],
+}
 PFLICHT = {"kunden": ["kundennr|adressnr", "name1"], "lieferanten": ["lieferantennr|adressnr", "name1"], "artikel": ["artikelnr", "bezeichnung|kurz"],
-           "op-kunden": ["belegnr", "partnernr", "betrag"], "op-lieferanten": ["belegnr", "partnernr", "betrag"]}
+           "op-kunden": ["belegnr", "partnernr", "betrag"], "op-lieferanten": ["belegnr", "partnernr", "betrag"],
+           "kundenpreise": ["artikelnr", "kunde|kundennr", "preis"]}
 
 
 def norm(s):
@@ -227,7 +239,8 @@ def importieren(db, art, pfad, ausfuehren=False, protokoll=print):
     if fehlt:
         raise erp.Fehler("Pflichtspalten fehlen: " + ", ".join(fehlt))
 
-    st = dict(neu=0, aktualisiert=0, fehler=0, leer=0)
+    st = dict(neu=0, aktualisiert=0, fehler=0, leer=0, gewichte=0)
+    ohne_gewicht = []
     fehlerzeilen = []
     zb_cache = {}
 
@@ -340,6 +353,43 @@ def importieren(db, art, pfad, ausfuehren=False, protokoll=print):
                         if abs(b - ist) > 1e-9:
                             db.execute("INSERT INTO lagerbewegung(datum,artikel_id,lager_id,menge,text) VALUES(?,?,1,?,?)",
                                        (erp.heute(), aid, b - ist, "Bestandsübernahme myfactory"))
+                elif art == "kundenpreise":
+                    # myfactory „Artikel-Kunden-Preisliste“: Pivot-Reste („Key/Item“, „Sum“) und Leerzeilen überspringen
+                    if not w(z, "artikelnr") or not re.search(r"\d", w(z, "preis")):
+                        st["leer"] += 1
+                        continue
+                    nr_ = w(z, "artikelnr")
+                    a = db.execute("SELECT id, artikelnr FROM artikel WHERE artikelnr=?", (nr_,)).fetchone() or \
+                        db.execute("SELECT id, artikelnr FROM artikel WHERE artikelnr=?", (nr_.zfill(7),)).fetchone()   # Excel verliert führende Nullen
+                    if not a:
+                        raise ValueError(f"Artikel {nr_} unbekannt – zuerst Artikel importieren")
+                    if w(z, "kundennr"):
+                        k = db.execute("SELECT adresse_id id FROM kunde WHERE kundennr=?", (w(z, "kundennr"),)).fetchone()
+                    else:
+                        k = next((r for r in db.execute("SELECT a.id, a.name1 FROM adresse a JOIN kunde k ON k.adresse_id=a.id")
+                                  if norm(r["name1"]) == norm(w(z, "kunde"))), None)
+                    if not k:
+                        raise ValueError("Kunde unbekannt – Name bzw. Kundennummer prüfen")
+                    preis = round(zahl(w(z, "preis")), 4)     # myfactory rechnet Belege mit 4 Nachkommastellen
+                    if preis is None or preis < 0:
+                        raise ValueError("Preis ungültig")
+                    ab = zahl(w(z, "ab_menge")) or 1
+                    vorh = db.execute("SELECT id FROM kundenpreis WHERE adresse_id=? AND artikel_id=? AND ab_menge=?", (k["id"], a["id"], ab)).fetchone()
+                    werte = (preis, datum(w(z, "gueltig_ab")) or None, datum(w(z, "gueltig_bis")) or None)
+                    if vorh:
+                        db.execute("UPDATE kundenpreis SET preis=?, gueltig_ab=?, gueltig_bis=? WHERE id=?", werte + (vorh["id"],))
+                        st["aktualisiert"] += 1
+                    else:
+                        db.execute("INSERT INTO kundenpreis(adresse_id,artikel_id,ab_menge,preis,gueltig_ab,gueltig_bis,bemerkung) VALUES(?,?,?,?,?,?,?)",
+                                   (k["id"], a["id"], ab) + werte + ("aus myfactory-Preisliste",))
+                        st["neu"] += 1
+                    if "gewicht" in zu:
+                        g = zahl(w(z, "gewicht")) if re.fullmatch(r"[\d.,Ee+-]+", w(z, "gewicht") or "") else None
+                        if g:
+                            db.execute("UPDATE artikel SET gewicht_kg=? WHERE id=?", (g, a["id"]))
+                            st["gewichte"] += 1
+                        else:
+                            ohne_gewicht.append(a["artikelnr"])
                 else:   # offene Posten
                     if not w(z, "belegnr"):
                         st["leer"] += 1
@@ -382,6 +432,9 @@ def importieren(db, art, pfad, ausfuehren=False, protokoll=print):
     for f in fehlerzeilen:
         protokoll("  " + f)
     protokoll(f"Ergebnis: {st['neu']} neu · {st['aktualisiert']} aktualisiert · {st['fehler']} Fehler · {st['leer']} leere Zeilen übersprungen")
+    if art == "kundenpreise":
+        protokoll(f"Stückgewichte gesetzt: {st['gewichte']}" + (f" · ohne Gewicht (z. B. „wird nachgereicht“): {', '.join(ohne_gewicht)}" if ohne_gewicht else ""))
+    st["ohne_gewicht"] = ohne_gewicht
     protokoll("→ AUSGEFÜHRT, Daten gespeichert." if ausfuehren else "→ PROBELAUF, nichts gespeichert. Zum Übernehmen mit --ausfuehren starten.")
     return st
 

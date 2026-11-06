@@ -161,3 +161,31 @@ class TestImport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestKundenpreise(TestImport):
+    """myfactory „Artikel-Kunden-Preisliste“ (Aufbau wie Tommis Datei vom 06.11., erfundene Werte)."""
+
+    def test_preisliste(self):
+        k = erp.adresse_speichern(self.db, dict(name1="Sinterwerk Beispiel GmbH", kunde=dict(zahlungsbed_id=1)))
+        erp.artikel_speichern(self.db, dict(artikelnr="9100001", bezeichnung="Exzenter bohren", lagerfuehrung=0))
+        erp.artikel_speichern(self.db, dict(artikelnr="0612345", bezeichnung="Adapter", lagerfuehrung=0))
+        p = os.path.join(self.tmp.name, "preise.xlsx")
+        xlsx_schreiben(p, [["Artikelnummer", "Artikelbezeichnung", "Kunde", "Preis", "Gewicht (in kg)"],
+                           ["9100001", "Exzenter", "Sinterwerk Beispiel GmbH", "0.16709499999999999", "0.03"],
+                           ["612345", "Adapter", "Sinterwerk Beispiel GmbH", "0.69", "wird nachgereicht"],      # führende Null fehlt
+                           ["9999999", "Unbekannt", "Sinterwerk Beispiel GmbH", "1.0", "0.1"],
+                           ["9100001", "Exzenter", "Fremde Firma", "1.0", "0.1"],
+                           ["", ""], ["Key", "Item"], ["", "Sum"]])
+        st = im.importieren(self.db, "kundenpreise", p, False, self.log.append)        # Probelauf
+        self.assertEqual((st["neu"], st["fehler"], st["leer"]), (2, 2, 2))
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM kundenpreis").fetchone()[0], 0)
+        st = im.importieren(self.db, "kundenpreise", p, True, self.log.append)
+        self.assertEqual((st["neu"], st["gewichte"], st["ohne_gewicht"]), (2, 1, ["0612345"]))
+        import zusatz
+        a = self.db.execute("SELECT id, gewicht_kg FROM artikel WHERE artikelnr='9100001'").fetchone()
+        self.assertEqual(zusatz.preis_finden(self.db, k["id"], a["id"])["preis"], 0.1671)          # auf 4 Stellen gerundet
+        self.assertEqual(a["gewicht_kg"], 0.03)
+        st = im.importieren(self.db, "kundenpreise", p, True, self.log.append)                    # zweimal → aktualisiert, nicht doppelt
+        self.assertEqual((st["neu"], st["aktualisiert"]), (0, 2))
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM kundenpreis").fetchone()[0], 2)
