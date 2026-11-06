@@ -44640,10 +44640,8 @@ function captureThumbnail() {
 let _dsThumbRenderer = null;
 function _renderDesignSnapThumb(snap) {
   if (!snap || !Array.isArray(snap.objects) || !snap.objects.length) return null;
-  if (!_dsThumbRenderer) {
-    try { _dsThumbRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true }); _dsThumbRenderer.setSize(320, 240); }
-    catch(e) { return null; }
-  }
+  try { _dsThumbRenderer = _vsShared(); _dsThumbRenderer.setSize(320, 240, false); }
+  catch(e) { return null; }
   const r = _dsThumbRenderer; r.setClearColor(0xffffff, 1);
   const sc = new THREE.Scene();
   sc.add(new THREE.AmbientLight(0xffffff, 0.85));
@@ -45294,10 +45292,8 @@ function _starterGeo(key){
 }
 function _renderStarterThumb(key){
   const geo=_starterGeo(key); if(!geo) return null;
-  if(!_dsThumbRenderer){
-    try{ _dsThumbRenderer=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true}); _dsThumbRenderer.setSize(320,240); }
-    catch(e){ try{geo.dispose();}catch(_){} return null; }
-  }
+  try{ _dsThumbRenderer=_vsShared(); _dsThumbRenderer.setSize(320,240,false); }
+  catch(e){ try{geo.dispose();}catch(_){} return null; }
   const r=_dsThumbRenderer; r.setClearColor(0xffffff,1);
   const sc=new THREE.Scene();
   sc.add(new THREE.AmbientLight(0xffffff,0.85));
@@ -45661,7 +45657,7 @@ function _flowerSetType(type) {
 function _flowerInit3D() {
   const canvas = document.getElementById('flower-canvas');
   if (!canvas) return;
-  _flowerRenderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  _flowerRenderer = _vorschauRenderer(canvas);
   // Erst setSize MIT Style (fixiert die CSS-Anzeigegröße), dann setPixelRatio
   // (schärft nur den Buffer). Sonst zeigt das Canvas auf DPR≥2-Geräten (Handy/
   // Tablet) doppelt so groß an und quetscht die Regler aus dem Modal.
@@ -46129,7 +46125,7 @@ function _lanternSetPattern(pt){
 function _lanternUpd(key,val){_lanternP[key]=parseFloat(val);_lanternUpdateMesh();}
 function _lanternInit3D(){
   const canvas=document.getElementById('lantern-canvas');
-  _lanternRenderer=new THREE.WebGLRenderer({canvas,antialias:true});
+  _lanternRenderer=_vorschauRenderer(canvas);
   _lanternRenderer.setSize(180,280);
   _lanternRenderer.setPixelRatio(Math.min(devicePixelRatio,2));
   _lanternRenderer.setClearColor(0x1a1008);
@@ -47384,7 +47380,7 @@ function _screwSyncUI(){
 }
 function _screwInit3D(){
   const canvas=document.getElementById('screw-canvas');
-  _screwRenderer=new THREE.WebGLRenderer({canvas,antialias:true});
+  _screwRenderer=_vorschauRenderer(canvas);
   _screwRenderer.setSize(200,300);
   _screwRenderer.setPixelRatio(Math.min(devicePixelRatio,2));
   _screwRenderer.setClearColor(0x10141c);
@@ -47755,7 +47751,7 @@ function _gardSyncUI(){
 }
 function _gardInit3D(){
   const canvas=document.getElementById('gardena-canvas');
-  _gardRenderer=new THREE.WebGLRenderer({canvas,antialias:true});
+  _gardRenderer=_vorschauRenderer(canvas);
   _gardRenderer.setSize(200,300); _gardRenderer.setPixelRatio(Math.min(devicePixelRatio,2));
   _gardRenderer.setClearColor(0x10141c);
   _gardScene=new THREE.Scene();
@@ -47931,12 +47927,51 @@ function _fpScrewSet(key,val){
 }
 // ===== END SCHRAUBEN / MUTTERN GENERATOR =====
 
+// ═══ GEMEINSAMER VORSCHAU-RENDERER (_vs*) ══════════════════════════════════════
+// Jede Generator-Vorschau hatte einen EIGENEN WebGL-Renderer, der nie freigegeben
+// wurde (+1 Kontext je geöffnetem Generator). Handys erlauben nur wenige aktive
+// WebGL-Kontexte – danach schaltet der Browser die ältesten ab: zuerst die
+// Hauptansicht, dann die Vorschaubilder; nichts dreht sich mehr (Volker 6.11.,
+// Galaxy Z Fold). Jetzt rendern alle Vorschauen und Vorschaubilder über EINEN
+// unsichtbaren Renderer; sichtbare Vorschauen bekommen das Bild per 2D-Kopie.
+let _vsR = null;
+function _vsShared() {
+  if (!_vsR || (_vsR.getContext && _vsR.getContext().isContextLost())) {
+    _vsR = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    _vsR.setPixelRatio(1);
+  }
+  return _vsR;
+}
+// Stellvertreter mit derselben Schnittstelle wie THREE.WebGLRenderer, soweit die
+// Vorschauen sie nutzen (setSize, setPixelRatio, setClearColor, render, domElement)
+function _vorschauRenderer(canvas) {
+  const st = { w: canvas.width || 200, h: canvas.height || 300, pr: 1, farbe: new THREE.Color(0x000000), alpha: 1 };
+  const ctx = canvas.getContext('2d');
+  const masse = () => { canvas.width = Math.max(1, Math.round(st.w * st.pr)); canvas.height = Math.max(1, Math.round(st.h * st.pr)); };
+  return {
+    domElement: canvas,
+    setSize(w, h, stil) { st.w = w; st.h = h; masse(); if (stil !== false) { canvas.style.width = w + 'px'; canvas.style.height = h + 'px'; } },
+    setPixelRatio(p) { st.pr = p || 1; masse(); },
+    setClearColor(c, a) { st.farbe.set(c); if (a !== undefined) st.alpha = a; },
+    render(scene, cam) {
+      if (!canvas.isConnected || !canvas.offsetParent) return;   // verborgen: nichts rechnen
+      const W = canvas.width, H = canvas.height; if (!W || !H) return;
+      let R; try { R = _vsShared(); } catch (e) { return; }
+      if (R.domElement.width !== W || R.domElement.height !== H) R.setSize(W, H, false);
+      R.setClearColor(st.farbe, st.alpha);
+      R.render(scene, cam);
+      ctx.clearRect(0, 0, W, H); ctx.drawImage(R.domElement, 0, 0);
+    },
+    dispose() {}
+  };
+}
+
 // ===== ZAHNRAD- + GEHÄUSE-GENERATOR =====
 // Gemeinsamer 3D-Vorschau-Manager (kleines rotierendes Canvas im Dialog)
 const _gpv={};
 function _gpvInit(id, buildFn, edgesFn){
   const canvas=document.getElementById(id+'-canvas');
-  const r=new THREE.WebGLRenderer({canvas,antialias:true});
+  const r=_vorschauRenderer(canvas);
   r.setSize(200,300); r.setPixelRatio(Math.min(devicePixelRatio,2)); r.setClearColor(0x10141c);
   const sc=new THREE.Scene();
   const cam=new THREE.PerspectiveCamera(38,200/300,0.1,500); cam.position.set(0,4,14); cam.lookAt(0,0,0);
@@ -76977,7 +77012,7 @@ function _renderGeoThumb(geo, zUp){
   if(!geo || !geo.attributes.position || !geo.attributes.position.count) return null;
   if(zUp) geo.rotateX(-Math.PI/2);
   geo.computeBoundingBox();
-  if(!_stlThumbRenderer){ _stlThumbRenderer=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true}); _stlThumbRenderer.setSize(256,192); _stlThumbRenderer.setClearColor(0x000000,0); }
+  _stlThumbRenderer=_vsShared(); _stlThumbRenderer.setSize(256,192,false); _stlThumbRenderer.setClearColor(0x000000,0);   // gemeinsamer Renderer (Handy: wenige WebGL-Kontexte)
   const sc=new THREE.Scene();
   const mat=new THREE.MeshStandardMaterial({color:0x5b8def,roughness:0.55,metalness:0.12,side:THREE.DoubleSide});
   const mesh=new THREE.Mesh(geo,mat);
@@ -78057,8 +78092,11 @@ async function _mdOeffnen(fid){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.317';
+const VOLME3D_VERSION = '1.18.318';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.318', date:'2026-11-06', changes:[
+    ['📱','<b>Generatoren auf dem Handy: Vorschauen drehen sich wieder.</b> Jeder geöffnete Generator hat bisher eine eigene 3D-Grafik-Verbindung belegt und nie wieder freigegeben. Handys erlauben davon nur wenige. Nach ein paar Generatoren schaltete der Browser deshalb ältere ab: die Vorschauen blieben leer, die Vorschaubilder fehlten, und auch die Hauptansicht konnte stehen bleiben. Jetzt zeichnen alle Vorschauen und Vorschaubilder über eine einzige gemeinsame Verbindung, egal wie viele Generatoren du öffnest. Verdeckte Vorschauen rechnen nicht mehr mit, das schont den Akku.'],
+  ]},
   { version:'1.18.317', date:'2026-11-06', changes:[
     ['🪢','<b>Neuer Generator: Kordel-Topf / Seil-Vase.</b> Ein Gefäß, das aussieht wie aus dickem, gedrehtem Seil gewickelt: Seilringe mit schrägen Strang-Rillen um eine glatte Innenwand, dazu auf Wunsch ein <b>loses Seilende</b>, das über den Rand hängt und sich am Boden einrollt. Formen: <b>Topf</b> (gerade oder leicht schräg, z. B. als Übertopf – das Fenster nennt den passenden Pflanztopf-Ø), <b>Vase</b> für Pampasgras und <b>Schale</b>. Durchmesser, Höhe, Seil-Ø, Anzahl der Stränge und Rillentiefe sind einstellbar. Die Unterseite jedes Rings läuft mit 45° zu, darum druckt alles <b>ohne Stützen</b>. Ist eine Form für das gewählte Seil zu steil, wird sie automatisch so weit abgeflacht, dass kein Ring über dem darunter hängt.'],
   ]},
@@ -83190,7 +83228,7 @@ function _gfCutShape(s){
 
 function _gfInit3D(){
   const cv=document.getElementById('gf-canvas');
-  _gfRenderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
+  _gfRenderer=_vorschauRenderer(cv);
   _gfRenderer.setSize(200,300); _gfRenderer.setPixelRatio(Math.min(devicePixelRatio,2));
   _gfRenderer.setClearColor(0xe8f0fe);
   _gfScene=new THREE.Scene();
@@ -83714,7 +83752,7 @@ function _vaseOrgShuffle() {
 function _vaseInit3D() {
   const canvas = document.getElementById('vase-canvas');
   if (!canvas) return;
-  _vaseRenderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  _vaseRenderer = _vorschauRenderer(canvas);
   // Erst setSize MIT Style (fixiert die CSS-Anzeigegröße), dann setPixelRatio
   // (schärft nur den Buffer). Sonst zeigt das Canvas auf DPR≥2-Geräten (Handy/
   // Tablet) doppelt so groß an und quetscht die Regler aus dem Modal.
