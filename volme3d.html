@@ -484,6 +484,7 @@ body.devmode .dev-only{display:flex!important}
 /* CTX POPUP */
 #ctx{position:absolute;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:4px;display:none;gap:3px;z-index:30}
 #ksn-pop{position:absolute;right:14px;top:142px;width:272px;max-height:calc(100% - 200px);overflow:auto;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:10px 12px;display:none;z-index:51}
+#lbl-lage .btn{padding:2px 0;min-width:0;width:26px;height:24px;line-height:1;font-size:13px;justify-content:center}
 #lbl-pop{position:absolute;left:min(304px,calc(100vw - 262px));bottom:52px;width:226px;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:10px 12px;display:none;z-index:51}
 #nudge-pop{position:absolute;left:14px;bottom:96px;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:10px 12px;display:none;z-index:31}
 #nudge-pop .btn{width:30px;height:30px;padding:0;display:flex;align-items:center;justify-content:center;font-size:14px}
@@ -2375,9 +2376,26 @@ const firebaseConfig = {
       <button class="btn" style="padding:4px 7px" onclick="_lblRotate(15)" title="15° im Uhrzeigersinn">↻ 15°</button>
       <button class="btn" style="padding:4px 7px" onclick="_lblRotate(90)" title="90° im Uhrzeigersinn — z. B. Text senkrecht stellen">90°</button>
     </div>
-    <div style="font-size:11px;color:var(--dim);line-height:1.35;margin-bottom:8px">Verschieben: den Text auf der Fläche ziehen.</div>
+    <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:8px">
+      <span style="font-size:12px;color:var(--mid);width:38px;padding-top:4px">Lage</span>
+      <div id="lbl-lage" style="display:grid;grid-template-columns:repeat(3,26px);gap:3px" title="Text an den Rand oder in die Mitte der Fläche setzen – oben/unten/links/rechts so, wie du gerade draufschaust">
+        <button class="btn" data-lage="-1,1" onclick="svgAlignOnFace(-1,1)" title="oben links">↖</button>
+        <button class="btn" data-lage="0,1" onclick="svgAlignOnFace(0,1)" title="oben Mitte">↑</button>
+        <button class="btn" data-lage="1,1" onclick="svgAlignOnFace(1,1)" title="oben rechts">↗</button>
+        <button class="btn" data-lage="-1,0" onclick="svgAlignOnFace(-1,0)" title="links Mitte">←</button>
+        <button class="btn" data-lage="0,0" onclick="svgAlignOnFace(0,0)" title="Mitte">●</button>
+        <button class="btn" data-lage="1,0" onclick="svgAlignOnFace(1,0)" title="rechts Mitte">→</button>
+        <button class="btn" data-lage="-1,-1" onclick="svgAlignOnFace(-1,-1)" title="unten links">↙</button>
+        <button class="btn" data-lage="0,-1" onclick="svgAlignOnFace(0,-1)" title="unten Mitte">↓</button>
+        <button class="btn" data-lage="1,-1" onclick="svgAlignOnFace(1,-1)" title="unten rechts">↘</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--mid)">
+        <label for="lbl-rand">Rand</label>
+        <span><input id="lbl-rand" type="text" inputmode="decimal" value="2" onkeydown="event.stopPropagation()" style="width:38px;padding:3px 5px;border:1.5px solid var(--border);border-radius:6px;font-family:var(--font);font-size:12px;text-align:right"> mm</span>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--dim);line-height:1.35;margin-bottom:8px">Feinschieben: den Text auf der Fläche ziehen.</div>
     <div style="display:flex;gap:6px">
-      <button class="btn" onclick="svgCenterOnFace()" title="Mittig auf die Fläche setzen">⊕ Mitte</button>
       <button class="btn pri" style="flex:1" onclick="_lblApply()">✓ Anbringen</button>
     </div>
   </div>
@@ -24401,6 +24419,7 @@ function buildObjectFromData(data) {
     obj.userData.svgSize        = data.svgSize;
     if (data._svgWrap) obj.userData._svgWrap = data._svgWrap;
     if (data._svgSchmieg) obj.userData._svgSchmieg = data._svgSchmieg;
+    if (data._snapBind) obj.userData._snapBind = data._snapBind;          // wird in restoreState aufgelöst
     if (data.textEdit) obj.userData.textEdit = Object.assign({}, data.textEdit);
   }
   // Skizzen-/Loft-/Sweep-Rebuild-Parameter zurück (Regler nach Undo/Laden)
@@ -24960,6 +24979,16 @@ function objectToData(o, modus) {
     d.svgSize        = o.userData.svgSize;
     if (o.userData._svgWrap) d._svgWrap = o.userData._svgWrap;   // Biege-Parameter (Radius, Tiefe, Skalierung)
     if (o.userData._svgSchmieg) d._svgSchmieg = o.userData._svgSchmieg;   // Anschmieg-Feld
+    // Bindung an eine ebene Fläche (Beschriftung/Gleiten) – Körper über seine id, damit
+    // sie Rückgängig/Wiederholen übersteht (vorher ging 🏷️ danach nicht mehr auf)
+    const ud = o.userData;
+    if (ud._snapNormal && ud._snapSolid) {
+      let t = ud._snapSolid; while (t && !objects.includes(t)) t = t.parent;
+      if (t && t.userData.id != null && t === ud._snapSolid) {
+        d._snapBind = { id: t.userData.id, n: ud._snapNormal.toArray(), fd: ud._snapFaceD ?? null,
+                        sl: ud._snapSurfaceLocal ? ud._snapSurfaceLocal.toArray() : null };
+      }
+    }
   } else if (o.isMesh && (o.userData.isSubtract || !o.userData.type || !_BUILDGEO_GRUNDFORMEN.has(o.userData.type) ||
       ['sphericalshell','spring','bentpipe','thread'].includes(o.userData.type))) {
     // Netz mitspeichern für alles, was buildGeo beim Laden NICHT selbst bauen kann.
@@ -37720,6 +37749,15 @@ function restoreState(stateArr) {
     const o = buildObjectFromData(data);
     scene.add(o); objects.push(o);
   });
+  for (const o of objects) {                       // Flächenbindung von Texten/Motiven wiederherstellen
+    const b = o.userData._snapBind; if (!b) continue;
+    delete o.userData._snapBind;
+    const t = objects.find(x => x !== o && x.userData.id === b.id && x.isMesh);
+    if (!t) continue;
+    o.userData._snapSolid = t; o.userData._snapNormal = new THREE.Vector3().fromArray(b.n);
+    if (b.fd != null) o.userData._snapFaceD = b.fd;
+    if (b.sl) o.userData._snapSurfaceLocal = new THREE.Vector3().fromArray(b.sl);
+  }
   updateTree();
   updateUndoRedoButtons();
 }
@@ -37774,6 +37812,8 @@ function _uhSprung(art, n) {
   for (let i = 1; i < n; i++) { nach.push(ziel); ziel = von.pop(); }
   _uhLiveMeta = ziel._meta || null;
   restoreState(ziel);
+  // Beschriftungs-Feld zeigt sonst auf den alten (ersetzten) Text → Raster/Anbringen täten nichts
+  if (_lblObj && !_lblObj.parent) _lblClose();
   _uhTipZu();
   if (_uhListe) _uhListeRender();
   notify((art === 'undo' ? '↩ ' : '↪ ') + (n > 1 ? n + ' Schritte' : (label ? label.text : (art === 'undo' ? 'Rückgängig' : 'Wiederholt'))), 'ok');
@@ -78560,8 +78600,12 @@ async function _mdOeffnen(fid){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.325';
+const VOLME3D_VERSION = '1.18.326';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.326', date:'2026-11-07', changes:[
+    ['🏷️','<b>Beschriftung: Text an den Rand oder in die Mitte setzen.</b> Im Feld <i>Beschriftung anbringen</i> gibt es statt nur „⊕ Mitte“ jetzt ein Raster mit neun Knöpfen: <b>↖ oben links, ↑ oben Mitte, ↗ oben rechts, ← links Mitte, ● Mitte, → rechts Mitte, ↙ unten links, ↓ unten Mitte, ↘ unten rechts</b>. Daneben stellst du den <b>Rand</b> in mm ein (Standard 2 mm), also wie weit der Text von der Kante wegbleibt. Oben, unten, links und rechts gelten so, wie du gerade auf die Fläche schaust; auch ein gedrehter Text (15° / 90°) wird richtig an die Kante gelegt. Auf Rundungen (Becher, Dose) geht oben / Mitte / unten. Feinschieben geht weiter durch Ziehen.'],
+    ['↩','<b>Rückgängig behält die Fläche eines Textes.</b> Nach <i>Rückgängig</i> wusste ein aufgesetzter Text nicht mehr, auf welcher Fläche er sitzt – der Knopf 🏷️ ging nicht mehr auf und Gleiten auf der Fläche klappte nicht. Jetzt bleibt die Bindung erhalten.'],
+  ]},
   { version:'1.18.325', date:'2026-11-07', changes:[
     ['⧈','<b>Spielraum: „Anwenden“ springt nicht mehr zurück.</b> Die Knöpfe −0,2 / −0,1 / +0,1 / +0,2 haben den Wert sofort angewendet, und „Anwenden“ hat danach noch einmal den Feldwert +0,2 draufgelegt. Damit war der Körper wieder so groß wie vorher. Jetzt <b>wählen</b> die Knöpfe nur den Wert, er steht im Feld und der Knopf leuchtet orange. Angewendet wird er erst mit <b>Anwenden</b> oder Enter, genau einmal. Eigene Werte gehen auch mit Komma, z. B. 0,15. „Bisher“ zeigt die Summe auch beim erneuten Öffnen.'],
   ]},
@@ -81891,6 +81935,75 @@ function svgCenterOnFace() {
     saveUndo();
     o.position.addScaledVector(fr.axis, (span.lo + span.hi) / 2);
     notify('⊕ Motiv auf halber Höhe zentriert', 'ok');
+  }
+  o.updateMatrixWorld(true);
+  updateTFInputs(); updateTree(); _doRepositionDimHandles();
+  if (selectedObjs.length === 1) _fpPositionPanel();
+}
+// Text/Motiv an Rand oder Mitte der Fläche setzen (Raster ↖ ↑ ↗ / ← ● → / ↙ ↓ ↘ im
+// Beschriftungs-Feld). h: -1 links, 0 Mitte, 1 rechts; v: 1 oben, 0 Mitte, -1 unten —
+// „oben" und „rechts" so, wie man gerade auf die Fläche schaut (Kamera), nicht Weltachsen.
+// Abstand zum Rand aus #lbl-rand (mm). Auf Rundungen geht nur oben/Mitte/unten.
+function svgAlignOnFace(h, v) {
+  const o = _lblObj && _lblObj.parent ? _lblObj : selectedObjs.length === 1 ? selectedObjs[0] : null;
+  if (!o || o.userData.shapeType !== 'svg') { notify('Erst den Text bzw. das Motiv auswählen', 'w'); return; }
+  if (o.userData.locked) { notify('Objekt ist gesperrt', 'w'); return; }
+  const fr = _svgGlideFrame(o);
+  if (!fr) { notify('Text erst auf eine Fläche setzen (anklicken)', 'w'); return; }
+  if (fr.kind === 'schmieg') { notify('Angeschmiegtes Motiv: zum Verschieben einfach an eine andere Stelle ziehen', 'w'); return; }
+  const randMm = parseFloat(String(document.getElementById('lbl-rand')?.value ?? '2').replace(',', '.'));
+  const rand = (isFinite(randMm) ? Math.max(0, randMm) : 2) / 10;      // Szene in cm
+  camera.updateMatrixWorld(true);
+  const oben = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+  const rechts = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+  if (fr.kind === 'wrap') {
+    const span = _svgGlideWrapSpan(o, fr);
+    if (!span) { notify('Körper nicht gefunden — Motiv neu aufwickeln', 'w'); return; }
+    const hoch = fr.axis.dot(oben) >= 0 ? 1 : -1;                     // Achse zeigt evtl. nach unten
+    const ziel = v === 0 ? (span.lo + span.hi) / 2
+      : (v * hoch > 0 ? span.hi - span.half - rand : span.lo + span.half + rand);
+    saveUndo();
+    o.position.addScaledVector(fr.axis, ziel);
+    notify(h ? 'Auf einer Rundung geht nur oben / Mitte / unten — links/rechts: Text ziehen' : '⊕ Motiv ' + (v > 0 ? 'oben' : v < 0 ? 'unten' : 'auf halber Höhe'), h ? 'w' : 'ok');
+  } else {
+    const n = fr.n.clone().normalize();
+    // Richtungen an den Kanten des Körpers ausrichten (seine eigenen Achsen, auch wenn er
+    // gedreht ist) – die Kamera entscheidet nur, welche Kante „oben“ ist. Reine Bildschirm-
+    // richtungen kippen, sobald die Ansicht leicht schräg/gerollt ist.
+    const mw = fr.solid.mesh.matrixWorld;
+    let vW = null, best = -1;
+    for (let i = 0; i < 3; i++) {
+      const a = new THREE.Vector3().setFromMatrixColumn(mw, i).normalize();
+      a.addScaledVector(n, -a.dot(n));
+      if (a.lengthSq() < 0.25) continue;                                  // steht (fast) senkrecht auf der Fläche
+      a.normalize();
+      const w = Math.abs(a.dot(oben)) + 1e-3 * Math.abs(a.dot(rechts));
+      if (w > best) { best = w; vW = a; }
+    }
+    if (!vW) { vW = oben.clone().addScaledVector(n, -oben.dot(n)); if (vW.lengthSq() < 1e-6) vW.crossVectors(n, rechts); vW.normalize(); }
+    if (vW.dot(oben) < 0) vW.negate();
+    const uW = new THREE.Vector3().crossVectors(vW, n).normalize();
+    if (uW.dot(rechts) < 0) uW.negate();
+    const face = _faceInfoWorld(fr.solid.mesh, fr.solid.nLocal, fr.solid.planeD, uW, vW);
+    if (!face || face.uMin === undefined) { notify('Fläche nicht gefunden — Text neu auf die Fläche setzen', 'w'); return; }
+    // Ausdehnung des Motivs in u/v relativ zu seiner Mitte (berücksichtigt Drehung)
+    const g = o.geometry; if (!g.boundingBox) g.computeBoundingBox();
+    const bb = g.boundingBox, mc = _svgCenterWorld(o), p = new THREE.Vector3();
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      p.set(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z).applyMatrix4(o.matrixWorld).sub(mc);
+      const a = p.dot(uW), b = p.dot(vW);
+      u0 = Math.min(u0, a); u1 = Math.max(u1, a); v0 = Math.min(v0, b); v1 = Math.max(v1, b);
+    }
+    const stelle = (s, fMin, fMax, m0, m1) => s < 0 ? fMin + rand - m0 : s > 0 ? fMax - rand - m1 : (fMin + fMax) / 2 - (m0 + m1) / 2;
+    const zu = stelle(h, face.uMin, face.uMax, u0, u1), zv = stelle(v, face.vMin, face.vMax, v0, v1);
+    const ziel = face.center.clone().addScaledVector(uW, zu).addScaledVector(vW, zv);
+    const d = ziel.sub(mc); d.addScaledVector(n, -d.dot(n));             // nur IN der Fläche
+    saveUndo();
+    o.position.add(d);
+    const zuGross = (u1 - u0) + 2 * rand > face.uMax - face.uMin + 1e-4 || (v1 - v0) + 2 * rand > face.vMax - face.vMin + 1e-4;
+    const wo = (v > 0 ? 'oben' : v < 0 ? 'unten' : '') + (h && v ? ' ' : '') + (h < 0 ? 'links' : h > 0 ? 'rechts' : '');
+    notify(zuGross ? 'Text ist größer als die Fläche (mit Rand) — er ragt über' : '⊕ Text ' + (wo || 'mittig') + (h || v ? ' (' + (+(rand * 10).toFixed(2)) + ' mm Rand)' : ''), zuGross ? 'w' : 'ok');
   }
   o.updateMatrixWorld(true);
   updateTFInputs(); updateTree(); _doRepositionDimHandles();
