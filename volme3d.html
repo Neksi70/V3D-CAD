@@ -26241,15 +26241,15 @@ function openOffsetTool() {
     </div>
     <div style="color:#9aa0a8;margin-bottom:10px">Körper gleichmäßig aufblasen (+) oder schrumpfen (−). Für Presspassungen z.B. −0,2 mm.</div>
     <div style="display:flex;gap:5px;margin-bottom:10px">
-      <button onclick="_offsetApply(-0.2)" style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">−0,2</button>
-      <button onclick="_offsetApply(-0.1)" style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">−0,1</button>
-      <button onclick="_offsetApply(0.1)"  style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">+0,1</button>
-      <button onclick="_offsetApply(0.2)"  style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">+0,2</button>
+      <button class="off-wahl" data-v="-0.2" onclick="_offsetWahl(-0.2)" style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">−0,2</button>
+      <button class="off-wahl" data-v="-0.1" onclick="_offsetWahl(-0.1)" style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">−0,1</button>
+      <button class="off-wahl" data-v="0.1"  onclick="_offsetWahl(0.1)"  style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">+0,1</button>
+      <button class="off-wahl" data-v="0.2"  onclick="_offsetWahl(0.2)"  style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">+0,2</button>
     </div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-      <input id="offset-val" type="number" step="0.05" value="0.2" style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:5px 7px">
+      <input id="offset-val" type="text" inputmode="decimal" value="" placeholder="z. B. −0,2" oninput="_offsetMarkiere()" onkeydown="event.stopPropagation();if(event.key==='Enter'){event.preventDefault();_offsetFeldAnwenden()}" style="flex:1;min-width:0;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:5px 7px">
       <span style="color:#9aa0a8">mm</span>
-      <button onclick="_offsetApply(parseFloat(document.getElementById('offset-val').value)||0)" style="background:#F97316;border:none;color:#fff;border-radius:6px;padding:6px 12px;font-weight:700;cursor:pointer">Anwenden</button>
+      <button id="offset-go" onclick="_offsetFeldAnwenden()" style="background:#F97316;border:none;color:#fff;border-radius:6px;padding:6px 12px;font-weight:700;cursor:pointer">Anwenden</button>
     </div>
     <div style="display:flex;justify-content:space-between;color:#9aa0a8">
       <span>Bisher: <b id="offset-sum" style="color:#e6e8eb">0 mm</b></span>
@@ -26257,6 +26257,31 @@ function openOffsetTool() {
     </div>`;
   document.body.appendChild(p);
   _offsetPanel = p;
+  const sum = o.userData._offsetSumMm || 0, se = document.getElementById('offset-sum');
+  if (se) se.textContent = (sum > 0 ? '+' : '') + String(sum).replace('.', ',') + ' mm';
+}
+
+// Knöpfe −0,2 … +0,2 WÄHLEN nur den Wert (Feld + Markierung); angewendet wird erst mit
+// „Anwenden“/Enter – genau einmal. Vorher wendeten die Knöpfe sofort an, und „Anwenden“
+// legte den Feld-Standard +0,2 noch einmal drauf → −0,2 +0,2 = alles wieder wie vorher
+// (Volker 7.11.: „springt wieder auf den Ursprungswert zurück“).
+function _offsetZahl(t) { const x = parseFloat(String(t || '').trim().replace(/[−–]/g, '-').replace(',', '.')); return isFinite(x) ? x : NaN; }
+function _offsetWahl(v) {
+  const el = document.getElementById('offset-val'); if (!el) return;
+  el.value = (v > 0 ? '+' : '') + String(v).replace('.', ',');
+  _offsetMarkiere(); el.focus();
+}
+function _offsetMarkiere() {
+  const v = _offsetZahl((document.getElementById('offset-val') || {}).value);
+  document.querySelectorAll('#offset-panel .off-wahl').forEach(b => {
+    const an = Math.abs(+b.dataset.v - v) < 1e-9;
+    b.style.background = an ? '#F97316' : '#2a2f37'; b.style.borderColor = an ? '#F97316' : '#3a3f47';
+  });
+}
+function _offsetFeldAnwenden() {
+  const v = _offsetZahl((document.getElementById('offset-val') || {}).value);
+  if (!isFinite(v) || v === 0) { notify('Erst einen Wert wählen oder eintippen, z. B. −0,2', 'w'); return; }
+  _offsetApply(v);
 }
 
 function _offsetClose() {
@@ -26273,11 +26298,11 @@ function _offsetApply(offMm) {
   _offsetMeshWorld(o, offMm);
   o.userData._offsetSumMm = Math.round(((o.userData._offsetSumMm || 0) + offMm) * 100) / 100;
   const sumEl = document.getElementById('offset-sum');
-  if (sumEl) sumEl.textContent = o.userData._offsetSumMm + ' mm';
+  if (sumEl) sumEl.textContent = (o.userData._offsetSumMm > 0 ? '+' : '') + String(o.userData._offsetSumMm).replace('.', ',') + ' mm';
   if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(o);
   o.userData.opJournal = { op: 'offset', mm: offMm, parts: [_preOffset] };
   updateFP();
-  notify('Spielraum ' + (offMm > 0 ? '+' : '') + offMm + ' mm angewendet ✓', 'ok');
+  notify('Spielraum ' + (offMm > 0 ? '+' : '') + String(offMm).replace('.', ',') + ' mm angewendet ✓', 'ok');
 }
 
 // Kern des Spielraums (ohne Undo/Anzeige): alle Flächen des Netzes um offMm nach
@@ -78535,8 +78560,11 @@ async function _mdOeffnen(fid){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.324';
+const VOLME3D_VERSION = '1.18.325';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.325', date:'2026-11-07', changes:[
+    ['⧈','<b>Spielraum: „Anwenden“ springt nicht mehr zurück.</b> Die Knöpfe −0,2 / −0,1 / +0,1 / +0,2 haben den Wert sofort angewendet, und „Anwenden“ hat danach noch einmal den Feldwert +0,2 draufgelegt. Damit war der Körper wieder so groß wie vorher. Jetzt <b>wählen</b> die Knöpfe nur den Wert, er steht im Feld und der Knopf leuchtet orange. Angewendet wird er erst mit <b>Anwenden</b> oder Enter, genau einmal. Eigene Werte gehen auch mit Komma, z. B. 0,15. „Bisher“ zeigt die Summe auch beim erneuten Öffnen.'],
+  ]},
   { version:'1.18.324', date:'2026-11-06', changes:[
     ['🪴','<b>Lithophane: Boden und Fuß-Ring für Zylinder, Kegel und Laterne.</b> Unter <i>Boden &amp; Fuß</i> wird aus der Lithophane mit <b>Mit Boden (Topf)</b> ein richtiger Übertopf oder Köcher – das Foto sitzt außen als Relief, wie bei den Foto-Töpfen. Dazu gibt es einen <b>🪵 Fuß-Ring</b> als eigenes Teil (z. B. in Holz-Filament): Die Lithophane steckt in einer passgenauen Vertiefung, die Oberkante ist gerundet, Höhe, Überstand, Einsatztiefe und Passung sind einstellbar. Ohne Boden wird es ein Windlicht: Der Fuß bekommt dann eine Mulde für ein LED-Teelicht und ein Loch zum Einschalten. Auch ein Kegel, der nach oben weiter wird, passt sauber in den Fuß.'],
   ]},
