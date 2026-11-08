@@ -5983,6 +5983,35 @@ Patrick</textarea>
   </div>
 </div>
 
+<!-- Faltenbaum: gefalteter Weihnachtsbaum in Papier-Optik (pleated-tree.js).
+     Regler werden aus V3DFaltenbaum.UI erzeugt; gedruckt im Vasenmodus. -->
+<style>
+#ftb-modal .vrow label{min-width:96px}
+#ftb-modal .ftb-num{width:50px;padding:2px 4px;font-size:11px;font-weight:700;text-align:right;border:1px solid #ddd;border-radius:4px;color:#222;background:#fff}
+#ftb-modal .vrow .vu{min-width:16px}
+#ftb-preset{width:100%;padding:4px 6px;font-size:12px;border:1px solid #ddd;border-radius:5px;margin-bottom:6px}
+</style>
+<div id="ftb-modal" class="g3dm" onclick="if(event.target===this)_ftbClose()">
+  <div class="g3box">
+    <div class="g3hdr"><span id="ftb-title">🎄 Faltenbaum (Weihnachten)</span><span class="vx" onclick="_ftbClose()">✕</span></div>
+    <div class="g3body">
+      <canvas id="ftb-canvas" width="200" height="320"></canvas>
+      <div class="g3ctrl">
+        <span class="vsec">Vorlage</span>
+        <select id="ftb-preset" onchange="_ftbPreset(this.value)"></select>
+        <span class="vsec">Form</span>
+        <div id="ftb-rows"></div>
+        <div class="g3info" id="ftb-info"></div>
+        <div class="g3info">Im Slicer <b>Vasenmodus (Spiral)</b> aktivieren · Linienbreite 0,6–0,8 mm · 3–4 Bodenschichten · matte PLA wirkt wie Papier.</div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_ftbClose()">Abbrechen</button>
+      <button class="btn pri" id="ftb-ok" onclick="_ftbCreate()">✓ Einfügen</button>
+    </div>
+  </div>
+</div>
+
 <!-- Pilz-Generator: herbstlicher Deko-Pilz aus zwei Teilen. Der Stiel trägt oben
      einen Gewindezapfen, der Hut schraubt sich darauf — beide Teile stehen in
      Druck-Lage und brauchen keine Stützen. -->
@@ -7929,6 +7958,236 @@ window._occtReady = (async () => {
 })();
 window._occtReady.then(oc => { window._oc = oc; console.log('OCCT bereit'); });
 </script>
+<!-- Faltenbaum-Generator: pleated-tree.js unverändert eingebettet (stellt window.V3DFaltenbaum bereit) -->
+<script>
+/**
+ * V3D CAD – Generator „Faltenbaum“ (gefalteter Weihnachtsbaum, Papier-Optik)
+ * ---------------------------------------------------------------------------
+ * Erzeugt einen geschlossenen (wasserdichten) Volumenkörper:
+ *   - Querschnitt: Stern mit N radialen Falten (Ziehharmonika-Look)
+ *   - Silhouette: T Etagen, jede Etage läuft unten als „Rock“ aus
+ *   - Übergänge zwischen Etagen werden automatisch so flach gemacht,
+ *     dass der eingestellte maximale Überhangwinkel nicht überschritten wird
+ * Gedacht zum Drucken im Vasenmodus (Spiralmodus): Slicer druckt nur die
+ * Außenwand – so entsteht die dünne, papierartige Faltenwand.
+ *
+ * Keine Abhängigkeiten. Für Three.js: toThreeGeometry(THREE, params).
+ * Einheiten: mm, Winkel in Grad.
+ */
+(function (root) {
+  'use strict';
+
+  const DEFAULTS = {
+    hoehe: 150,          // Gesamthöhe (mm)
+    radius: 60,          // Radius unterste Etage, an den Faltenspitzen (mm)
+    etagen: 4,           // Anzahl Etagen (1–12)
+    stufe: 0.30,         // Einzug am oberen Ende jeder Etage (0–0.7, relativ)
+    rockKurve: 1.4,      // Wölbung der Etagenflanke (1 = gerade, >1 = ausgestellt)
+    falten: 24,          // Anzahl Falten rundum (6–72)
+    faltenTiefe: 0.22,   // Tiefe der Falten relativ zum Radius (0–0.5)
+    schaerfe: 0.85,      // 0 = weich gewellt, 1 = scharfe Knickkante
+    drehung: 0,          // Verdrehung über die Höhe (Grad)
+    maxUeberhang: 50,    // max. Überhang zur Senkrechten (Grad) an Etagenübergängen
+    aufloesung: 1        // 0.5 = grob … 2 = fein
+  };
+
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+  function normalize(p) {
+    const o = Object.assign({}, DEFAULTS, p || {});
+    o.etagen = Math.round(clamp(o.etagen, 1, 12));
+    o.falten = Math.round(clamp(o.falten, 3, 120));
+    o.stufe = clamp(o.stufe, 0, 0.8);
+    o.faltenTiefe = clamp(o.faltenTiefe, 0, 0.6);
+    o.schaerfe = clamp(o.schaerfe, 0, 1);
+    o.maxUeberhang = clamp(o.maxUeberhang, 10, 80);
+    o.rockKurve = clamp(o.rockKurve, 0.5, 3);
+    o.aufloesung = clamp(o.aufloesung, 0.25, 4);
+    o.hoehe = Math.max(1, o.hoehe);
+    o.radius = Math.max(1, o.radius);
+    return o;
+  }
+
+  /** Silhouette als Liste [{z, r}] von unten (z=0) bis zur Spitze (r→0). */
+  function buildProfile(o) {
+    const T = o.etagen, H = o.hoehe, h = H / T;
+    const tanA = Math.tan(o.maxUeberhang * Math.PI / 180);
+    const rowsSlope = Math.max(6, Math.round(28 * o.aufloesung));
+    const rowsTrans = Math.max(2, Math.round(6 * o.aufloesung));
+    const Rb = k => o.radius * (1 - k / T);                 // Unterkante Etage k
+    const Rt = k => (k === T - 1) ? 0 : Rb(k + 1) * (1 - o.stufe); // Oberkante
+    const pts = [];
+    for (let k = 0; k < T; k++) {
+      const z0 = k * h;
+      let zs = z0; // Start der Flanke
+      if (k > 0) {
+        // Übergang (nach außen, Überhang) von Rt(k-1) auf Rb(k)
+        const rA = Rt(k - 1), rB = Rb(k);
+        let ht = (rB - rA) / tanA;
+        ht = Math.min(ht, h * 0.6);
+        for (let i = 1; i <= rowsTrans; i++) {
+          const u = i / rowsTrans;
+          pts.push({ z: z0 + ht * u, r: rA + (rB - rA) * u }); // linear = konstanter Überhangwinkel
+        }
+        zs = z0 + ht;
+      } else {
+        pts.push({ z: 0, r: Rb(0) });
+      }
+      // Flanke von Rb(k) nach Rt(k)
+      const rB = Rb(k), rT = Rt(k), z1 = (k + 1) * h;
+      const last = (k === T - 1);
+      const rows = last ? Math.round(rowsSlope * 1.5) : rowsSlope;
+      for (let i = 1; i <= rows; i++) {
+        const u = i / rows;
+        let r = rT + (rB - rT) * Math.pow(1 - u, o.rockKurve);
+        pts.push({ z: zs + (z1 - zs) * u, r: i === rows && last ? 0 : r });
+      }
+    }
+    return pts;
+  }
+
+  /** Faltenprofil f(φ) ∈ [0,1], φ ∈ [0,1): 1 = Außenkante, 0 = Innenkante */
+  function pleat(phi, sharp) {
+    const tri = 1 - Math.abs(2 * phi - 1);
+    const soft = 0.5 - 0.5 * Math.cos(2 * Math.PI * phi);
+    return sharp * tri + (1 - sharp) * soft;
+  }
+
+  /**
+   * Erzeugt das Mesh. Rückgabe: { positions: Float32Array, indices: Uint32Array, params }
+   * Achse: Z nach oben (3D-Druck-Konvention). Für Three.js Y-up → toThreeGeometry.
+   */
+  function generate(params) {
+    const o = normalize(params);
+    const prof = buildProfile(o);
+    const N = o.falten;
+    const S = 2 * Math.max(2, Math.round(4 * o.aufloesung)); // Punkte je Falte (gerade → Kanten exakt getroffen)
+    const M = N * S;                                          // Punkte je Ring
+    const twist = o.drehung * Math.PI / 180;
+    const H = o.hoehe;
+
+    const pos = [];
+    const idx = [];
+    // Ringe (alle außer der Spitze)
+    const ringCount = prof.length - 1; // letzter Profilpunkt = Spitze
+    for (let k = 0; k < ringCount; k++) {
+      const { z, r } = prof[k];
+      const rot = twist * z / H;
+      for (let j = 0; j < M; j++) {
+        const phi = (j % S) / S;
+        const f = pleat(phi, o.schaerfe);
+        const rr = r * (1 - o.faltenTiefe * (1 - f));
+        const th = 2 * Math.PI * j / M + rot;
+        pos.push(rr * Math.cos(th), rr * Math.sin(th), z);
+      }
+    }
+    const apex = ringCount * M;
+    pos.push(0, 0, prof[prof.length - 1].z);
+    const bottom = apex + 1;
+    pos.push(0, 0, 0);
+
+    // Mantel (Normalen nach außen, CCW von außen gesehen)
+    for (let k = 0; k < ringCount - 1; k++) {
+      const a = k * M, b = (k + 1) * M;
+      for (let j = 0; j < M; j++) {
+        const j1 = (j + 1) % M;
+        idx.push(a + j, a + j1, b + j1);
+        idx.push(a + j, b + j1, b + j);
+      }
+    }
+    // Spitze
+    const lt = (ringCount - 1) * M;
+    for (let j = 0; j < M; j++) idx.push(lt + j, lt + (j + 1) % M, apex);
+    // Boden
+    for (let j = 0; j < M; j++) idx.push(bottom, (j + 1) % M, j);
+
+    return {
+      positions: new Float32Array(pos),
+      indices: new Uint32Array(idx),
+      params: o
+    };
+  }
+
+  /** Three.js-BufferGeometry (Y-up wie in Three.js üblich; Boden auf y=0). */
+  function toThreeGeometry(THREE, params, opts) {
+    const m = generate(params);
+    const zUp = opts && opts.zUp;
+    let p = m.positions;
+    if (!zUp) {
+      p = new Float32Array(m.positions.length);
+      for (let i = 0; i < p.length; i += 3) {
+        p[i] = m.positions[i];
+        p[i + 1] = m.positions[i + 2];
+        p[i + 2] = -m.positions[i + 1];
+      }
+    }
+    // Für flat-shading-taugliche Normalen: nicht-indexiert
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(p, 3));
+    g.setIndex(new THREE.BufferAttribute(m.indices, 1));
+    const ng = g.toNonIndexed();
+    ng.computeVertexNormals();
+    ng.userData = { generator: 'faltenbaum', params: m.params };
+    return ng;
+  }
+
+  /** Binäres STL (Z-up) als ArrayBuffer. */
+  function toSTL(params) {
+    const m = generate(params);
+    const P = m.positions, I = m.indices, n = I.length / 3;
+    const buf = new ArrayBuffer(84 + n * 50);
+    const dv = new DataView(buf);
+    const hdr = 'V3D CAD Faltenbaum';
+    for (let i = 0; i < hdr.length; i++) dv.setUint8(i, hdr.charCodeAt(i));
+    dv.setUint32(80, n, true);
+    let off = 84;
+    for (let t = 0; t < n; t++) {
+      const a = I[3 * t] * 3, b = I[3 * t + 1] * 3, c = I[3 * t + 2] * 3;
+      const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+      const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const l = Math.hypot(nx, ny, nz) || 1;
+      dv.setFloat32(off, nx / l, true); dv.setFloat32(off + 4, ny / l, true); dv.setFloat32(off + 8, nz / l, true);
+      off += 12;
+      for (const v of [a, b, c]) {
+        dv.setFloat32(off, P[v], true); dv.setFloat32(off + 4, P[v + 1], true); dv.setFloat32(off + 8, P[v + 2], true);
+        off += 12;
+      }
+      dv.setUint16(off, 0, true); off += 2;
+    }
+    return buf;
+  }
+
+  /** Voreinstellungen für die UI */
+  const PRESETS = {
+    'Klassisch (Bild)': {},
+    'Schlank hoch':     { hoehe: 200, radius: 45, etagen: 5, falten: 28, stufe: 0.28 },
+    'Breit & niedrig':  { hoehe: 100, radius: 60, etagen: 3, falten: 20, stufe: 0.35, rockKurve: 1.7 },
+    'Weich gewellt':    { schaerfe: 0.15, faltenTiefe: 0.15, falten: 18 },
+    'Gedreht':          { drehung: 60, falten: 22 },
+    'Mini (Deko)':      { hoehe: 70, radius: 28, etagen: 3, falten: 18 }
+  };
+
+  /** UI-Beschreibung (deutsch) – für automatischen Parameterdialog */
+  const UI = [
+    { key: 'hoehe',        label: 'Höhe',              unit: 'mm', min: 30,  max: 400, step: 1 },
+    { key: 'radius',       label: 'Radius unten',      unit: 'mm', min: 10,  max: 150, step: 1 },
+    { key: 'etagen',       label: 'Etagen',            unit: '',   min: 1,   max: 8,   step: 1 },
+    { key: 'stufe',        label: 'Etagen-Einzug',     unit: '',   min: 0,   max: 0.6, step: 0.01 },
+    { key: 'rockKurve',    label: 'Rock-Schwung',      unit: '',   min: 0.6, max: 2.5, step: 0.05 },
+    { key: 'falten',       label: 'Anzahl Falten',     unit: '',   min: 6,   max: 60,  step: 1 },
+    { key: 'faltenTiefe',  label: 'Faltentiefe',       unit: '',   min: 0,   max: 0.45,step: 0.01 },
+    { key: 'schaerfe',     label: 'Kantenschärfe',     unit: '',   min: 0,   max: 1,   step: 0.05 },
+    { key: 'drehung',      label: 'Verdrehung',        unit: '°',  min: -180,max: 180, step: 1 },
+    { key: 'maxUeberhang', label: 'Max. Überhang',     unit: '°',  min: 30,  max: 70,  step: 1 },
+    { key: 'aufloesung',   label: 'Auflösung',         unit: '×',  min: 0.5, max: 2,   step: 0.25 }
+  ];
+
+  const api = { DEFAULTS, PRESETS, UI, generate, toThreeGeometry, toSTL, buildProfile };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.V3DFaltenbaum = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
 <script>
 // Minimal BSP-CSG for Three.js r128
 // Based on csg.js by Evan Wallace (MIT License)
@@ -9470,6 +9729,10 @@ async function _genGenList() {
   list.innerHTML =
     `<div class="shp" onclick="showStarter()" title="Galerie mit großen Vorschau-Karten öffnen">` +
     `<span class="sdd-emoji">🗂️</span><span class="sdd-name">Als Galerie öffnen<small>Große Vorschau-Karten</small></span></div>` +
+    // 🎄 Weihnachten oben als eigener Block (dieselben Einträge stehen unten auch im A–Z)
+    `<div class="gen-abc-hd gen-xmas-hd">🎄 Weihnachten</div>` +
+    _GEN_WEIHNACHTEN.map(t => _STARTERS.findIndex(s => s.t === t)).filter(i => i >= 0 && !(_STARTERS[i].dev && !dev)).map(i => { const s = _STARTERS[i];
+      return `<div class="shp gen-xmas" data-gk="${s.gk || ''}" onclick="_runStarter(${i})" title="${esc(s.d)}"><span class="sdd-emoji">${s.i}</span><span class="sdd-name">${s.t}<small>${s.d}</small></span></div>`; }).join('') +
     _startersSorted().filter(({ s }) => !s.blank && !(s.dev && !dev)).map(({ s, i, L }, k, a) =>
       (k === 0 || a[k - 1].L !== L ? `<div class="gen-abc-hd" data-abc="${L}">${L}</div>` : '') +
       `<div class="shp" data-gk="${s.gk || ''}" data-abc="${L}" onclick="_runStarter(${i})" title="${esc(s.d)}">` +
@@ -24367,6 +24630,8 @@ function buildObjectFromData(data) {
       catch (e) { console.warn('[geo-voll] eingebettetes Netz unlesbar, nehme vereinfachte Fassung:', e); geo = new THREE.BufferGeometryLoader().parse(data.geometry); }
     } else if (data.geometry) {
       geo = new THREE.BufferGeometryLoader().parse(data.geometry);
+    } else if (data.faltenbaumParams && window.V3DFaltenbaum) {
+      geo = _ftbGeo(data.faltenbaumParams);               // Faltenbaum aus Parametern neu bauen
     } else if (data.type === 'svg' && data._svgPathData) {
       // Gewickelt? Dann direkt gebogen neu bauen — sonst läge das Motiv nach
       // Undo/Laden wieder flach neben der Rundung.
@@ -24467,6 +24732,7 @@ function buildObjectFromData(data) {
   }
   if (data._lithoFarbTiefe) obj.userData._lithoFarbTiefe = data._lithoFarbTiefe;
   if (data._dispKeep) obj.userData._dispKeep = data._dispKeep;
+  if (data.faltenbaumParams && obj.isMesh && obj.geometry && obj.geometry.userData.generator === 'faltenbaum') _ftbMark(obj, obj.geometry, data.faltenbaumParams);
   if (data._origGeoData) obj.userData._origGeo = data._origGeoData.__snap
     ? _geoFromSnap(data._origGeoData.__snap)
     : new THREE.BufferGeometryLoader().parse(data._origGeoData);
@@ -24985,7 +25251,9 @@ function objectToData(o, modus) {
   if (o.userData._lithoFarbTiefe) d._lithoFarbTiefe = o.userData._lithoFarbTiefe;
   if (o.userData._hollowFlip)  d._hollowFlip = true;
   if (o.userData.bausatz)      d.bausatz = o.userData.bausatz;   // Rahmen kennt seine Originale (Teile freigeben)
-  if (o.userData.displacementPattern && o.userData.displacementPattern !== 'keine') {
+  if (_ftbParamsOnly(o)) {
+    d.faltenbaumParams = { ...o.userData.faltenbaumParams };   // Faltenbaum: nur Parameter, Netz wird beim Laden neu gebaut
+  } else if (o.userData.displacementPattern && o.userData.displacementPattern !== 'keine') {
     d.displacementPattern   = o.userData.displacementPattern;
     d.displacementAmp       = o.userData.displacementAmp;
     d.displacementFreq      = o.userData.displacementFreq;
@@ -25824,6 +26092,7 @@ function _mfAusStls(w, bufs) {
 async function unionSelected() {
   if (selectedObjs.length < 2) { notify('Mind. 2 Objekte', 'w'); return; }
   const sel = selectedObjs.slice();
+  _ftbBoolHint(sel);
 
   // Als „Bohrung" markierte Körper NICHT stillschweigend überspringen:
   // _objsToUnionStls filtert isHole raus, aber unten werden ALLE sel-Objekte
@@ -26006,6 +26275,7 @@ async function intersectSelected() {
     return;
   }
   const sel = selectedObjs.slice();
+  _ftbBoolHint(sel);
   const _exaktIn = await _exaktVorher(sel);   // exakte Formen VOR dem Umbau
   // Als Bohrung markierte Körper zählen hier wie normales Material: Eine
   // Schnittmenge kennt kein „Werkzeug", jeder Körper ist gleichberechtigt.
@@ -32656,6 +32926,7 @@ async function subtractHoles() {
   if (!holes.length) {
     notify('Kein Objekt als „Cutter“ markiert — Objekt auswählen → Cutter klicken', 'w'); return;
   }
+  _ftbBoolHint(solids.concat(holes));
   if (!solids.length) {
     notify('Kein Volumenkörper ausgewählt', 'w'); return;
   }
@@ -38953,6 +39224,10 @@ canvas.addEventListener('dblclick', e => {
   if (_revolveMode) { finishRevolve(); return; }
   const hits = pickObjects(e);
   if (hits.length > 0 && _textEditable(hits[0].object)) { editTextObj(hits[0].object); return; }
+  if (hits.length > 0 && hits[0].object.userData.faltenbaumParams) {
+    if (_ftbParamsOnly(hits[0].object)) { _ftbOpen(hits[0].object); return; }
+    notify('Dieser Faltenbaum wurde verändert (z. B. bemalt) — die Baum-Regler gelten nicht mehr', 'w');
+  }
   if (hits.length > 0) {
     hits[0].object.getWorldPosition(orbitTarget);
     sph2cam();
@@ -45426,6 +45701,7 @@ const _STARTERS = [
   {i:'🌰',t:'Eichel',d:'Hänge-Leuchte mit Schuppenhut, Lichtpunkten und Schriftzug',run:()=>_eicOpen()},
   {i:'🕯️',t:'Geflochtener Kranz',d:'Adventskranz in Strickoptik mit Kerzenmulden',run:()=>_krzOpen()},
   {i:'🪭',t:'Faltkranz',d:'Kranz in Facettenoptik wie gefaltetes Papier, für Stumpenkerze oder Teelicht',run:()=>_fkzOpen()},
+  {i:'🎄',t:'Faltenbaum (Weihnachten)',d:'Gefalteter Weihnachtsbaum in Papier-Optik, für den Vasenmodus – mit Vorlage „Kleine Tanne“',run:()=>_ftbOpen()},
   {i:'🔥',t:'Lagerfeuer-Teelicht',d:'Leuchtende Flamme auf Holzscheiten, LED-Teelicht in der Mitte, dazu ein Geist mit Mütze und Marshmallow',run:()=>_lgfOpen()},
   {i:'🐕',t:'Dackel-Kerzenhalter',d:'Dackel im Zopfmuster-Pullover mit Strickmütze und Bommel, 1 bis 4 LED-Stabkerzen auf dem Rücken (Adventsdackel)',run:()=>_dklOpen('dackel')},
   {i:'🐕‍🦺',t:'Spaniel-Kerzenhalter',d:'English Springer Spaniel mit Schlappohren im Zopfmuster-Pullover, Mütze und Bommel, 1 bis 4 LED-Stabkerzen',run:()=>_dklOpen('spaniel')},
@@ -45595,10 +45871,16 @@ function _maybeShowStarter(){
 // alle Generatoren mit diesem Anfangsbuchstaben), „Zuletzt benutzt". Klick auf eine
 // Karte schließt die Seite, man ist wieder in Beginner/Advanced, und der Generator
 // öffnet sich — das Ergebnis landet im aktuellen Design. Das Menü rechts bleibt.
+// 🎄 Rubrik Weihnachten (Volker 9.11.26: „solche Sachen in eine Rubrik Weihnachten schieben, da kommt
+// noch einiges hinterher“). Neue Weihnachts-Generatoren NUR hier eintragen — die Liste speist das
+// Thema auf der Generatoren-Seite und den Block oben im Generator-Menü.
+const _GEN_WEIHNACHTEN = ['Faltenbaum (Weihnachten)', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
+  'Dackel-Kerzenhalter', 'Mops-Kerzenhalter', 'Spaniel-Kerzenhalter', 'Islandpferd-Kerzenhalter'];
 const _GEN_THEMEN = [
+  ['🎄 Weihnachten', _GEN_WEIHNACHTEN],
   ['Technik & Halter', ['Schraube / Mutter', 'Schraubenloch', 'Zahnrad', 'Gehäuse / Box', 'Scharnier', 'Scharnier-Box', 'Schraubdose', 'Batteriehalter', 'Halterplatte', 'Rohr-Klipp', 'Skadis-Haken', 'Werkzeug-Einleger', 'Rasterbox', 'Gardena-Anschluss']],
-  ['Wohnen & Licht', ['Vase', 'Kordel-Topf', 'Organic Planter', 'Schalen mit Einsätzen', 'Lampe', 'Laterne', 'Pilzlampe', 'Leo-Windlicht', 'Lichthaus', 'Motivlicht', 'Dackel-Kerzenhalter', 'Mops-Kerzenhalter', 'Spaniel-Kerzenhalter', 'Islandpferd-Kerzenhalter', 'Lichttüte', 'Eichel', 'Leucht-Buchstaben', 'Bilderrahmen', 'Blume', 'Pilz', 'Kürbis']],
-  ['Feste & Geschenke', ['Geflochtener Kranz', 'Faltkranz', 'Tortentopper', 'Geldgeschenk (Laser)', 'Geld-Schiebekarte', 'Namenswolke', 'Glas-Marker', 'Foto-Requisite', 'Bierkasten', 'Bild-Box', 'Keksausstecher']],
+  ['Wohnen & Licht', ['Vase', 'Kordel-Topf', 'Organic Planter', 'Schalen mit Einsätzen', 'Lampe', 'Laterne', 'Pilzlampe', 'Leo-Windlicht', 'Eichel', 'Leucht-Buchstaben', 'Bilderrahmen', 'Blume', 'Pilz', 'Kürbis']],
+  ['Feste & Geschenke', ['Tortentopper', 'Geldgeschenk (Laser)', 'Geld-Schiebekarte', 'Namenswolke', 'Glas-Marker', 'Foto-Requisite', 'Bierkasten', 'Bild-Box', 'Keksausstecher']],
   ['Spielen & Figuren', ['Flexi-Drache', 'Minecraft-Figur', 'Dinosaurier', 'Schiff', 'Puzzle', 'Figur-Baukasten', 'Tabletop-Figur', 'Bausatz-Rahmen', 'Steckbausatz', 'Klemmbaustein-Look']],
   ['Bild, Text & KI', ['QR-Code', 'Namensschild', 'Karte → 3D', 'Lithophane', 'Chroma (Filament-Bild)', '3D-Visitenkarte', 'Bild → SVG', 'KI-Modell']],
   ['Laser & Werkstatt', ['Laser-Box (Zinken)', 'Muster-Generator', 'Silikon-Gießform']],
@@ -68120,6 +68402,147 @@ async function _dnoCreate(){
   }
 }
 
+// ═══ FALTENBAUM (gefalteter Weihnachtsbaum, Papier-Optik) ══════════════════
+// Die Geometrie kommt unverändert aus pleated-tree.js (window.V3DFaltenbaum):
+// Stern-Querschnitt mit radialen Falten, mehrere Etagen, Überhang begrenzt.
+// Reines Netz (kein OCCT/CSG). Gespeichert werden NUR die Parameter
+// (userData.faltenbaumParams) — beim Laden/Undo/Duplizieren wird das Netz neu
+// gebaut. Doppelklick auf den Baum öffnet den Dialog zum Bearbeiten.
+const _FTB_COL = '#5f9468';
+// Zusätzliche Vorlagen außerhalb von pleated-tree.js (Modul bleibt unverändert). „Kleine Tanne“ nach
+// TikTok 3D Evrim (9.11.26): 4 Etagen, viele scharfe, stark gedrehte Falten.
+const _FTB_EXTRA = { 'Kleine Tanne (gedreht)': { hoehe: 160, radius: 60, etagen: 4, falten: 36, faltenTiefe: 0.28, schaerfe: 0.9, drehung: 75, stufe: 0.3, rockKurve: 1.5 } };
+const _ftbPresets = () => Object.assign({}, _FTB_EXTRA, V3DFaltenbaum.PRESETS);
+let _ftbP = null, _ftbEdit = null, _ftbRT = null;
+
+function _ftbGeo(p){                                       // App-Einheiten (1 = 10 mm), Y-up, Boden y = 0
+  const g = V3DFaltenbaum.toThreeGeometry(THREE, p);
+  g.scale(0.1, 0.1, 0.1);
+  return g;
+}
+// Darf der Baum als Parameter gespeichert/bearbeitet werden? Nur solange das
+// Netz unverändert das erzeugte ist (nicht bemalt, texturiert, ersetzt …).
+function _ftbParamsOnly(o){
+  const u = o && o.userData;
+  if (!u || !u.faltenbaumParams || !o.isMesh || !o.geometry) return false;
+  if (o.geometry !== u._ftbGeo || o.geometry.getAttribute('position').version !== u._ftbVer) return false;
+  if (o.geometry.getAttribute('color')) return false;
+  return !u.displacementPattern || u.displacementPattern === 'keine';
+}
+function _ftbMark(o, geo, p){
+  o.userData.faltenbaumParams = { ...p };
+  o.userData._ftbGeo = geo; o.userData._ftbVer = geo.getAttribute('position').version;
+}
+function _ftbBoolHint(list){
+  if (list.some(o => o.userData && o.userData.faltenbaumParams)) notify('Kann bei Faltenbäumen langsam sein', 'w', 4000);
+}
+function _ftbFmt(v, step){
+  const d = step < 1 ? Math.min(2, (String(step).split('.')[1] || '').length) : 0;
+  return Number(v).toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: false });
+}
+
+function _ftbOpen(obj){
+  if (!window.V3DFaltenbaum) { notify('Faltenbaum-Generator nicht geladen', 'w'); return; }
+  _ftbEdit = obj && _ftbParamsOnly(obj) ? obj : null;
+  _ftbP = Object.assign({}, V3DFaltenbaum.DEFAULTS, _ftbEdit ? _ftbEdit.userData.faltenbaumParams : _ftbPresets()[Object.keys(_ftbPresets())[0]]);
+  const box = document.getElementById('ftb-rows');
+  if (!box.childElementCount) {
+    box.innerHTML = V3DFaltenbaum.UI.map(u =>
+      '<div class="vrow"><label>' + u.label + '</label>' +
+      '<input type="range" id="ftb-' + u.key + '" min="' + u.min + '" max="' + u.max + '" step="' + u.step + '" oninput="_ftbSet(\'' + u.key + '\',this.value)">' +
+      '<input type="text" inputmode="decimal" class="ftb-num" id="ftbn-' + u.key + '" onchange="_ftbNum(\'' + u.key + '\',this.value)" onkeydown="if(event.key===\'Enter\')this.blur()">' +
+      '<span class="vu">' + (u.unit || '') + '</span></div>').join('');
+    document.getElementById('ftb-preset').innerHTML = '<option value="">— angepasst —</option>' +
+      Object.keys(_ftbPresets()).map(k => '<option>' + k + '</option>').join('');
+  }
+  document.getElementById('ftb-preset').value = _ftbEdit ? '' : Object.keys(_ftbPresets())[0];
+  document.getElementById('ftb-title').textContent = _ftbEdit ? '🎄 Faltenbaum bearbeiten' : '🎄 Faltenbaum (Weihnachten)';
+  document.getElementById('ftb-ok').textContent = _ftbEdit ? '✓ Übernehmen' : '✓ Einfügen';
+  _ftbSync();
+  document.getElementById('ftb-modal').classList.add('show');
+  if (!_gpv['ftb']) _gpvInit('ftb', _ftbPreviewGeo);
+  else { _gpvUpdate('ftb'); if (!_gpv['ftb'].anim) _gpvLoop('ftb'); }
+}
+function _ftbClose(){ document.getElementById('ftb-modal').classList.remove('show'); _gpvStop('ftb'); _ftbEdit = null; }
+function _ftbPreviewGeo(){
+  const g = _ftbGeo(_ftbP), n = g.getAttribute('position').count, c = new THREE.Color(_FTB_COL);
+  const col = new Float32Array(n * 3);
+  for (let i = 0; i < n * 3; i += 3) { col[i] = c.r; col[i + 1] = c.g; col[i + 2] = c.b; }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return g;
+}
+function _ftbRepaint(){
+  if (_ftbRT) clearTimeout(_ftbRT);
+  _ftbRT = setTimeout(() => { _ftbRT = null; if (_gpv['ftb']) _gpvUpdate('ftb'); _ftbInfo(); }, 50);
+}
+function _ftbSet(k, v){
+  _ftbP[k] = parseFloat(v);
+  document.getElementById('ftb-preset').value = '';
+  _ftbSync(); _ftbRepaint();
+}
+function _ftbNum(k, s){
+  const u = V3DFaltenbaum.UI.find(x => x.key === k);
+  let v = parseFloat(String(s).replace(/\s/g, '').replace(',', '.'));
+  if (!isFinite(v)) v = _ftbP[k];
+  v = Math.max(u.min, Math.min(u.max, v));
+  if (u.step >= 1) v = Math.round(v);
+  _ftbSet(k, v);
+}
+function _ftbPreset(name){
+  const pr = _ftbPresets();
+  if (!(name in pr)) return;
+  _ftbP = Object.assign({}, V3DFaltenbaum.DEFAULTS, pr[name]);
+  _ftbSync(); _ftbRepaint();
+}
+function _ftbSync(){
+  for (const u of V3DFaltenbaum.UI) {
+    const s = document.getElementById('ftb-' + u.key), t = document.getElementById('ftbn-' + u.key);
+    if (s) s.value = _ftbP[u.key];
+    if (t && document.activeElement !== t) t.value = _ftbFmt(_ftbP[u.key], u.step);
+  }
+  _ftbInfo();
+}
+function _ftbInfo(){
+  const el = document.getElementById('ftb-info'); if (!el) return;
+  const m = V3DFaltenbaum.generate(_ftbP), o = m.params;
+  let s = 'Baum Ø <b>' + _ftbFmt(o.radius * 2, 1) + ' mm</b>, <b>' + _ftbFmt(o.hoehe, 1) + ' mm</b> hoch, ' + o.etagen + (o.etagen === 1 ? ' Etage' : ' Etagen') +
+          ', ' + o.falten + ' Falten · ' + (m.indices.length / 3).toLocaleString('de-DE') + ' Dreiecke';
+  if (o.radius * 2 > 256 || o.hoehe > 256) s += '<br>Größer als ein 256-mm-Druckbett — eventuell kleiner skalieren.';
+  el.innerHTML = s;
+}
+
+function _ftbCreate(){
+  const p = { ..._ftbP };
+  let geo;
+  try { geo = _ftbGeo(p); }
+  catch (e) { console.error('Faltenbaum:', e); notify('Faltenbaum fehlgeschlagen: ' + (e && e.message || e), 'w'); return; }
+  saveUndo();
+  const ed = _ftbEdit && objects.includes(_ftbEdit) ? _ftbEdit : null;
+  if (ed) {                                                // Bearbeiten: Lage/Drehung/Skalierung bleiben
+    const old = ed.geometry;
+    ed.geometry = geo; ed.userData._origGeo = geo;
+    _ftbMark(ed, geo, geo.userData.params);
+    if (old && old !== geo) old.dispose();
+    _updateObjEdgeLines(ed);
+    selectObjs([ed]); updateTree();
+    notify('Faltenbaum geändert ✓', 'ok');
+  } else {
+    typeCounts['faltenbaum'] = (typeCounts['faltenbaum'] || 0) + 1;
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(_FTB_COL), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Faltenbaum #' + typeCounts['faltenbaum'], color: _FTB_COL, isHole: false,
+      fillet: 0, chamfer: 0, displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
+      displacementInvert: false, displacementSymmetric: false, _origGeo: geo };
+    _ftbMark(mesh, geo, geo.userData.params);
+    _wpSpawnMesh(mesh, 0);                                 // Boden liegt bei y = 0 → auf die Arbeitsfläche
+    scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
+    selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
+    notify('Faltenbaum eingefügt ✓ im Slicer Vasenmodus einschalten', 'ok');
+  }
+  _ftbClose();
+}
+
 // ═══ LEUCHT-BUCHSTABEN (hohl, für Mini-Lichterkette oder LED) ═══════════════
 // Kanalbuchstaben wie beim Leuchtreklame-Schild: Die Glyphen-Kontur wird per
 // Manifold CrossSection um die Wandstärke nach innen versetzt — dieser Versatz
@@ -78909,8 +79332,12 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.331';
+const VOLME3D_VERSION = '1.18.332';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.332', date:'2026-11-09', changes:[
+    ['🎄','<b>Neuer Generator: Faltenbaum – mit Vorlage „Kleine Tanne“.</b> Ein Weihnachtsbaum in Papier-Optik: sternförmige Falten rundherum, mehrere Etagen, die unten als gezackter Rock auslaufen, auf Wunsch über die Höhe gedreht. Die Vorlage <b>Kleine Tanne (gedreht)</b> ist voreingestellt, dazu Klassisch, Schlank hoch, Breit &amp; niedrig, Weich gewellt, Gedreht und Mini. Höhe, Radius, Etagen, Falten, Faltentiefe, Schärfe, Drehung und der maximale Überhang sind einstellbar. Gedruckt wird im <b>Vasenmodus</b> (Spiralmodus) des Slicers – dann entsteht die dünne, papierartige Faltenwand. Doppelklick auf einen fertigen Baum öffnet ihn wieder zum Bearbeiten.'],
+    ['🎁','<b>Neue Rubrik „🎄 Weihnachten“.</b> Auf der Generatoren-Seite steht Weihnachten jetzt als erstes Thema, und im Generator-Menü rechts oben gibt es einen eigenen Weihnachts-Block: Faltenbaum, Geflochtener Kranz, Faltkranz, Lichttüte, Lichthaus, Motivlicht und die Kerzenhalter-Tiere (Dackel, Mops, Spaniel, Islandpferd).'],
+  ]},
   { version:'1.18.331', date:'2026-11-08', changes:[
     ['📱','<b>Fotos vom Handy – überall, wo du ein Bild brauchst.</b> Neben jedem „Bild wählen“ (Lithophan, Puzzle, Bild-Box, Bild → SVG, Visitenkarte …) steht jetzt <b>📱 Vom Handy</b>: QR-Code scannen, Foto senden – es landet von selbst genau in diesem Generator. Bilder, die schon in <b>📥 Meine Dateien</b> liegen, kannst du dort direkt antippen. Funktioniert auch zu Hause, mit deinem Konto.'],
     ['📤','<b>Zum Drucken senden.</b> Export ▾ → <b>📤 Zum Drucken senden</b> schickt die Teile als 3MF an den Drucker-Rechner (Ordner „Druckaufträge“) – ideal im Kurs, wenn dein Rechner keinen Slicer hat. Eine Kopie liegt in 📥 Meine Dateien.'],
@@ -91414,6 +91841,7 @@ const CMDK = [
   {i:'🪵',g:'Generator',t:'Laser-Box',k:'laser fingerzinken',run:()=>_openLBModal()},
   {i:'💶',g:'Generator',t:'Geldgeschenk (Laser)',k:'geld geldgeschenk geschenk reisekasse urlaubskasse urlaub reise flitterwochen hochzeit hochzeitskasse weltkarte welt karte geldschein schein euro gutschein laser lasern sperrholz holz platte band schleife lederband kordel schlitz loch hauskasse wunscherfueller wunscherfüller geburtstag führerschein taschengeld',run:()=>_ggpOpen()},
   {i:'🏠',g:'Generator',t:'Lichthaus',k:'haus lichthaus häuschen windlicht led teelicht lichterkette weihnachten advent winter deko schlitze fenster satteldach giebel',run:()=>_lhsOpen()},
+  {i:'🎄',g:'Generator',t:'Faltenbaum (Weihnachten)',k:'faltenbaum tanne kleine tanne weihnachtsbaum christbaum weihnachten advent gefaltet papier falten vasenmodus deko',run:()=>_ftbOpen()},
   {i:'🪢',g:'Generator',t:'Kordel-Topf',k:'kordel seil schnur tau topf übertopf blumentopf vase schale pampas deko gedreht rope',run:()=>_kdlOpen()},
   {i:'☁️',g:'Generator',t:'Namenswolke',k:'wolke name namensschild baby geburt taufe kinderzimmer regenbogen babyfüße füße fuß sterne geschenk deko personalisiert',run:()=>_nwkOpen()},
   {i:'💸',g:'Generator',t:'Geld-Schiebekarte',k:'geld geldgeschenk geschenk schiebekarte karte mäuse maus geldschein schein euro geburtstag hochzeit gutschein fenster schieber einschieben 3d druck',run:()=>_gskOpen()},
