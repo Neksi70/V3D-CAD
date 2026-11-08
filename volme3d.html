@@ -1741,6 +1741,7 @@ const firebaseConfig = {
           <div class="sli-sep"></div>
           <div class="sli-item" onclick="exportSTL()">⬇ STL</div>
           <div class="sli-item" onclick="_3mfSpeichern()" title="3MF mit Farben/Teilen — vorher kurzer Druck-Check (Überhänge, Wände, Einstellungen); auf Wunsch als Bambu-Studio-Projekt mit Drucker und Einstellungen">⬇ 3MF (zum Einfärben)</div>
+          <div class="sli-item" onclick="_druckSenden()" title="Die Teile auf der Platte als 3MF an den Kursleiter/Drucker schicken — landet in deinem Ordner „📥 Meine Dateien“ und im gemeinsamen Ordner „Druckaufträge“. Kein Slicer nötig">📤 Zum Drucken senden</div>
           <div class="sli-item" id="sli-schicht" onclick="event.stopPropagation();_schichtModusWeiter()" title="Variable Schichthöhe schon im 3MF mitgeben: flache Stellen (Kuppeln, Reliefs) fein, steile Wände grob. Bambu Studio / Orca übernehmen das Profil, wenn Düse und Erste Schicht passen (Drucker aus der Druck-Vorschau). Klick schaltet um."></div>
           <div class="sli-item" onclick="exportPartsSTL()">⬇ STL pro Körper</div>
           <div class="sli-item" onclick="exportOBJ()">⬇ OBJ</div>
@@ -78783,9 +78784,137 @@ async function _mdOeffnen(fid){
   } catch (e) { notify('Öffnen ging nicht: ' + (e.message || e), 'w'); }
 }
 
+// ── 📱 Vom Handy ───────────────────────────────────────────────────────────
+// Neben JEDEM Bild-/SVG-Auswahlfeld (Lithophan, Puzzle, Bild-Box, Visitenkarte …)
+// ein Knopf „📱 Vom Handy“: persönlicher QR-Code aus „📥 Meine Dateien“, das Foto vom
+// Handy kommt an und wird genau in dieses Feld gesteckt (als hätte man es am PC
+// gewählt) – im Kurs und zu Hause (Volker 8.11.26). Nur mit eigenem Konto.
+const _HANDY_ART = /image|\.png|\.jpe?g|\.webp|\.gif|\.svg/i;
+function _handyPasst(inp, d){
+  const acc = (inp.accept || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+  if (!acc.length) return true;
+  const typ = (d.typ || '').toLowerCase(), name = (d.name || '').toLowerCase();
+  return acc.some(a => a.startsWith('.') ? name.endsWith(a) : a.endsWith('/*') ? typ.startsWith(a.slice(0, -1)) : typ === a);
+}
+function _handyKnoepfe(){
+  if (_profil && _profil.gast) return;
+  for (const inp of document.querySelectorAll('input[type=file]')) {
+    if (!inp.id || !_HANDY_ART.test(inp.accept || '')) continue;
+    const ausl = [...document.querySelectorAll('[onclick*="getElementById(\'' + inp.id + '\').click()"]'), ...document.querySelectorAll('label[for="' + inp.id + '"]')];
+    for (const t of ausl) {
+      if (t.dataset.handy || t.classList.contains('handy-btn')) continue;
+      t.dataset.handy = '1';
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'btn handy-btn'; b.textContent = '📱 Vom Handy';
+      b.title = 'Foto mit dem Handy schicken: QR-Code scannen, Foto senden – es landet direkt hier';
+      b.style.cssText = 'margin:6px 0 2px;padding:5px 10px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:4px';
+      b.onclick = e => { e.preventDefault(); e.stopPropagation(); _handyFuer(inp.id); };
+      t.insertAdjacentElement('afterend', b);
+    }
+  }
+}
+let _handyBeob = null;
+function _handyStart(){
+  _handyKnoepfe();
+  if (_handyBeob) return;
+  let t = null;
+  _handyBeob = new MutationObserver(() => { if (t) return; t = setTimeout(() => { t = null; _handyKnoepfe(); }, 400); });
+  _handyBeob.observe(document.body, { childList: true, subtree: true });
+}
+const _handy = { takt: null };
+function _handyZu(){ if (_handy.takt) { clearInterval(_handy.takt); _handy.takt = null; } const m = document.getElementById('handy-modal'); if (m) m.style.display = 'none'; }
+function _handyUebernehmen(inp, file){
+  const dt = new DataTransfer(); dt.items.add(file);
+  inp.files = dt.files;
+  inp.dispatchEvent(new Event('change', { bubbles: true }));
+}
+async function _handyHolen(inp, d){
+  const r = await fetch('/api/dateien/datei?fid=' + d.fid, { credentials: 'same-origin' });
+  if (!r.ok) throw new Error('Datei nicht gefunden');
+  const blob = await r.blob();
+  const typ = d.typ || (/\.svg$/i.test(d.name) ? 'image/svg+xml' : /\.png$/i.test(d.name) ? 'image/png' : /\.webp$/i.test(d.name) ? 'image/webp' : 'image/jpeg');
+  _handyZu();
+  _handyUebernehmen(inp, new File([blob], d.name, { type: typ }));
+  notify('📷 „' + d.name + '“ übernommen', 'ok');
+}
+async function _handyFuer(id){
+  const inp = document.getElementById(id); if (!inp) return;
+  if (!_profil) await _profilLaden();
+  if (_profil && _profil.gast) { notify('„Vom Handy“ geht nur mit eigenem Konto — bitte anmelden', 'w'); return; }
+  if (_profil && !(_profil.vorname && _profil.nachname)) { _profilFrage(() => _handyFuer(id)); return; }
+  let j;
+  try { const r = await fetch('/api/dateien', { credentials: 'same-origin' }); j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); }
+  catch (e) { notify('Meine Dateien nicht erreichbar: ' + (e.message || e), 'w'); return; }
+  const bekannt = new Set((j.dateien || []).map(d => d.fid));
+  const vorhanden = (j.dateien || []).filter(d => _handyPasst(inp, d)).slice(0, 8);
+  const btn = 'class="btn" style="padding:4px 10px;font-size:12px"';
+  const alt = vorhanden.length ? '<div style="margin-top:12px;font-weight:700">Oder ein Bild aus 📥 Meine Dateien nehmen:</div><div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">' +
+    vorhanden.map(d => '<div class="handy-alt" data-fid="' + d.fid + '" title="' + _mdEsc(d.name) + '" style="cursor:pointer;width:64px;text-align:center;font-size:10px;color:#475569">' +
+      (/^image\/(png|jpe?g|webp|gif)/.test(d.typ || '') ? '<img src="/api/dateien/datei?fid=' + d.fid + '" style="width:64px;height:64px;object-fit:cover;border-radius:6px;background:#f3f4f6">' : '<div style="width:64px;height:64px;display:flex;align-items:center;justify-content:center;font-size:26px;background:#f3f4f6;border-radius:6px">✒️</div>') +
+      '<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _mdEsc(d.name) + '</div></div>').join('') + '</div>' : '';
+  const m = _mdModal('handy-modal',
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><div style="font-size:16px;font-weight:700;flex:1">📱 Foto vom Handy</div><button ' + btn + ' onclick="_handyZu()" title="Schließen">✕</button></div>' +
+    '<div style="display:flex;gap:16px;align-items:center"><div id="handy-qr" style="flex:0 0 auto"></div><div style="flex:1;font-size:14px;line-height:1.45">' +
+    '<b>1.</b> QR-Code mit dem Handy scannen<br><b>2.</b> <b>📷 Fotos auswählen &amp; senden</b><br><b>3.</b> Fertig – das Foto erscheint <b>hier von selbst</b>.' +
+    '<div id="handy-st" style="margin-top:10px;color:#F97316;font-weight:700">⏳ Warte auf dein Foto …</div></div></div>' + alt);
+  m.onclick = e => { if (e.target === m) _handyZu(); };
+  if (typeof qrcode === 'function') { try { const qr = qrcode(0, 'M'); qr.addData(j.link); qr.make(); document.getElementById('handy-qr').innerHTML = qr.createSvgTag({ cellSize: 5, margin: 0 }); } catch (e) {} }
+  m.querySelectorAll('.handy-alt').forEach(el => el.onclick = () => { const d = vorhanden.find(x => x.fid === el.dataset.fid); if (d) _handyHolen(inp, d).catch(e => notify('Ging nicht: ' + (e.message || e), 'w')); });
+  if (_handy.takt) clearInterval(_handy.takt);
+  let laeuft = false;
+  _handy.takt = setInterval(async () => {
+    const mm = document.getElementById('handy-modal');
+    if (!mm || mm.style.display === 'none') { clearInterval(_handy.takt); _handy.takt = null; return; }
+    if (laeuft || document.hidden) return; laeuft = true;
+    try {
+      const r = await fetch('/api/dateien', { credentials: 'same-origin' }); if (!r.ok) return;
+      const neu = ((await r.json()).dateien || []).filter(d => !bekannt.has(d.fid));
+      neu.forEach(d => bekannt.add(d.fid));
+      const d = neu.find(x => _handyPasst(inp, x));
+      if (d) { const st = document.getElementById('handy-st'); if (st) st.textContent = '✅ Angekommen – wird übernommen …'; await _handyHolen(inp, d); }
+      else if (neu.length) { const st = document.getElementById('handy-st'); if (st) st.textContent = '⚠️ „' + neu[0].name + '“ passt hier nicht – bitte ein Bild senden'; }
+    } catch (e) { /* nächster Takt */ } finally { laeuft = false; }
+  }, 2000);
+}
+
+// Knöpfe erst setzen, wenn das Konto bekannt ist (Gäste sehen sie nicht)
+setTimeout(async () => { try { if (!_profil) await _profilLaden(); } catch (e) {} if (!(_profil && _profil.gast)) _handyStart(); }, 1500);
+
+// ── 📤 Zum Drucken senden ──────────────────────────────────────────────────
+// VHS-Rechner haben keinen Slicer (Kurs Iserlohn 8.11.26): die 3MF geht mit einem
+// Klick in den eigenen Ordner UND in den Sammelordner „Druckaufträge“ in Mimi share,
+// den der Kursleiter an seinem Rechner herunterlädt.
+async function _druckSenden(){
+  document.getElementById('stl-menu')?.classList.remove('show');
+  if (typeof fflate === 'undefined') { notify('Zip-Bibliothek lädt noch — kurz warten, erneut versuchen', 'w'); return; }
+  const src = _exportSrc();
+  if (!src.length) { notify('Keine Teile auf der Platte', 'w'); return; }
+  if (!_profil) await _profilLaden();
+  if (_profil && _profil.gast) { notify('Zum Drucken senden geht nur mit eigenem Konto — bitte anmelden', 'w'); return; }
+  if (_profil && !(_profil.vorname && _profil.nachname)) { _profilFrage(_druckSenden); return; }
+  let r;
+  try { r = _withPlateShift(src, () => _build3mfBlob(src, {})); }
+  catch (e) { notify('3MF ging nicht: ' + (e.message || e), 'w'); return; }
+  if (!r) { notify('Keine Flächen', 'w'); return; }
+  const sauber = t => String(t || '').normalize('NFC').replace(/[^\p{L}\p{N}._-]+/gu, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+  const name = [sauber(_profil && _profil.nachname), sauber(_profil && _profil.vorname), sauber(_designFilename('3mf').replace(/\.3mf$/i, ''))].filter(Boolean).join('_') + '.3mf';
+  notify('📤 Wird gesendet …', 'ok');
+  const senden = was => fetch('/api/dateien/' + was, { method: 'POST', credentials: 'same-origin', body: r.blob,
+    headers: { 'X-Filename': encodeURIComponent(name), 'X-Typ': 'model/3mf' } }).then(async x => { if (!x.ok) throw new Error(((await x.json().catch(() => ({}))).error) || ('Fehler ' + x.status)); });
+  try {
+    await senden('druck');                      // Sammelordner zuerst – darauf kommt es an
+    await senden('hochladen').catch(() => {});  // eigene Kopie in „📥 Meine Dateien“
+    notify('📤 „' + name + '“ ist beim Drucker angekommen ✓ — Kopie liegt in 📥 Meine Dateien', 'ok');
+  } catch (e) { notify('Senden ging nicht: ' + (e.message || e), 'w'); }
+}
+
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.330';
+const VOLME3D_VERSION = '1.18.331';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.331', date:'2026-11-08', changes:[
+    ['📱','<b>Fotos vom Handy – überall, wo du ein Bild brauchst.</b> Neben jedem „Bild wählen“ (Lithophan, Puzzle, Bild-Box, Bild → SVG, Visitenkarte …) steht jetzt <b>📱 Vom Handy</b>: QR-Code scannen, Foto senden – es landet von selbst genau in diesem Generator. Bilder, die schon in <b>📥 Meine Dateien</b> liegen, kannst du dort direkt antippen. Funktioniert auch zu Hause, mit deinem Konto.'],
+    ['📤','<b>Zum Drucken senden.</b> Export ▾ → <b>📤 Zum Drucken senden</b> schickt die Teile als 3MF an den Drucker-Rechner (Ordner „Druckaufträge“) – ideal im Kurs, wenn dein Rechner keinen Slicer hat. Eine Kopie liegt in 📥 Meine Dateien.'],
+  ]},
   { version:'1.18.330', date:'2026-11-08', changes:[
     ['📥','<b>Meine Dateien: Fotos vom Handy kommen von selbst an.</b> Lädst du am Handy über den QR-Code ein Foto hoch, erscheint es im offenen Fenster <b>📥 Meine Dateien</b> nach wenigen Sekunden – mit Markierung <b>NEU</b>, ohne ↻. Zum Öffnen reicht jetzt ein Klick aufs <b>Vorschaubild</b> oder den Namen. Am Handy fragt die Seite nicht mehr nach deinem Namen – der Ordner gehört ja schon deinem Konto.'],
   ]},

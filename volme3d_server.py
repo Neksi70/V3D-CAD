@@ -782,7 +782,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
                 c.close()
                 return
-            if method == 'POST' and was == 'hochladen':
+            if method == 'POST' and was in ('hochladen', 'druck'):   # druck = zusätzlich in den Sammelordner
                 n = int(self.headers.get('Content-Length', 0) or 0)
                 if n <= 0 or n > MIMI_MAX_DATEI:
                     self._json(413, {'error': 'Datei leer oder größer als 300 MB'})
@@ -801,7 +801,7 @@ class Handler(BaseHTTPRequestHandler):
                             break
                         rest -= len(b)
                         yield b
-                pfad = ('/intern/cad/hochladen?uid=' + uid + '&name=' + urllib.parse.quote(name)
+                pfad = ('/intern/cad/' + was + '?uid=' + uid + '&name=' + urllib.parse.quote(name)
                         + '&typ=' + urllib.parse.quote(typ))
                 st, r, c = _mimi('POST', pfad, body=stuecke(), stream_len=n, timeout=300)
                 data = json.loads(r.read() or b'{}')
@@ -809,7 +809,7 @@ class Handler(BaseHTTPRequestHandler):
                 if st != 200:
                     self._json(st if st in (400, 413, 507) else 502, {'error': data.get('fehler') or 'Hochladen fehlgeschlagen'})
                     return
-                v3d_nutzung.erfassen(sess, 'dateien', 'hochladen', 0, True)
+                v3d_nutzung.erfassen(sess, 'dateien', was, 0, True)
                 self._json(200, data)
                 return
             if method == 'POST' and was == 'loeschen':
