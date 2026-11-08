@@ -48,22 +48,45 @@ const r = await pg.evaluate(async () => {
     const saeule = M.cylinder(5, 3, 3, 24).rotate([-90, 0, 0]).translate([0, 0.2, 0]); res.mitte = hit(T, saeule); saeule.delete();
     const auf = T.translate([0, Fm.H - Fm.T, 0]), seit = T.translate([1, Fm.H - Fm.T, 0]);
     res.steckt = hit(auf, F); res.seitlich = hit(seit, F); auf.delete(); seit.delete();
-    if (!mBoden) { const rt = Fm.tl / 2 - 0.75, tl = M.cylinder(15, rt, rt, 64).rotate([-90, 0, 0]).translate([0, Fm.H - Fm.T - 5.95, 0]); res.teelicht = hit(tl, F); res.led = Fm.led; tl.delete(); }
+    if (!mBoden) { const rt = Fm.tl / 2 - 0.75, tl = M.cylinder(15, rt, rt, 64).rotate([-90, 0, 0]).translate([0, Fm.H - Fm.T - Fm.muldeT + 0.05, 0]); res.teelicht = hit(tl, F); res.led = Fm.led; const bodenTl = M.cylinder(0.6, 3, 3, 24).rotate([-90, 0, 0]).translate([Fm.tl / 2 - 6, 0.3, 0]); res.boden = hit(bodenTl, F); bodenTl.delete(); tl.delete(); }
     res.stuetzFuss = stuetz(F);
     T.delete(); F.delete();
     out[key] = res;
   }
+  // Randring oben + Windlicht-Vorlage (Foto 9.11.)
+  for (const form of ['zylinder', 'kegel', 'laterne']) {
+    Object.assign(_litho.p, { form, mD: 75, mH: 120, mOben: form === 'zylinder' ? 100 : 115, mEcke: 12, mRand: 5, maxT: 3, minT: 0.8, kFit: 'strecken',
+      mBoden: 0, mFuss: 0, mRing: 1, mRingH: 6, mRingT: 4, mFussPass: 0.4 });
+    objects.slice().forEach(o => scene.remove(o)); objects.length = 0;
+    await _createLitho();
+    const topf = objects.find(o => !/Ring/.test(o.userData.name)), ringO = objects.find(o => /Randring/.test(o.userData.name));
+    const T = mf(topf.geometry), Rg = mf(ringO.geometry), R = _lithoRingMasse(_litho.p);
+    // Drucklage (Nut oben) → aufgesetzt: um X kippen, Nut-Öffnung auf H − T
+    const kipp = Rg.rotate([180, 0, 0]), auf = kipp.translate([0, R.H - R.T + R.Hr, 0]), tief = kipp.translate([0, R.H - R.T + R.Hr - 1, 0]), seit = kipp.translate([1, R.H - R.T + R.Hr, 0]);
+    out['Ring ' + form] = { teile: Rg.decompose().length, namen: objects.map(o => o.userData.name), steckt: hit(auf, T), tiefer: hit(tief, T), seitlich: hit(seit, T), stuetz: stuetz(Rg) };
+    [T, Rg, kipp, auf, tief, seit].forEach(m => m.delete());
+  }
+  objects.slice().forEach(o => scene.remove(o)); objects.length = 0;
+  _lithoWindlicht(); await _createLitho();
+  out.windlicht = { namen: objects.map(o => o.userData.name + '|' + o.userData.color), p: { form: _litho.p.form, boden: _litho.p.mBoden, fuss: _litho.p.mFuss, ring: _litho.p.mRing }, led: _lithoFussMasse(_litho.p).led };
   _closeLithoModal();
   return out;
 });
 console.log(JSON.stringify(r, null, 1));
 let fehler = 0; const ok = (n, c, x) => { console.log((c ? '  OK     ' : '  FEHLER ') + n + (x !== undefined ? '  → ' + JSON.stringify(x) : '')); if (!c) fehler++; };
 for (const [k, x] of Object.entries(r)) {
+  if (k === 'windlicht') { ok('Vorlage Windlicht: Kegel offen, Topf + Fuß + Randring, Fuß/Ring schwarz, LED-Mulde', x.p.form === 'kegel' && !x.p.boden && x.namen.length === 3 && x.namen.filter(n => /#2f2f33$/.test(n)).length === 2 && x.led, x); continue; }
+  if (k.startsWith('Ring ')) {
+    ok(`${k}: Randring ein Stück`, x.teile === 1 && x.namen.length === 2, x.namen);
+    ok(`${k}: Oberkante steckt in der Nut, Ring liegt auf (1 mm tiefer stößt an), hält seitlich`, x.steckt < 0.01 && x.tiefer > 1 && x.seitlich > 1, [x.steckt, x.tiefer, x.seitlich]);
+    ok(`${k}: Ring ohne Stützen druckbar (Nut oben)`, x.stuetz === 0, x.stuetz);
+    continue;
+  }
   ok(`${k}: Topf und Fuß-Ring je ein Stück`, x.teile[0] === 1 && x.teile[1] === 1 && x.namen.length === 2, x.namen);
   if (/Boden/.test(k)) ok(`${k}: Boden da (unten zu, Volumen gewachsen)`, x.mitte > 5 && x.mehr > 1000, [x.mitte, x.mehr]);
   else ok(`${k}: unten offen`, x.mitte < 0.01, x.mitte);
   ok(`${k}: Topf steckt im Fuß ohne Überschneidung, seitlich stößt er an`, x.steckt < 0.01 && x.seitlich > 1, [x.steckt, x.seitlich]);
-  if (x.teelicht !== undefined) ok(`${k}: LED-Teelicht passt in die Mulde im Fuß`, x.led && x.teelicht < 0.01, [x.led, x.teelicht]);
+  if (x.teelicht !== undefined) ok(`${k}: LED-Teelicht passt in die Mulde im Fuß, Boden unter der Mulde bleibt`, x.led && x.teelicht < 0.01 && x.boden > 1, [x.led, x.teelicht, x.boden]);
   ok(`${k}: Fuß flach ohne Stützen druckbar`, x.stuetzFuss === 0, x.stuetzFuss);
 }
 console.log(fehler ? fehler + ' Fehler' : 'OK', errs); await b.close(); process.exit(fehler || errs.length ? 1 : 0);
