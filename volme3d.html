@@ -78640,15 +78640,37 @@ setTimeout(async () => {
 }, 1500);
 
 // ── Meine Dateien ─────────────────────────────────────────────────────────
-const _md = { daten: null, laedt: false };
+const _md = { daten: null, laedt: false, neu: new Set(), takt: null };
 const _MD_MODELL = /\.(stl|step|stp|3mf|obj|glb|gltf|ply|svg|json)$/i;
 async function _mdOpen(){
   if (!_profil) await _profilLaden();
   if (_profil && _profil.gast) { notify('Gäste haben keinen eigenen Ordner — bitte mit eigenem Konto anmelden', 'w'); return; }
   if (_profil && !(_profil.vorname && _profil.nachname)) { _profilFrage(_mdOpen); return; }
-  _mdRender(); _mdLaden();
+  _mdRender(); _mdLaden(); _mdTaktStart();
 }
-function _mdClose(){ const m = document.getElementById('md-modal'); if (m) m.style.display = 'none'; }
+function _mdClose(){ const m = document.getElementById('md-modal'); if (m) m.style.display = 'none'; _mdTaktStop(); }
+// Vom Handy hochgeladene Dateien erscheinen von selbst (Kurs 8.11.26: viele warteten
+// vergeblich, weil die Liste erst nach ↻ neu lud). Neu zeichnen nur bei Änderung.
+function _mdOffen(){ const m = document.getElementById('md-modal'); return !!m && m.style.display !== 'none'; }
+function _mdTaktStop(){ if (_md.takt) { clearInterval(_md.takt); _md.takt = null; } }
+function _mdTaktStart(){
+  _mdTaktStop();
+  _md.takt = setInterval(async () => {
+    if (!_mdOffen()) { _mdTaktStop(); return; }
+    if (_md.laedt || _md.hoch || document.hidden) return;
+    try {
+      const r = await fetch('/api/dateien', { credentials: 'same-origin' }); if (!r.ok) return;
+      const j = await r.json(), alt = new Set(((_md.daten && _md.daten.dateien) || []).map(d => d.fid));
+      const neue = (j.dateien || []).filter(d => !alt.has(d.fid));
+      const weg = ((_md.daten && _md.daten.dateien) || []).some(d => !(j.dateien || []).some(x => x.fid === d.fid));
+      if (!neue.length && !weg) return;
+      neue.forEach(d => _md.neu.add(d.fid));
+      _md.daten = j; _md.fehler = null; if (_mdOffen()) _mdRender();
+      const bilder = neue.filter(d => /^image\//.test(d.typ || '') || /\.(png|jpe?g|webp)$/i.test(d.name));
+      if (bilder.length) notify('📷 ' + (bilder.length > 1 ? bilder.length + ' neue Fotos' : 'Neues Foto') + ' angekommen – zum Öffnen anklicken', 'ok');
+    } catch (e) { /* nächster Takt */ }
+  }, 3000);
+}
 async function _mdLaden(){
   _md.laedt = true; _mdRender();
   try {
@@ -78678,9 +78700,11 @@ function _mdRender(){
     const ic = _mdIcon(d), src = '/api/dateien/datei?fid=' + d.fid;
     const bild = ic ? '<div style="width:44px;height:44px;display:flex;align-items:center;justify-content:center;font-size:24px;background:#f3f4f6;border-radius:6px">' + ic + '</div>'
                     : '<img src="' + src + '" loading="lazy" style="width:44px;height:44px;object-fit:cover;border-radius:6px;background:#f3f4f6">';
-    const dat = new Date(d.erstellt * 1000).toLocaleDateString('de-DE');
-    return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #f1f5f9">' + bild +
-      '<div style="flex:1;min-width:0"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + _mdEsc(d.name) + '">' + _mdEsc(d.name) + '</div>' +
+    const dat = new Date(d.erstellt * 1000).toLocaleDateString('de-DE'), neu = _md.neu.has(d.fid);
+    const auf = ' onclick="_mdOeffnen(\'' + d.fid + '\')" title="Anklicken zum Öffnen"';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:6px ' + (neu ? '6px' : '0') + ';border-bottom:1px solid #f1f5f9' + (neu ? ';background:#fff7ed;border-radius:8px' : '') + '">' +
+      '<div style="cursor:pointer"' + auf + '>' + bild + '</div>' +
+      '<div style="flex:1;min-width:0;cursor:pointer"' + auf + '><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (neu ? '<span style="background:#F97316;color:#fff;border-radius:4px;padding:0 5px;font-size:10px;margin-right:5px">NEU</span>' : '') + _mdEsc(d.name) + '</div>' +
       '<div style="color:#6b7280;font-size:11px">' + _mdGroesse(d.groesse) + ' · ' + dat + (d.von && d.von !== 'V3D CAD' ? ' · vom Handy (' + _mdEsc(d.von) + ')' : '') + '</div></div>' +
       '<button class="btn md-open" data-fid="' + d.fid + '" style="padding:4px 10px;font-size:12px;background:#F97316;color:#fff;border-color:#F97316;font-weight:700" onclick="_mdOeffnen(\'' + d.fid + '\')">Öffnen</button>' +
       '<a ' + btn + ' href="' + src + '" download title="Herunterladen">⬇</a>' +
@@ -78760,8 +78784,11 @@ async function _mdOeffnen(fid){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.329';
+const VOLME3D_VERSION = '1.18.330';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.330', date:'2026-11-08', changes:[
+    ['📥','<b>Meine Dateien: Fotos vom Handy kommen von selbst an.</b> Lädst du am Handy über den QR-Code ein Foto hoch, erscheint es im offenen Fenster <b>📥 Meine Dateien</b> nach wenigen Sekunden – mit Markierung <b>NEU</b>, ohne ↻. Zum Öffnen reicht jetzt ein Klick aufs <b>Vorschaubild</b> oder den Namen. Am Handy fragt die Seite nicht mehr nach deinem Namen – der Ordner gehört ja schon deinem Konto.'],
+  ]},
   { version:'1.18.329', date:'2026-11-09', changes:[
     ['🕯️','<b>Lithophane: Foto-Windlicht mit Fuß und Randring.</b> Neu unter <i>Boden &amp; Fuß</i>: der <b>⭕ Randring oben</b> – ein eigenes Teil, das über die Oberkante gesteckt wird (wie der dunkle Rand bei den Foto-Windlichtern), mit einstellbarer Höhe und Übergriff. Fuß und Ring gibt es in <b>🪵 Holz</b> oder <b>⚫ Schwarz</b>. Ein Klick auf <b>🕯️ Vorlage: Windlicht mit Fuß und Randring</b> stellt alles so ein wie beim Vorbild: Becherform, oben etwas weiter, unten offen, schwarzer Fuß mit Mulde für ein LED-Teelicht, schwarzer Randring oben. Alle drei Teile drucken ohne Stützen. Außerdem schneidet die Teelicht-Mulde bei flachen Füßen nicht mehr durch den Boden.'],
   ]},
