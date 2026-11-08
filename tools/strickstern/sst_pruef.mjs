@@ -1,0 +1,11 @@
+import Module from '/home/v3da/lib/manifold.js';
+import fs from 'fs';
+const w = await Module(); w.setup();
+eval(fs.readFileSync(new URL('./sst_core.js', import.meta.url), 'utf8').replace(/^function (\w+)/gm, 'globalThis.$1 = function $1'));
+const P = { zacken: 5, dia: 120, tiefe: 52, strang: 16, woelb: 100, hoehe: 30, stil: 'zopf', haut: 'strick', masche: 9, mascheT: 1.8, oese: true, oeseD: 4.5, ...JSON.parse(process.argv[2] || '{}') };
+const t0 = Date.now(); const { g, m } = _sstBuild(w, P, 'fein');
+const bb = m.boundingBox();
+console.log('Bauzeit', Date.now() - t0, 'ms · Status', m.status(), '· Schalen', m.decompose().length, '· Vol', (m.volume() / 1000).toFixed(1), 'cm³ · Dreiecke', m.numTri());
+console.log('Box', bb.min.map(v => v.toFixed(1)), bb.max.map(v => v.toFixed(1)), '· Geschlecht', m.genus());
+fs.writeFileSync('/tmp/sst.stl', (() => { const me = m.getMesh(), v = me.vertProperties, t = me.triVerts; let s = 'solid s\n';
+  for (let i = 0; i < t.length; i += 3) { s += 'facet normal 0 0 0\nouter loop\n'; for (let k = 0; k < 3; k++) { const o = t[i + k] * 3; s += `vertex ${v[o]} ${v[o + 2]} ${v[o + 1]}\n`; } s += 'endloop\nendfacet\n'; } return s + 'endsolid\n'; })());
