@@ -37,6 +37,10 @@ const varianten = (process.env.ONLY ? [] : [
   { name: 'Mops 3 Kerzen Groß', p: { rasse: 'mops', kerzen: 3, groesse: 260 } },
   { name: 'Mops 2 Kerzen ohne Mütze, glatt', p: { rasse: 'mops', kerzen: 2, muetze: 0, strick: 0 } },
   { name: 'Mops 4 Kerzen Mini Ø14, Bommel fest', p: { rasse: 'mops', groesse: 100, kerzeD: 14, bommel: 0 } },
+  { name: 'Spaniel 4 Kerzen 300', p: { rasse: 'spaniel', groesse: 300 } },
+  { name: 'Spaniel 1 Kerze 180, ohne Mütze', p: { rasse: 'spaniel', kerzen: 1, groesse: 180, muetze: 0 } },
+  { name: 'Islandpferd 4 Kerzen (2×2) 260', p: { rasse: 'pferd', groesse: 260 } },
+  { name: 'Islandpferd 1 Kerze 200, Bommel fest', p: { rasse: 'pferd', kerzen: 1, groesse: 200, bommel: 0 } },
 ]);
 
 // Länge = Wunsch (Volker 2.11.: „habe 200 gewählt“ und 253 mm bekommen). Zu kurz für die Kerzen →
@@ -45,7 +49,8 @@ const varianten = (process.env.ONLY ? [] : [
   const r = await pg.evaluate(() => {
     const out = [];
     for (const P of [{ kerzen: 4, groesse: 260 }, { kerzen: 4, groesse: 200 }, { kerzen: 1, groesse: 140 }, { kerzen: 2, groesse: 230 },
-                     { rasse: 'mops', kerzen: 4, groesse: 200 }, { rasse: 'mops', kerzen: 1, groesse: 120 }, { rasse: 'mops', kerzen: 3, groesse: 300 }]) {
+                     { rasse: 'mops', kerzen: 4, groesse: 200 }, { rasse: 'mops', kerzen: 1, groesse: 120 }, { rasse: 'mops', kerzen: 3, groesse: 300 },
+                     { rasse: 'spaniel', kerzen: 1, groesse: 200 }, { rasse: 'spaniel', kerzen: 4, groesse: 300 }, { rasse: 'pferd', kerzen: 4, groesse: 260 }, { rasse: 'pferd', kerzen: 2, groesse: 200 }]) {
       Object.assign(_dklP, _DKL_DEF, P, { stufe: '' });
       const d = _dklDims(_dklP), R = _dklBuild(_mfWasm, _dklP, 'vorschau'), bb = R.hund.boundingBox();
       out.push({ P, echt: +(bb.max[0] - bb.min[0]).toFixed(1), soll: Math.max(P.groesse, d.minLen), min: +d.minLen.toFixed(1), zuKurz: d.zuKurz });
@@ -92,12 +97,13 @@ for (const v of varianten) {
   ok(v.name + ': steht auf y=0', r.bb[0][1] === 0, r.bb);
   ok(v.name + ': Löcher frei', r.lochHit < 1, r.lochHit);
   ok(v.name + ': Tüllenwand vorhanden', r.wandVol > 0, r.wandVol);
-  if (v.p.rasse === 'mops' && (v.p.kerzen || 4) === 4) ok(v.name + ': Kerzen 2 × 2 nebeneinander', r.rows === 2 && r.zs[0] === -r.zs[1], r.zs);
+  if ((v.p.rasse === 'mops' || v.p.rasse === 'pferd') && (v.p.kerzen || 4) === 4) ok(v.name + ': Kerzen 2 × 2 nebeneinander', r.rows === 2 && r.zs[0] === -r.zs[1], r.zs);
   if (r.bommelHit !== undefined) ok(v.name + ': Bommel ohne Überschneidung, 1 Stück', r.bommelHit < 1 && r.bommelParts === 1, [r.bommelHit, r.bommelParts]);
 }
 
 // ✂️ Halbiert mit Steckstiften: Hälften je 1 Stück, liegen flach, Stifte passen, weniger Überhang
-for (const [name0, P] of [['Dackel 4 Kerzen', {}], ['Dackel 1 Kerze Mini', { kerzen: 1, groesse: 100, kerzeD: 14 }], ['Mops 4 Kerzen', { rasse: 'mops' }], ['Mops 3 Kerzen Groß', { rasse: 'mops', kerzen: 3, groesse: 260 }]])
+for (const [name0, P] of [['Dackel 4 Kerzen', {}], ['Dackel 1 Kerze Mini', { kerzen: 1, groesse: 100, kerzeD: 14 }], ['Mops 4 Kerzen', { rasse: 'mops' }], ['Mops 3 Kerzen Groß', { rasse: 'mops', kerzen: 3, groesse: 260 }],
+                          ['Spaniel 4 Kerzen', { rasse: 'spaniel', groesse: 300 }], ['Islandpferd 4 Kerzen', { rasse: 'pferd', groesse: 260 }]])
 for (const modus of [2, 1]) {
   const name = name0 + (modus === 2 ? ' Rücken/Bauch' : ' längs');
   const r = await pg.evaluate(({ P, modus }) => {
