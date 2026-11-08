@@ -2613,6 +2613,9 @@ const firebaseConfig = {
         <div class="shp" onclick="_flxOpen()" title="Beweglich machen (FlexiGen): flaches Teil in Glieder mit Fass-Scharnieren schneiden — druckt am Stück, biegt nach oben und unten">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2" y="9" width="5" height="6" rx="1"/><rect x="9.5" y="9" width="5" height="6" rx="1"/><rect x="17" y="9" width="5" height="6" rx="1"/><circle cx="8.2" cy="12" r="1.1"/><circle cx="15.7" cy="12" r="1.1"/></svg><span class="sdd-name">Beweglich (Flexi)</span>
         </div>
+        <div class="shp" onclick="_kdgOpen()" title="Kardangelenke einbauen: Teil in Glieder mit Kardangelenken (Gabel–Kreuz–Gabel) schneiden — druckt am Stück, biegt in alle Richtungen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M2 12h4M18 12h4"/><path d="M6 7v10M6 7h4M6 17h4"/><path d="M18 9v6"/><path d="M14 9h4M14 15h4"/><rect x="9.5" y="9.5" width="5" height="5" transform="rotate(45 12 12)"/></svg><span class="sdd-name">Kardan</span>
+        </div>
         <div class="shp" onclick="_holeQuickStart()" title="Loch in einen Körper: Fläche anklicken → das Loch sitzt in ihrer Mitte → Ø, Versatz und Tiefe eintippen (oder durch alles) → ✓ Loch bohren. Danach geht Gewinde an Fläche.">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 9l9-5 9 5v8l-9 5-9-5V9z"/><ellipse cx="12" cy="9" rx="3.4" ry="1.7"/><path d="M8.6 9v5M15.4 9v5" stroke-dasharray="1.6 1.4"/></svg><span class="sdd-name">Loch ziehen</span>
         </div>
@@ -15034,6 +15037,7 @@ function _advBuild() {
     ['_thfStart()', '🔩 Gewinde', 'Gewinde an Fläche: Bohrung (innen) oder Zylinder (außen) anklicken'],
     ['_lvtStart()', '🕳️ Vertiefen', 'Loch vertiefen: ins vorhandene Loch klicken — Ø, Tiefe und Restmaterial werden gemessen'],
     ['_flxOpen()', '🔗 Flexi', 'Beweglich machen: flaches Teil in Glieder mit Fass-Scharnieren'],
+    ['_kdgOpen()', '✛ Kardan', 'Kardangelenke: Teil in Glieder, die in alle Richtungen knicken'],
   ]);
   const g2 = grp('adv-construct', 'Konstruieren', [
     ['toggleWorkplane()', '▱ Arbeitsebene', 'Arbeitsebene auf eine Fläche legen (P) — neue Körper und Skizzen landen darauf'],
@@ -15369,6 +15373,7 @@ const _SYM_ICONS = {
   '_lvtStart()': '<path d="M3 9l9-5 9 5v8l-9 5-9-5V9z"/><ellipse cx="12" cy="9" rx="3.4" ry="1.7"/><path d="M12 12.5v6M10 16.5l2 2 2-2"/>',
   '_thfStart()': '<path d="M8 3h8v4H8z"/><path d="M10 7v14h4V7"/><path d="M10 10.5l4-1.5M10 13.5l4-1.5M10 16.5l4-1.5M10 19.5l4-1.5"/>',
   '_flxOpen()': '<rect x="2.5" y="9" width="8" height="6" rx="3"/><rect x="13.5" y="9" width="8" height="6" rx="3"/><path d="M8 12h8"/>',
+  '_kdgOpen()': '<path d="M2 12h4M18 12h4"/><path d="M6 7v10M6 7h4M6 17h4"/><path d="M18 9v6M14 9h4M14 15h4"/><rect x="9.5" y="9.5" width="5" height="5" transform="rotate(45 12 12)"/>',
   'toggleWorkplane()': '<path d="M3 17l5-9h13l-5 9z"/><path d="M5.5 12.5h13M11 8l-5 9M16 8l-5 9"/>',
   'enterEdgeMode()': '<path d="M4 20V11a7 7 0 0 1 7-7h9"/><path d="M4 4h16v16H4" stroke-dasharray="1.8 2.6" opacity=".55"/>',
   'enterPushPull()': '<path d="M4 15l8-4 8 4-8 4z"/><path d="M4 15v3l8 4 8-4v-3"/><path d="M12 13V3M9 6l3-3 3 3"/>',
@@ -56293,6 +56298,251 @@ function _flxVerwerfen() {
   const el = document.getElementById('flx-panel'); if (el) el.remove();
 }
 
+// ═══ KARDAN — Teil mit Kardangelenken beweglich machen (_kdg*, 1.18.333) ═══════
+// Geschwister von FlexiGen: Teil in Glieder schneiden, an jedem Schnitt Gabel–Kreuz–Gabel.
+// Die Kreuzachsen liegen ±45° gekippt → alle Flächen 45°/senkrecht, druckt am Stück ohne
+// Stützen, biegt in ALLE Richtungen (hoch/runter + seitlich). Kern 1:1 aus
+// tools/kardan/kdg_core.js (Prüfung in Node: kdg_pruef.mjs stab|rund|flach).
+// Kardan-Kern (print-in-place, 45° gekippt) — reine Manifold-Funktion.
+// Eingabe: Manifold in mm, Z oben, Unterseite auf der Platte. Glieder entlang +X.
+// An jedem Schnitt: Gabel A (Glied davor) – Kreuz – Gabel B (Glied danach). Die beiden
+// Kreuzachsen u/v liegen ±45° gekippt in der YZ-Ebene: alle Flächen haben 45° oder
+// stehen senkrecht (druckt ohne Stützen), die unteren Gabelarme stehen auf der Platte.
+// p: { n: Glieder, clr: Spiel (mm), grad: gewünschte Biegefreiheit je Gelenk (°), cuts: [x…] optional }
+function _kdgBuild(w, M0, p) {
+  const M = w.Manifold, S2 = Math.SQRT2;
+  const bb = M0.boundingBox(), x0 = bb.min[0], x1 = bb.max[0], y0 = bb.min[1], y1 = bb.max[1], zmin = bb.min[2], zmax = bb.max[2];
+  const L = x1 - x0, c = Math.max(0.2, p.clr ?? 0.4), grad = Math.max(10, Math.min(50, p.grad || 30));
+  const cube = (ax, bx, ay, by, az, bz) => M.cube([bx - ax, by - ay, bz - az]).translate([ax, ay, az]);
+  const n = Math.max(2, Math.round(p.n || 4));
+  let cuts = Array.isArray(p.cuts) && p.cuts.length ? p.cuts.slice().sort((a, b) => a - b)
+    : Array.from({ length: n - 1 }, (_, i) => x0 + L * (i + 1) / n);
+  // Gelenkmaße je Schnitt aus dem Querschnitt
+  const gel = []; let zuKlein = 0;
+  for (const xk of cuts) {
+    const q = M.intersection(M0, cube(xk - 0.05, xk + 0.05, y0 - 1, y1 + 1, zmin - 1, zmax + 1));
+    if (q.isEmpty()) continue;
+    const qb = q.boundingBox(), zb = qb.min[2];
+    const R = Math.min(14, (qb.max[1] - qb.min[1]) / 2, (qb.max[2] - zb) / 2);
+    if (R < 4.5) { zuKlein = Math.max(zuKlein, 2 * R); continue; }
+    const D = R * S2, k = (D - c) / 2.75, a = 0.75 * k, rp = k - c - 0.8;   // 2k + a + c = D → untere Arme stehen auf der Platte
+    const yc = (qb.min[1] + qb.max[1]) / 2, zj = zb + R - 0.25;
+    const rho = Math.max(qb.max[1] - yc, yc - qb.min[1], qb.max[2] - zj, zj - zb);
+    const e = Math.max(k * S2 + c + 0.3, rho * Math.tan(grad / 2 * Math.PI / 180) + c / 2);
+    gel.push({ xk, R, k, a, rp, c, yc, zj, zb, e });
+  }
+  // zu enge Gelenke weglassen (jedes Glied braucht Platz für zwei Naben)
+  const ok = []; let prevEnd = x0;
+  for (const g of gel) if (g.xk - g.e - 3 >= prevEnd && x1 - g.xk >= g.e + 3) { ok.push(g); prevEnd = g.xk + g.e + 3; }
+  if (!ok.length) throw new Error(zuKlein && !gel.length
+    ? `Querschnitt zu klein (${zuKlein.toFixed(1)} mm) — ein Kardangelenk braucht mindestens 9 mm Breite UND Dicke`
+    : 'Zu kurz für Kardangelenke — weniger Glieder wählen oder ein längeres Teil nehmen');
+  const teile = [], kreuze = [];
+  for (let i = 0; i <= ok.length; i++) {
+    const lo = i === 0 ? x0 - 1 : ok[i - 1].xk + ok[i - 1].e, hi = i === ok.length ? x1 + 1 : ok[i].xk - ok[i].e;
+    teile.push(M.intersection(M0, cube(lo, hi, y0 - 1, y1 + 1, zmin - 1, zmax + 1)));
+  }
+  ok.forEach((g, j) => {
+    const { xk, R, k, a, rp, yc, zj, zb, e } = g, L2 = k + c + a;
+    const place = m => m.rotate([45, 0, 0]).translate([xk, yc, zj]);
+    const box = cube(xk - e - 3, xk + e + 3, yc - R, yc + R, zb, zj + R + 0.25);
+    // Gabel A: zwei Platten quer zu u (lokal Y), Form in (x, v): Scheibe r=k ∪ Streifen zur Nabe
+    const armA = s => { const u0 = s > 0 ? k + c : -L2;
+      return M.union(M.cylinder(a, k, k, 48).rotate([-90, 0, 0]).translate([0, u0, 0]), cube(-(e + 2.5), 0, u0, u0 + a, -k, k)); };
+    // Gabel B: zwei Platten quer zu v (lokal Z), Form in (x, u)
+    const armB = s => { const v0 = s > 0 ? k + c : -L2;
+      return M.union(M.cylinder(a, k, k, 48).translate([0, 0, v0]), cube(0, e + 2.5, -k, k, v0, v0 + a)); };
+    const boreU = M.cylinder(2 * L2 + 2, rp + c, rp + c, 40).rotate([-90, 0, 0]).translate([0, -L2 - 1, 0]);
+    const boreV = M.cylinder(2 * L2 + 2, rp + c, rp + c, 40).translate([0, 0, -L2 - 1]);
+    const hubA = cube(xk - e - 2.5, xk - e + 0.01, yc - R, yc + R, zb, zj + R + 0.25);
+    const hubB = cube(xk + e - 0.01, xk + e + 2.5, yc - R, yc + R, zb, zj + R + 0.25);
+    const A = M.intersection(place(M.union(armA(1), armA(-1))), box), B = M.intersection(place(M.union(armB(1), armB(-1))), box);
+    // Nabe (Vollblock) nur, wenn die Gabel sonst nicht am Glied hängt (z. B. Querschnitt dünner als der Block)
+    const mit = (t, arm, hub, bore) => { let r = M.difference(M.union(t, arm), bore);
+      if (r.decompose().length > t.decompose().length) r = M.difference(M.union([t, hub, arm]), bore); return r; };
+    teile[j] = mit(teile[j], A, hubA, place(boreU));
+    teile[j + 1] = mit(teile[j + 1], B, hubB, place(boreV));
+    const kreuz = M.union([cube(-k, k, -k, k, -k, k),
+      M.cylinder(2 * L2, rp, rp, 40).rotate([-90, 0, 0]).translate([0, -L2, 0]),
+      M.cylinder(2 * L2, rp, rp, 40).translate([0, 0, -L2])]);
+    kreuze.push(place(kreuz));
+  });
+  return { teile, kreuze, info: { gel: ok, cuts: ok.map(g => g.xk), c } };
+}
+// Gelenk j in Pose (nicken p°, seitlich s°): Kreuz um u, Glied B zusätzlich um v
+function _kdgPose(m, g, uGrad, vGrad) {
+  let r = m.translate([-g.xk, -g.yc, -g.zj]).rotate([-45, 0, 0]);
+  if (vGrad) r = r.rotate([0, 0, vGrad]);
+  return r.rotate([0, uGrad, 0]).rotate([45, 0, 0]).translate([g.xk, g.yc, g.zj]);
+}
+function _kdgUV(nick, seit) { return { a: (nick + seit) / Math.SQRT2, b: (seit - nick) / Math.SQRT2 }; }
+// größter freier Winkel (2,5°-Schritte) für Gelenk j in Richtung (dn, ds)
+function _kdgFrei(w, teile, kreuze, g, j, dn, ds) {
+  const M = w.Manifold; let frei = 0;
+  for (let t = 2.5; t <= 60; t += 2.5) {
+    const { a, b } = _kdgUV(dn * t, ds * t);
+    const kr = _kdgPose(kreuze[j], g, a, 0), B = _kdgPose(teile[j + 1], g, a, b);
+    const ov = M.intersection(teile[j], kr).volume() + M.intersection(teile[j], B).volume() + M.intersection(kr, B).volume();
+    if (ov > 0.05) break; frei = t;
+  }
+  return frei;
+}
+const _kdg = { obj: null, p: { dir: 'auto', n: 0, clr: 0.4, grad: 30 }, teile: null, kreuze: null, gelenke: null, info: null, nick: 0, seit: 0, busy: false };
+function _kdgOpen() {
+  const o = getFirst();
+  if (!o || !o.isMesh || o.userData.isHole || selectedObjs.length !== 1) { notify('Ein einzelnes Teil auswählen (Gruppen erst vereinen) — z. B. ein Stab, Arm, Schlange oder Tentakel', 'w'); return; }
+  if (_kdg.obj && _kdg.obj !== o) _kdgVerwerfen();
+  if (_flx.obj) _flxVerwerfen();
+  _kdg.obj = o;
+  _kdgPanel();
+}
+function _kdgPanel() {
+  let el = document.getElementById('kdg-panel');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'kdg-panel';
+    el.style.cssText = 'position:fixed;right:232px;top:120px;width:320px;max-height:calc(100vh - 150px);overflow-y:auto;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+    el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape') _kdgVerwerfen(); });
+    document.body.appendChild(el);
+  }
+  const o = _kdg.obj, p = _kdg.p, m = _flxMaße(o), f1 = x => String(Math.round(x * 10) / 10).replace('.', ',');
+  const L = p.dir === 'z' ? m.lz : p.dir === 'x' ? m.lx : Math.max(m.lx, m.lz), B = p.dir === 'z' ? m.lx : p.dir === 'x' ? m.lz : Math.min(m.lx, m.lz);
+  const quer = Math.min(B, m.h);
+  const nAuto = Math.max(2, Math.min(16, Math.round(L / Math.max(quer * 1.6, 18))));
+  const n = p.n > 0 ? p.n : nAuto;
+  const tb = (k, v, t) => `<button class="vtb${String(p[k]) === String(v) ? ' on' : ''}" onclick="_kdgSet('${k}','${v}')">${t}</button>`;
+  const warn = quer < 9 ? `Zu schmal/dünn (${f1(quer)} mm) — ein Kardangelenk braucht mindestens 9 mm Breite und Dicke.` : '';
+  const fertig = !!_kdg.teile, fr = _kdg.info && _kdg.info.frei;
+  const sl = (id, k, t) => `<div class="vrow"><label>${t}</label><input id="${id}" type="range" min="-45" max="45" step="1" value="${Math.round(_kdg[k])}" style="flex:1" oninput="_kdgAnimStop();_kdg.${k}=+this.value;_kdgBiegen()"><span class="vv" id="${id}-v">${Math.round(_kdg[k])}</span><span class="vu">°</span></div>`;
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">✛ Kardangelenke einbauen</b>
+      <span onclick="_kdgVerwerfen()" style="cursor:pointer;color:var(--dim);font-size:15px" title="Schließen, nichts ändern (Esc)">✕</span></div>
+    <div style="font-size:11px;color:var(--dim);margin-bottom:7px;line-height:1.4">Schneidet das Teil in Glieder, verbunden mit <b>Kardangelenken</b> (Gabel – Kreuz – Gabel). Biegt in <b>alle Richtungen</b>. Druckt am Stück ohne Stützen. Gut für Stäbe, Arme, Schlangen, Tentakel, Schwänze.</div>
+    <div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:5px 8px;margin-bottom:8px">„${(o.userData.name || 'Teil').replace(/</g, '&lt;')}“: ${f1(m.lx)} × ${f1(m.lz)} × ${f1(m.h)} mm${warn ? `<br><b style="color:#dc2626">${warn}</b>` : ''}</div>
+    <div class="vrow"><label>Richtung</label><div class="vbg" style="flex:1">${tb('dir', 'auto', 'Längs (auto)')}${tb('dir', 'x', 'X')}${tb('dir', 'z', 'Y')}</div></div>
+    <div class="vrow"><label>Glieder</label><input type="number" min="2" max="20" value="${n}" style="width:60px" onchange="_kdgSet('n',this.value)"><span class="vu">${p.n > 0 ? '' : '(auto)'}</span></div>
+    <div class="vrow"><label title="Wie weit jedes Gelenk knicken soll. Mehr Winkel = größere Lücke zwischen den Gliedern">Beweglichkeit</label><div class="vbg" style="flex:1">${tb('grad', 20, '20°')}${tb('grad', 30, '30°')}${tb('grad', 40, '40°')}</div></div>
+    <div class="vrow"><label title="Luft zwischen Kreuz, Zapfen und Gabel. Klemmt es nach dem Druck: erhöhen">Spiel</label><select style="flex:1" onchange="_kdgSet('clr',this.value)">${[0.3, 0.35, 0.4, 0.5, 0.6].map(v => `<option value="${v}"${v === p.clr ? ' selected' : ''}>${String(v).replace('.', ',')} mm${v === 0.4 ? ' (Standard)' : ''}</option>`).join('')}</select></div>
+    <div style="display:flex;gap:6px;margin:8px 0"><button class="btn pri" style="flex:1" id="kdg-go" onclick="_kdgBauen()" ${warn ? 'disabled' : ''}>${_kdg.busy ? '⏳ rechnet …' : fertig ? '↻ Neu bauen' : '✛ Kardan-Modell bauen'}</button></div>
+    ${fertig ? `
+    <div style="background:#f0fdf4;border:1px solid #22c55e;border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.45">✓ <b>${_kdg.teile.length} Glieder</b>, ${_kdg.kreuze.length} Kardangelenke · Zapfen Ø ${f1(_kdg.info.gel[0].rp * 2)} mm<br>frei je Gelenk: hoch/runter ca. <b>${fr.nick}°</b>, seitlich ca. <b>${fr.seit}°</b></div>
+    ${sl('kdg-nick', 'nick', 'Hoch/Runter')}${sl('kdg-seit', 'seit', 'Seitlich')}
+    <div style="margin:-2px 0 6px"><button class="btn" id="kdg-anim" style="width:100%;justify-content:center" onclick="_kdgAnimToggle()">${_kdg.anim ? '⏸ Anhalten' : '▶ Kreisen lassen'}</button></div>
+    <div style="font-size:10.5px;color:var(--dim);margin:-2px 0 8px">Nur Vorschau — übernommen wird gerade, so wie es gedruckt wird.</div>
+    <div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn" onclick="_kdgVerwerfen()">Verwerfen</button><button class="btn pri" id="kdg-ok" onclick="_kdgUebernehmen()">✓ Übernehmen</button></div>` : ''}`;
+}
+function _kdgSet(k, v) {
+  if (k === 'dir') _kdg.p.dir = v;
+  else { const n = parseFloat(String(v).replace(',', '.')); _kdg.p[k] = isFinite(n) ? n : 0; }
+  if (_kdg.teile) _kdgVorschauWeg();
+  _kdgPanel();
+}
+function _kdgVorschauWeg() {
+  _kdgAnimStop();
+  [...(_kdg.teile || []), ...(_kdg.kreuze || [])].forEach(m => { scene.remove(m); m.geometry.dispose(); m.material.dispose(); });
+  _kdg.teile = null; _kdg.kreuze = null; _kdg.gelenke = null; _kdg.nick = 0; _kdg.seit = 0;
+  if (_kdg.obj) _kdg.obj.visible = true;
+}
+async function _kdgBauen() {
+  const o = _kdg.obj; if (!o || _kdg.busy) return;
+  _kdg.busy = true; _kdgPanel();
+  await new Promise(r => setTimeout(r, 30));
+  try {
+    _kdgVorschauWeg();
+    const w = await _mfInit();
+    let M0 = _mfUnionObjs(w, [o]);
+    if (!M0 || M0.isEmpty()) throw new Error('Teil ist nicht wasserdicht — erst 🩹 Reparieren');
+    // Manifold-Raum: X = Welt-x, Y = −Welt-z (mm), Z = Höhe
+    const bb = M0.boundingBox(), lx = bb.max[0] - bb.min[0], ly = bb.max[1] - bb.min[1];
+    const p = _kdg.p, entlangY = p.dir === 'z' || (p.dir === 'auto' && ly > lx);
+    if (entlangY) M0 = M0.rotate([0, 0, 90]);   // Kette immer entlang +X rechnen
+    const L = entlangY ? ly : lx, quer = Math.min(entlangY ? lx : ly, bb.max[2] - bb.min[2]);
+    const n = p.n > 0 ? p.n : Math.max(2, Math.min(16, Math.round(L / Math.max(quer * 1.6, 18))));
+    const { teile, kreuze, info } = _kdgBuild(w, M0, { n, clr: p.clr, grad: p.grad });
+    const g0 = info.gel[0];
+    info.frei = { nick: Math.min(_kdgFrei(w, teile, kreuze, g0, 0, 1, 0), _kdgFrei(w, teile, kreuze, g0, 0, -1, 0)), seit: _kdgFrei(w, teile, kreuze, g0, 0, 0, 1) };
+    const back = m => entlangY ? m.rotate([0, 0, -90]) : m;
+    const farbe = o.userData.color || '#' + o.material.color.getHexString();
+    const mk = (t, col) => {
+      const g = _mfToGeo(back(t)).toNonIndexed(); g.rotateX(-Math.PI / 2); g.scale(0.1, 0.1, 0.1); _moldNormals(g);
+      const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: col, roughness: 0.4, metalness: 0.05, side: THREE.DoubleSide }));
+      m.castShadow = m.receiveShadow = true; m.matrixAutoUpdate = false; m.updateMatrix(); scene.add(m); return m;
+    };
+    const meshes = teile.map((t, i) => { const col = new THREE.Color(farbe); if (i % 2) col.offsetHSL(0, 0, col.getHSL({}).l > 0.5 ? -0.12 : 0.12); return mk(t, col); });
+    const kMeshes = kreuze.map(t => { const k = new THREE.Color(farbe), hsl = k.getHSL({}); return mk(t, k.setHSL((hsl.h + 0.5) % 1, Math.max(0.6, hsl.s), 0.55)); });   // Kreuze in Gegenfarbe (nur Vorschau)
+    // Gelenkmitte + Kreuzachsen u/v in Weltkoordinaten (für die Biegen-Vorschau)
+    const zuWelt = (x, y, z) => { const v = new THREE.Vector3(x, y, z); if (entlangY) v.applyAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2); return new THREE.Vector3(v.x / 10, v.z / 10, -v.y / 10); };
+    _kdg.gelenke = info.gel.map(g => { const c = zuWelt(g.xk, g.yc, g.zj), S = Math.SQRT1_2;
+      return { p: c, u: zuWelt(g.xk, g.yc + 10 * S, g.zj + 10 * S).sub(c).normalize(), v: zuWelt(g.xk, g.yc - 10 * S, g.zj + 10 * S).sub(c).normalize() }; });
+    _kdg.teile = meshes; _kdg.kreuze = kMeshes; _kdg.info = info;
+    _kdg.minY0 = Math.min(...meshes.map(m => { m.geometry.computeBoundingBox(); return m.geometry.boundingBox.min.y; }));
+    o.visible = false;
+    notify(`${meshes.length} Glieder mit ${kMeshes.length} Kardangelenken — mit den Reglern biegen oder „Kreisen lassen", dann übernehmen`, 'ok');
+  } catch (e) {
+    console.error('[kdg]', e); notify('Kardan: ' + (e.message || e), 'e');
+  } finally { _kdg.busy = false; _kdgPanel(); }
+}
+function _kdgBiegen() {
+  for (const k of ['nick', 'seit']) { const v = document.getElementById('kdg-' + k + '-v'), s = document.getElementById('kdg-' + k);
+    if (v) v.textContent = Math.round(_kdg[k]); if (s && document.activeElement !== s) s.value = Math.round(_kdg[k]); }
+  if (!_kdg.teile) return;
+  // Mittleres Glied bleibt liegen; Kreuz dreht um u, nächstes Glied zusätzlich um v
+  const { a, b } = _kdgUV(_kdg.nick, _kdg.seit), ra = THREE.MathUtils.degToRad(a), rb = THREE.MathUtils.degToRad(b);
+  const rot = (p, ax, w) => new THREE.Matrix4().makeTranslation(p.x, p.y, p.z)
+    .multiply(new THREE.Matrix4().makeRotationAxis(ax, w)).multiply(new THREE.Matrix4().makeTranslation(-p.x, -p.y, -p.z));
+  const n = _kdg.teile.length, mid = Math.floor(n / 2), M = new Array(n), K = new Array(n - 1), G = _kdg.gelenke;
+  M[mid] = new THREE.Matrix4();
+  for (let i = mid; i < n - 1; i++) { K[i] = M[i].clone().multiply(rot(G[i].p, G[i].u, ra)); M[i + 1] = K[i].clone().multiply(rot(G[i].p, G[i].v, rb)); }
+  for (let i = mid - 1; i >= 0; i--) { K[i] = M[i + 1].clone().multiply(rot(G[i].p, G[i].v, -rb)); M[i] = K[i].clone().multiply(rot(G[i].p, G[i].u, -ra)); }
+  const alle = [..._kdg.teile.map((m, i) => [m, M[i]]), ..._kdg.kreuze.map((m, i) => [m, K[i]])];
+  let minY = Infinity; const bb = new THREE.Box3();
+  alle.forEach(([m, T]) => { m.geometry.boundingBox || m.geometry.computeBoundingBox(); bb.copy(m.geometry.boundingBox).applyMatrix4(T); minY = Math.min(minY, bb.min.y); });
+  const gebogen = Math.abs(_kdg.nick) + Math.abs(_kdg.seit) > 1e-6;
+  const lift = new THREE.Matrix4().makeTranslation(0, gebogen ? (_kdg.minY0 ?? 0) - minY : 0, 0);
+  alle.forEach(([m, T]) => { m.matrix.copy(lift.clone().multiply(T)); m.matrixWorldNeedsUpdate = true; });
+}
+// „▶ Kreisen lassen": Kette schwenkt im Kreis — zeigt, dass sie in alle Richtungen knickt
+function _kdgAnimToggle() {
+  const b = document.getElementById('kdg-anim');
+  if (_kdg.anim) { _kdgAnimStop(); return; }
+  if (!_kdg.teile) return;
+  const fr = _kdg.info.frei, an = Math.max(8, fr.nick * 0.8), as = Math.max(8, fr.seit * 0.8), t0 = performance.now();
+  const step = now => {
+    if (!_kdg.teile) { _kdg.anim = null; return; }
+    const t = (now - t0) / 1000 * 1.4; _kdg.nick = an * Math.sin(t); _kdg.seit = as * Math.cos(t); _kdgBiegen();
+    _kdg.anim = requestAnimationFrame(step);
+  };
+  _kdg.anim = requestAnimationFrame(step);
+  if (b) b.textContent = '⏸ Anhalten';
+}
+function _kdgAnimStop() { if (_kdg.anim) { cancelAnimationFrame(_kdg.anim); _kdg.anim = null; } const b = document.getElementById('kdg-anim'); if (b) b.textContent = '▶ Kreisen lassen'; }
+function _kdgUebernehmen() {
+  const o = _kdg.obj; if (!o || !_kdg.teile) return;
+  _kdgAnimStop(); _kdg.nick = _kdg.seit = 0; _kdgBiegen();
+  o.visible = true;     // Rückgängig-Stand = Original SICHTBAR
+  saveUndo();
+  const geo = _mergeGeos([..._kdg.teile, ..._kdg.kreuze].map(m => m.geometry.clone()));   // alles in EIN Teil (druckt am Stück)
+  const g2 = geo.index ? geo.toNonIndexed() : geo; _moldNormals(g2);
+  const farbe = o.userData.color || '#' + o.material.color.getHexString();
+  const mesh = new THREE.Mesh(g2, new THREE.MeshStandardMaterial({ color: new THREE.Color(farbe), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide }));
+  mesh.castShadow = mesh.receiveShadow = true;
+  typeCounts['kardan'] = (typeCounts['kardan'] || 0) + 1;
+  mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Kardan ' + (o.userData.name || typeCounts['kardan']),
+    color: farbe, isHole: false, fillet: 0, chamfer: 0, displacementPattern: 'keine',
+    kardanInfo: { glieder: _kdg.teile.length, gelenke: _kdg.kreuze.length, spiel: _kdg.p.clr } };
+  _kdgVorschauWeg();
+  scene.remove(o); objects.splice(objects.indexOf(o), 1);
+  scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
+  selectObjs([mesh]); updateTree();
+  _kdg.obj = null;
+  const el = document.getElementById('kdg-panel'); if (el) el.remove();
+  notify('Kardan-Modell übernommen — so drucken, wie es liegt, ohne Stützen. Nach dem Druck jedes Gelenk einmal vorsichtig in alle Richtungen bewegen.', 'ok');
+}
+function _kdgVerwerfen() {
+  _kdgVorschauWeg();
+  _kdg.obj = null;
+  const el = document.getElementById('kdg-panel'); if (el) el.remove();
+}
+
 // ═══ GEWINDE AUF FLÄCHE (_thf*) ═══════════════════════════════════════════
 // Wie bei Fusion/JumpStart: vorhandene Bohrung oder Zylinderfläche anklicken →
 // Achse, Ø und Länge werden aus dem Netz erkannt (Flutfüllung über glatte
@@ -79332,8 +79582,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.332';
+const VOLME3D_VERSION = '1.18.333';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.333', date:'2026-11-09', changes:[
+    ['✛','<b>Neues Werkzeug: Kardangelenke einbauen.</b> Der große Bruder von Flexi: Das Teil wird in Glieder geschnitten, die mit echten Kardangelenken (Gabel – Kreuz – Gabel) verbunden sind. So biegt es sich in <b>alle Richtungen</b>, also hoch, runter und seitlich. Die Kreuzachsen stehen schräg (45°): Es druckt am Stück, ohne Stützen. In der Vorschau biegst du mit zwei Reglern oder lässt die Kette mit „▶ Kreisen lassen“ im Kreis schwenken. Zu finden unter „Werkzeuge öffnen“ → <b>Kardan</b> (neben Flexi).'],
+  ]},
   { version:'1.18.332', date:'2026-11-09', changes:[
     ['🎄','<b>Neuer Generator: Faltenbaum – mit Vorlage „Kleine Tanne“.</b> Ein Weihnachtsbaum in Papier-Optik: sternförmige Falten rundherum, mehrere Etagen, die unten als gezackter Rock auslaufen, auf Wunsch über die Höhe gedreht. Die Vorlage <b>Kleine Tanne (gedreht)</b> ist voreingestellt, dazu Klassisch, Schlank hoch, Breit &amp; niedrig, Weich gewellt, Gedreht und Mini. Höhe, Radius, Etagen, Falten, Faltentiefe, Schärfe, Drehung und der maximale Überhang sind einstellbar. Gedruckt wird im <b>Vasenmodus</b> (Spiralmodus) des Slicers – dann entsteht die dünne, papierartige Faltenwand. Doppelklick auf einen fertigen Baum öffnet ihn wieder zum Bearbeiten.'],
     ['🎁','<b>Neue Rubrik „🎄 Weihnachten“.</b> Auf der Generatoren-Seite steht Weihnachten jetzt als erstes Thema, und im Generator-Menü rechts oben gibt es einen eigenen Weihnachts-Block: Faltenbaum, Geflochtener Kranz, Faltkranz, Lichttüte, Lichthaus, Motivlicht und die Kerzenhalter-Tiere (Dackel, Mops, Spaniel, Islandpferd).'],
@@ -91954,6 +92207,7 @@ const CMDK = [
   {i:'📷',g:'Datei',t:'Foto erstellen (Rendern)',k:'foto bild render rendern png jpg screenshot werbung shop kunde aussehen material render-studio ansichten zip',run:()=>_fotoOpen()},
   {i:'🎬',g:'Datei',t:'360°-Video / Kamerafahrt (Render-Studio)',k:'video 360 drehteller turntable mp4 webm kamerafahrt kamerapfad film reel tiktok instagram wasserzeichen',run:()=>{_foto.p.art='video';_fotoOpen();}},
   {i:'🔗',g:'Bearbeiten',t:'Beweglich machen (FlexiGen, Flexi-Gelenke)',k:'flexi flexigen beweglich gelenk scharnier glieder print in place biegen kette herz schild',run:()=>_flxOpen()},
+  {i:'✛',g:'Bearbeiten',t:'Kardangelenke einbauen (in alle Richtungen beweglich)',k:'kardan kardangelenk kreuzgelenk universalgelenk beweglich gelenk glieder print in place biegen alle richtungen schlange tentakel arm schwanz',run:()=>_kdgOpen()},
   {i:'🩺',g:'Hilfe',t:'Druckfehler-Doktor (Fäden, Warping, Elefantenfuß …)',k:'druckfehler doktor fehler druck problem stringing fäden faeden warping ecken haftet nicht bett elefantenfuß elefantenfuss unterextrusion überextrusion schichtversatz delamination spaghetti überhang brücke ghosting ringing wobble naht pickel zits stützen löcher verstopfung düse klickt printdoc ursache abhilfe slicer einstellung',run:()=>_dfdOpen()},
   {i:'📖',g:'Seite',t:'Hilfe — alle Funktionen nachschlagen (F1)',k:'hilfe help handbuch anleitung erklärung wie geht funktionen f1 nachschlagen',run:()=>_hlfOpen()},
   {i:'✨',g:'Seite',t:'Generatoren-Seite (alle Generatoren groß)',k:'generatoren generator vorlagen katalog seite alle uebersicht',run:()=>_genPageOpen()},
