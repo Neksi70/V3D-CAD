@@ -37,6 +37,9 @@ public class SidebarForm : Form
     readonly ContextMenuStrip _menu = new();
     readonly ToolTip _tip = new();
     readonly Dictionary<string, WebView2> _views = new();
+    readonly Dictionary<string, Task<CoreWebView2Environment>> _envs = new(StringComparer.OrdinalIgnoreCase);
+    readonly Panel _serviceHost = new();
+    int _scroll;
     readonly Dictionary<string, ServiceButton> _buttons = new();
     readonly Dictionary<string, int> _unread = new();
     readonly System.Windows.Forms.Timer _collapseTimer = new() { Interval = 250 };
@@ -76,7 +79,12 @@ public class SidebarForm : Form
         _serviceList.WrapContents = false;
         _serviceList.BackColor = StripBack;
         _serviceList.Padding = new Padding(0, 6, 0, 0);
-        _strip.Controls.Add(_serviceList);
+        _serviceList.AutoSize = true;
+        _serviceList.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _serviceHost.BackColor = StripBack;
+        _serviceHost.Controls.Add(_serviceList);
+        _serviceHost.MouseWheel += (_, e) => ScrollList(-e.Delta);
+        _strip.Controls.Add(_serviceHost);
         _pinBtn = GlyphButton("", "Offene Leiste anheften (Platz am Rand reservieren)", (_, _) => TogglePinned());
         _moreBtn = GlyphButton("", "Menü", (_, _) => _menu.Show(_moreBtn, new Point(0, _moreBtn.Height), ToolStripDropDownDirection.AboveRight));
         _strip.Controls.Add(_pinBtn);
@@ -136,11 +144,8 @@ public class SidebarForm : Form
         if (_firstRun)
             _tray.ShowBalloonTip(8000, "WA Seitenleiste",
                 "Oben P = privat, B = Business. Jeweils einmal per QR-Code anmelden. Strg+Alt+W blendet die Leiste ein und aus.", ToolTipIcon.Info);
-        foreach (var svc in _s.Services.ToList())
-        {
-            try { await InitView(svc); }
-            catch (Exception ex) { ShowError(svc, ex); }
-        }
+        foreach (var svc in _s.Services.Where(x => x.Group != "v3d").ToList())
+            await EnsureView(svc);
         ActivateService(_s.ActiveId, false);
     }
 
@@ -159,6 +164,25 @@ public class SidebarForm : Form
     }
 
     // ---------- WebView pro Dienst, jeder mit eigenem Profilordner ----------
+    async Task EnsureView(ServiceDef svc)
+    {
+        if (_views.ContainsKey(svc.Id)) return;
+        try { await InitView(svc); }
+        catch (Exception ex) { ShowError(svc, ex); }
+    }
+
+    // Dienste mit gleichem Profilordner (alle V3D Tools) teilen sich eine Browser-Umgebung.
+    Task<CoreWebView2Environment> EnvFor(string dir)
+    {
+        if (!_envs.TryGetValue(dir, out var t))
+        {
+            Directory.CreateDirectory(dir);
+            t = CoreWebView2Environment.CreateAsync(null, dir, new CoreWebView2EnvironmentOptions());
+            _envs[dir] = t;
+        }
+        return t;
+    }
+
     async Task InitView(ServiceDef svc)
     {
         var wv = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = _content.BackColor };
@@ -166,9 +190,7 @@ public class SidebarForm : Form
         _views[svc.Id] = wv;
         _ = wv.Handle; // Handle sofort anlegen, auch wenn verdeckt
 
-        string dir = Path.Combine(AppSettings.BaseDir, "profiles", svc.Id);
-        Directory.CreateDirectory(dir);
-        var env = await CoreWebView2Environment.CreateAsync(null, dir, new CoreWebView2EnvironmentOptions());
+        var env = await EnvFor(svc.ProfileDir);
         await wv.EnsureCoreWebView2Async(env);
         var c = wv.CoreWebView2;
         c.Settings.IsStatusBarEnabled = false;
@@ -274,11 +296,35 @@ public class SidebarForm : Form
     {
         if (!_views.ContainsKey(id) && _s.Services.All(x => x.Id != id)) return;
         _s.ActiveId = id;
+        var svcDef = _s.Services.FirstOrDefault(x => x.Id == id);
+        if (svcDef != null && !_views.ContainsKey(id)) _ = LoadAndShow(svcDef);
         if (_views.TryGetValue(id, out var wv)) wv.BringToFront();
+        if (_buttons.TryGetValue(id, out var ab)) EnsureButtonVisible(ab);
         foreach (var (bid, b) in _buttons) { b.Active = bid == id; b.Invalidate(); }
         if (expand && !_expanded) { _expanded = true; DoLayout(); }
         if (expand) { Activate(); wv?.Focus(); }
         _s.Save();
+    }
+
+    async Task LoadAndShow(ServiceDef svc)
+    {
+        await EnsureView(svc);
+        if (_s.ActiveId == svc.Id && _views.TryGetValue(svc.Id, out var wv)) { wv.BringToFront(); if (_expanded) wv.Focus(); }
+    }
+
+    void ScrollList(int delta)
+    {
+        int max = Math.Max(0, _serviceList.Height - _serviceHost.Height);
+        _scroll = Math.Clamp(_scroll + delta / 2, 0, max);
+        _serviceList.Top = -_scroll;
+    }
+
+    void EnsureButtonVisible(Control b)
+    {
+        if (_serviceHost.Height <= 0) return;
+        int top = b.Top, bottom = b.Bottom;
+        if (top < _scroll) ScrollList((top - _scroll) * 2);
+        else if (bottom > _scroll + _serviceHost.Height) ScrollList((bottom - _scroll - _serviceHost.Height) * 2);
     }
 
     void OnServiceClick(string id)
@@ -367,8 +413,20 @@ public class SidebarForm : Form
             _grip.Visible = _content.Visible = _expanded;
 
             int btn = (int)(40 * S);
-            _serviceList.SetBounds(0, 0, strip, h - 2 * btn - (int)(8 * S));
-            foreach (var b in _buttons.Values) { b.Size = new Size(strip, (int)(46 * S)); b.Margin = Padding.Empty; }
+            _serviceHost.SetBounds(0, 0, strip, h - 2 * btn - (int)(8 * S));
+            _serviceList.Left = 0;
+            bool firstV3d = true;
+            foreach (var svc in _s.Services)
+            {
+                if (!_buttons.TryGetValue(svc.Id, out var b)) continue;
+                bool v3d = svc.Group == "v3d";
+                b.Size = new Size(strip, (int)((v3d ? 42 : 46) * S));
+                // kleiner Abstand + Trennstrich vor dem ersten V3D Tool
+                b.Margin = v3d && firstV3d ? new Padding(0, (int)(10 * S), 0, 0) : Padding.Empty;
+                b.SeparatorAbove = v3d && firstV3d;
+                if (v3d) firstV3d = false;
+            }
+            ScrollList(0);
             _pinBtn.SetBounds(0, h - 2 * btn - (int)(4 * S), strip, btn);
             _moreBtn.SetBounds(0, h - btn - (int)(4 * S), strip, btn);
             _pinBtn.Text = _s.Pinned ? "" : "";
@@ -450,6 +508,7 @@ public class SidebarForm : Form
         _menu.Items.Add(Check("Benachrichtigungen anzeigen", _s.Notifications, () => { _s.Notifications = !_s.Notifications; _s.Save(); }));
         _menu.Items.Add(Check("Mit Windows starten", IsAutostart(), () => SetAutostart(!IsAutostart())));
         _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add("V3D Tools auswählen …", null, (_, _) => PickV3dTools());
         _menu.Items.Add("Dienst hinzufügen …", null, (_, _) => AddServiceInteractive());
         _menu.Items.Add("Aktuellen Dienst neu laden", null, (_, _) => ReloadService(_s.ActiveId));
         _menu.Items.Add("Datenordner öffnen", null, (_, _) => OpenExternal(AppSettings.BaseDir));
@@ -497,14 +556,14 @@ public class SidebarForm : Form
         _s.Save();
         AddButton(svc);
         DoLayout();
-        try { await InitView(svc); } catch (Exception ex) { ShowError(svc, ex); }
+        await EnsureView(svc);
         ActivateService(id, true);
     }
 
-    void RemoveService(ServiceDef svc)
+    void RemoveService(ServiceDef svc, bool ask = true)
     {
         if (_s.Services.Count <= 1) return;
-        if (MessageBox.Show(this, $"\"{svc.Name}\" aus der Leiste entfernen?\n(Die Anmeldedaten bleiben im Datenordner liegen.)",
+        if (ask && MessageBox.Show(this, $"\"{svc.Name}\" aus der Leiste entfernen?\n(Die Anmeldedaten bleiben im Datenordner liegen.)",
                 "WA Seitenleiste", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
         _s.Services.Remove(svc);
         if (_views.Remove(svc.Id, out var wv)) wv.Dispose();
@@ -513,6 +572,41 @@ public class SidebarForm : Form
         UpdateTrayIcon();
         if (_s.ActiveId == svc.Id) ActivateService(_s.Services[0].Id, false);
         _s.Save();
+    }
+
+    async void PickV3dTools()
+    {
+        Cursor = Cursors.WaitCursor;
+        var (items, online) = await ToolCatalog.LoadAsync();
+        Cursor = Cursors.Default;
+        var current = _s.Services.Where(x => x.Group == "v3d").Select(x => x.Url).ToHashSet();
+        using var dlg = new ToolPickerDialog(items, online, current);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+        var chosen = dlg.Selected;
+        var chosenUrls = chosen.Select(c => c.Url).ToHashSet();
+        foreach (var old in _s.Services.Where(x => x.Group == "v3d" && !chosenUrls.Contains(x.Url)).ToList())
+            RemoveService(old, false);
+        foreach (var it in chosen)
+        {
+            if (_s.Services.Any(x => x.Group == "v3d" && x.Url == it.Url)) continue;
+            var svc = new ServiceDef
+            {
+                Id = ToolCatalog.IdFor(it.Url), Name = it.Name, Url = it.Url, Group = "v3d", Profile = "v3d",
+                Letter = ToolCatalog.Abbrev(it.Name), Color = ToolCatalog.ColorFor(it.Category),
+            };
+            _s.Services.Add(svc);
+            AddButton(svc);
+        }
+        // Reihenfolge: erst WhatsApp & eigene Dienste, dann V3D Tools wie auf der Tools-Seite
+        var order = chosen.Select(c => c.Url).ToList();
+        var others = _s.Services.Where(x => x.Group != "v3d").ToList();
+        var tools = _s.Services.Where(x => x.Group == "v3d").OrderBy(x => order.IndexOf(x.Url)).ToList();
+        _s.Services = others.Concat(tools).ToList();
+        for (int i = 0; i < _s.Services.Count; i++)
+            if (_buttons.TryGetValue(_s.Services[i].Id, out var b)) _serviceList.Controls.SetChildIndex(b, i);
+        _s.Save();
+        DoLayout();
     }
 
     // ---------- Autostart ----------
@@ -580,10 +674,12 @@ public class SidebarForm : Form
             {
                 var m = new ContextMenuStrip();
                 m.Items.Add("Neu laden", null, (_, _) => ReloadService(svc.Id));
+                m.Items.Add("Im Browser öffnen", null, (_, _) => OpenExternal(svc.Url));
                 if (_s.Services.Count > 1) m.Items.Add("Aus Leiste entfernen", null, (_, _) => RemoveService(svc));
                 m.Show(b, e.Location);
             }
         };
+        b.MouseWheel += (_, e) => ScrollList(-e.Delta);
         int idx = _s.Services.IndexOf(svc);
         _tip.SetToolTip(b, svc.Name + (idx < 9 ? $"  (Strg+Umschalt+Alt+{idx + 1})" : ""));
         _buttons[svc.Id] = b;
@@ -595,6 +691,7 @@ public class SidebarForm : Form
         readonly ServiceDef _svc;
         public bool Active;
         public int Unread;
+        public bool SeparatorAbove;
         bool _hover;
 
         public ServiceButton(ServiceDef svc)
@@ -623,10 +720,21 @@ public class SidebarForm : Form
             var r = new RectangleF((Width - d) / 2, (Height - d) / 2, d, d);
             Color col;
             try { col = ColorTranslator.FromHtml(_svc.Color); } catch { col = Color.SeaGreen; }
-            using (var br = new SolidBrush(col)) g.FillEllipse(br, r);
-            using (var f = new Font("Segoe UI Semibold", 15 * s, GraphicsUnit.Pixel))
+            bool square = _svc.Group == "v3d";
+            if (square) { d = 30 * s; r = new RectangleF((Width - d) / 2, (Height - d) / 2, d, d); }
+            using (var br = new SolidBrush(col))
+            {
+                if (square) using (var rp = Rounded(r, 7 * s)) g.FillPath(br, rp);
+                else g.FillEllipse(br, r);
+            }
+            if (SeparatorAbove)
+                using (var sp = new Pen(Color.FromArgb(0x3B, 0x4A, 0x54), 1))
+                    g.DrawLine(sp, 10 * s, 0, Width - 10 * s, 0);
+            string letter = _svc.Letter ?? "?";
+            float fs = letter.Length >= 3 ? 10 : letter.Length == 2 ? 13 : 15;
+            using (var f = new Font("Segoe UI Semibold", fs * s, GraphicsUnit.Pixel))
             using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                g.DrawString(_svc.Letter ?? "?", f, Brushes.White, r, sf);
+                g.DrawString(letter, f, Brushes.White, r, sf);
 
             if (Unread > 0)
             {

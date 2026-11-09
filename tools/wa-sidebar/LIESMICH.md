@@ -19,6 +19,15 @@ jeweils einmal mit dem Handy den QR-Code scannen. Danach bleiben beide angemelde
 | Anheften (Fenster weichen aus) | Pin-Knopf unten in der Leiste |
 | Einstellungen | „⋯“ unten in der Leiste oder Rechtsklick aufs Tray-Icon |
 
+## V3D Tools in der Leiste
+Menü „⋯“ → **V3D Tools auswählen …**: Alle Tools erscheinen nach Bereichen sortiert zum Anhaken.
+Die Liste kommt live von https://v3da.tailf05fe9.ts.net/tools/. Neue Tools tauchen also
+automatisch auf. Ist die Seite nicht erreichbar, gilt eine eingebaute Liste.
+- V3D Tools haben eckige Icons und stehen unter WhatsApp. Bei vielen Tools mit dem Mausrad scrollen.
+- Alle V3D Tools teilen sich ein Anmelde-Profil. Einmal anmelden reicht also für alle Tools auf demselben Server.
+- Sie laden erst beim ersten Klick.
+- Rechtsklick auf ein Icon → „Im Browser öffnen“.
+
 Im Menü: Seite links/rechts, Bildschirm, Benachrichtigungen, **Mit Windows starten**,
 Dienst hinzufügen (z. B. Telegram, Signal-Web, Outlook), Beenden.
 Rechtsklick auf ein Dienst-Icon: neu laden / entfernen.

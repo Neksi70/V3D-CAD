@@ -9,6 +9,9 @@ public class ServiceDef
     public string Url { get; set; }
     public string Letter { get; set; }
     public string Color { get; set; } = "#25D366";
+    public string Group { get; set; }      // "v3d" = V3D Tool (eckiges Icon, lädt erst beim ersten Klick)
+    public string Profile { get; set; }    // gemeinsamer Profilordner; leer = eigener Ordner je Dienst
+    public string ProfileDir => Path.Combine(AppSettings.BaseDir, "profiles", string.IsNullOrEmpty(Profile) ? Id : Profile);
 }
 
 public class AppSettings
