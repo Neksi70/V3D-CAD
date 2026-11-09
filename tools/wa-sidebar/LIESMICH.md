@@ -36,6 +36,20 @@ automatisch auf. Ist die Seite nicht erreichbar, gilt eine eingebaute Liste.
   - Abschalten oder löschen geht im Menü „⋯“.
 - Google-Anmeldung (z. B. V3D CAD) öffnet sich in einem kleinen Fenster der App.
 
+## Kopfzeile, Vollbild, Schließen
+Über jedem geöffneten Dienst steht eine schmale Kopfzeile. Die Knöpfe von links nach rechts:
+- **Im Browser öffnen**
+- **Neu laden**
+- **Vollbild an/aus**
+- **Einklappen** (die Anwendung läuft weiter)
+- **✕ Schließen** (beendet die Anwendung und gibt den Speicher frei; das Icon bleibt, ein Klick startet sie neu)
+
+Mit **Vollbild** füllt ein Dienst den ganzen Bildschirm (die Taskleiste bleibt frei), und die Icon-Leiste bleibt am Rand.
+- Voreingestellt ist das für V3D CAD, CAD auf V3DA, Kids, CAM und Slicer.
+- Für jeden anderen Dienst schaltest du es per Kopfzeile oder Rechtsklick aufs Icon um.
+
+Ein grüner Punkt am Icon zeigt, welche V3D Tools gerade geöffnet sind.
+
 Im Menü: Seite links/rechts, Bildschirm, Benachrichtigungen, **Mit Windows starten**,
 Dienst hinzufügen (z. B. Telegram, Signal-Web, Outlook), Beenden.
 Rechtsklick auf ein Dienst-Icon: neu laden / entfernen.

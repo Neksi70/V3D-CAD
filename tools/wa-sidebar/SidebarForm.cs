@@ -40,6 +40,10 @@ public class SidebarForm : Form
     readonly Dictionary<string, Task<CoreWebView2Environment>> _envs = new(StringComparer.OrdinalIgnoreCase);
     readonly Panel _serviceHost = new();
     readonly List<Form> _popups = new();
+    readonly Panel _header = new();
+    readonly Label _headerTitle = new();
+    Button _hClose, _hWide, _hReload, _hBrowser, _hCollapse;
+    ServiceDef ActiveSvc => _s.Services.FirstOrDefault(x => x.Id == _s.ActiveId);
     int _scroll;
     readonly Dictionary<string, ServiceButton> _buttons = new();
     readonly Dictionary<string, int> _unread = new();
@@ -106,6 +110,8 @@ public class SidebarForm : Form
         _grip.MouseUp += (_, _) => { if (_dragging) { _dragging = false; _grip.Capture = false; _s.Save(); } };
 
         _content.BackColor = Color.FromArgb(0x0B, 0x14, 0x1A);
+        BuildHeader();
+        _content.Controls.Add(_header);
         Controls.Add(_content);
         Controls.Add(_grip);
         Controls.Add(_strip);
@@ -125,6 +131,57 @@ public class SidebarForm : Form
         Deactivate += (_, _) => { if (_expanded && !_s.Pinned && _s.AutoCollapse) _collapseTimer.Start(); };
         SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
         _expanded = _firstRun;
+    }
+
+    // ---------- Kopfzeile über dem offenen Dienst ----------
+    void BuildHeader()
+    {
+        _header.Dock = DockStyle.Top;
+        _header.BackColor = StripBack;
+        _headerTitle.ForeColor = Color.Gainsboro;
+        _headerTitle.AutoSize = false;
+        _headerTitle.TextAlign = ContentAlignment.MiddleLeft;
+        _headerTitle.Dock = DockStyle.Fill;
+        _headerTitle.Padding = new Padding(8, 0, 0, 0);
+        _headerTitle.Font = new Font("Segoe UI", 9.5f);
+        _hClose = GlyphButton("\uE711", "Schließen (Anwendung beenden, Icon bleibt)", (_, _) => CloseService(_s.ActiveId));
+        _hCollapse = GlyphButton("\uE76C", "Einklappen (läuft weiter)", (_, _) => { _expanded = false; DoLayout(); });
+        _hWide = GlyphButton("\uE740", "Vollbild an/aus", (_, _) => ToggleWide());
+        _hReload = GlyphButton("\uE72C", "Neu laden", (_, _) => ReloadService(_s.ActiveId));
+        _hBrowser = GlyphButton("\uE8A7", "Im Browser öffnen", (_, _) => { if (ActiveSvc is ServiceDef a) OpenExternal(a.Url); });
+        _hClose.FlatAppearance.MouseOverBackColor = Color.FromArgb(0xC4, 0x2B, 0x1C);
+        // Dock=Right: zuletzt hinzugefügt steht ganz links
+        foreach (var b in new[] { _hClose, _hCollapse, _hWide, _hReload, _hBrowser }) { b.Dock = DockStyle.Right; _header.Controls.Add(b); }
+        _header.Controls.Add(_headerTitle);
+        _headerTitle.BringToFront();
+    }
+
+    void UpdateHeader()
+    {
+        var a = ActiveSvc;
+        _headerTitle.Text = a?.Name ?? "";
+        bool wide = a?.Wide == true;
+        _hWide.Text = wide ? "\uE73F" : "\uE740";
+        _tip.SetToolTip(_hWide, wide ? "Vollbild aus (schmale Leiste)" : "Vollbild");
+    }
+
+    void ToggleWide()
+    {
+        if (ActiveSvc is not ServiceDef a) return;
+        a.Wide = !(a.Wide == true);
+        _s.Save();
+        UpdateHeader();
+        DoLayout();
+    }
+
+    // Beendet die Anwendung (gibt Speicher frei). Icon bleibt, Klick startet sie neu.
+    void CloseService(string id)
+    {
+        if (_views.Remove(id, out var wv)) wv.Dispose();
+        if (_buttons.TryGetValue(id, out var b)) { b.Loaded = false; b.Invalidate(); }
+        SetUnread(id, 0);
+        _expanded = false;
+        DoLayout();
     }
 
     // ---------- Fensterstil: kein Alt-Tab-Eintrag ----------
@@ -186,8 +243,10 @@ public class SidebarForm : Form
 
     async Task InitView(ServiceDef svc)
     {
+        if (_buttons.TryGetValue(svc.Id, out var lb)) { lb.Loaded = true; lb.Invalidate(); }
         var wv = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = _content.BackColor };
         _content.Controls.Add(wv);
+        _header.SendToBack(); // Kopfzeile zuerst andocken (oben), WebViews füllen den Rest
         _views[svc.Id] = wv;
         _ = wv.Handle; // Handle sofort anlegen, auch wenn verdeckt
 
@@ -406,6 +465,9 @@ public class SidebarForm : Form
         _s.ActiveId = id;
         var svcDef = _s.Services.FirstOrDefault(x => x.Id == id);
         if (svcDef != null && !_views.ContainsKey(id)) _ = LoadAndShow(svcDef);
+        if (_buttons.TryGetValue(id, out var lb)) lb.Loaded = true;
+        UpdateHeader();
+        DoLayout();
         if (_views.TryGetValue(id, out var wv)) wv.BringToFront();
         if (_buttons.TryGetValue(id, out var ab)) EnsureButtonVisible(ab);
         foreach (var (bid, b) in _buttons) { b.Active = bid == id; b.Invalidate(); }
@@ -495,13 +557,21 @@ public class SidebarForm : Form
         try
         {
             var scr = TargetScreen();
-            int strip = (int)(48 * S), grip = (int)(5 * S), panel = (int)(_s.PanelWidth * S);
+            bool wide = _expanded && ActiveSvc?.Wide == true;
+            int strip = (int)(48 * S), grip = wide ? 0 : (int)(5 * S), panel = (int)(_s.PanelWidth * S);
             int total = _expanded ? strip + grip + panel : strip;
-            int reserve = _expanded && _s.Pinned ? total : strip;
+            int reserve = _expanded && _s.Pinned && !wide ? total : strip;
 
             Rectangle area;
             if (_appBarOn) area = AppBar.Reserve(Handle, scr.Bounds, DockRight, reserve);
             else area = scr.WorkingArea;
+            if (wide)
+            {
+                // ganze Arbeitsfläche (Taskleiste bleibt frei), Icon-Leiste bleibt am Rand
+                var wa = scr.WorkingArea;
+                total = DockRight ? area.Right - wa.Left : wa.Right - area.Left;
+                panel = total - strip;
+            }
             int x = DockRight ? area.Right - total : area.Left;
             Bounds = new Rectangle(x, area.Top, total, area.Height);
 
@@ -518,7 +588,11 @@ public class SidebarForm : Form
                 _content.SetBounds(strip, 0, _expanded ? panel : 0, h);
                 _grip.SetBounds(strip + (_expanded ? panel : 0), 0, _expanded ? grip : 0, h);
             }
-            _grip.Visible = _content.Visible = _expanded;
+            _content.Visible = _expanded;
+            _grip.Visible = _expanded && !wide;
+            _header.Height = (int)(30 * S);
+            foreach (var hb in new[] { _hClose, _hCollapse, _hWide, _hReload, _hBrowser }) hb.Width = (int)(36 * S);
+            UpdateHeader();
 
             int btn = (int)(40 * S);
             _serviceHost.SetBounds(0, 0, strip, h - 2 * btn - (int)(8 * S));
@@ -545,6 +619,7 @@ public class SidebarForm : Form
                 _glyphFont = new Font("Segoe MDL2 Assets", 16 * S, GraphicsUnit.Pixel);
                 _glyphFontDpi = DeviceDpi;
                 _pinBtn.Font = _moreBtn.Font = _glyphFont;
+                foreach (var hb in new[] { _hClose, _hCollapse, _hWide, _hReload, _hBrowser }) hb.Font = _glyphFont;
             }
         }
         finally { _inLayout = false; }
@@ -707,6 +782,7 @@ public class SidebarForm : Form
                 Id = ToolCatalog.IdFor(it.Url), Name = it.Name, Url = it.Url, Group = "v3d", Profile = "v3d",
                 Letter = ToolCatalog.Abbrev(it.Name), Color = ToolCatalog.ColorFor(it.Category),
             };
+            svc.Wide = AppSettings.DefaultWide(svc);
             _s.Services.Add(svc);
             AddButton(svc);
         }
@@ -786,6 +862,8 @@ public class SidebarForm : Form
             {
                 var m = new ContextMenuStrip();
                 m.Items.Add("Neu laden", null, (_, _) => ReloadService(svc.Id));
+                if (_views.ContainsKey(svc.Id)) m.Items.Add("Schließen", null, (_, _) => CloseService(svc.Id));
+                m.Items.Add(Check("Im Vollbild öffnen", svc.Wide == true, () => { svc.Wide = !(svc.Wide == true); _s.Save(); UpdateHeader(); DoLayout(); }));
                 m.Items.Add("Im Browser öffnen", null, (_, _) => OpenExternal(svc.Url));
                 if (_s.Services.Count > 1) m.Items.Add("Aus Leiste entfernen", null, (_, _) => RemoveService(svc));
                 m.Show(b, e.Location);
@@ -804,6 +882,7 @@ public class SidebarForm : Form
         public bool Active;
         public int Unread;
         public bool SeparatorAbove;
+        public bool Loaded;
         bool _hover;
 
         public ServiceButton(ServiceDef svc)
@@ -839,6 +918,9 @@ public class SidebarForm : Form
                 if (square) using (var rp = Rounded(r, 7 * s)) g.FillPath(br, rp);
                 else g.FillEllipse(br, r);
             }
+            if (Loaded && _svc.Group == "v3d")
+                using (var dot = new SolidBrush(Color.FromArgb(0x25, 0xD3, 0x66)))
+                    g.FillEllipse(dot, Width - 9 * s, Height / 2f - 2.5f * s, 5 * s, 5 * s);
             if (SeparatorAbove)
                 using (var sp = new Pen(Color.FromArgb(0x3B, 0x4A, 0x54), 1))
                     g.DrawLine(sp, 10 * s, 0, Width - 10 * s, 0);

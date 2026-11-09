@@ -10,7 +10,8 @@ public class ServiceDef
     public string Letter { get; set; }
     public string Color { get; set; } = "#25D366";
     public string Group { get; set; }      // "v3d" = V3D Tool (eckiges Icon, lädt erst beim ersten Klick)
-    public string Profile { get; set; }    // gemeinsamer Profilordner; leer = eigener Ordner je Dienst
+    public string Profile { get; set; }
+    public bool? Wide { get; set; }        // Vollbild: Dienst füllt beim Öffnen den ganzen Bildschirm    // gemeinsamer Profilordner; leer = eigener Ordner je Dienst
     public string ProfileDir => Path.Combine(AppSettings.BaseDir, "profiles", string.IsNullOrEmpty(Profile) ? Id : Profile);
 }
 
@@ -26,6 +27,10 @@ public class AppSettings
     public string ScreenDevice { get; set; } = "";       // leer = Hauptbildschirm
     public string ActiveId { get; set; } = "privat";
     public List<ServiceDef> Services { get; set; } = new();
+
+    /// CAD-artige Tools brauchen Platz: standardmäßig Vollbild.
+    public static bool DefaultWide(ServiceDef x) =>
+        x.Group == "v3d" && System.Text.RegularExpressions.Regex.IsMatch(x.Name ?? "", @"\bCAD\b|\bCAM\b|Kids|Slicer");
 
     public static string BaseDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WaSidebar");
@@ -47,6 +52,7 @@ public class AppSettings
             };
         }
         s.PanelWidth = Math.Clamp(s.PanelWidth, 300, 1400);
+        foreach (var x in s.Services) x.Wide ??= DefaultWide(x);
         return s;
     }
 
