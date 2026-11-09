@@ -34,7 +34,7 @@ await pg.evaluate((b64) => {
 await pg.waitForTimeout(1200);
 await pg.evaluate(() => { _stlHelperOk = true; _stlHelperVer = 12; if (!_stlFiles.length) _stlFiles.push({ name: 'Halter.3mf', path: 'Projekte/Halter.3mf', lib: true, size: 1, mtime: Date.now() }); _stlFiles.forEach(f => f.lib = true); _stlRenderGrid(); });
 const pfadVorher = await pg.evaluate(() => _stlFiles[0].path);
-const knopf = await pg.$('#stllib-grid button[onclick="_dcbOeffnen(0)"]');
+const knopf = await pg.$('#stllib-grid .dcb-gross');
 ok('🩺-Knopf an der 3MF-Kachel', !!knopf);
 if (knopf) await knopf.click(); else await pg.evaluate(() => _dcbOeffnen(0));
 await pg.waitForSelector('#dcb-modal', { state: 'visible' });

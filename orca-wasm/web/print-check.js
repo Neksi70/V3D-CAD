@@ -87,6 +87,7 @@ export const LABELS = {
   sparse_infill_line_width: ['Breite der Linie › Füllung (Sparse infill)', 'Prozess › Qualität › Breite der Linie'],
   top_surface_line_width: ['Breite der Linie › Oberfläche (Top surface)', 'Prozess › Qualität › Breite der Linie'],
   enable_support: ['Stützstrukturen aktivieren (Enable support)', 'Prozess › Stützen'],
+  support_on_build_plate_only: ['Nur auf Druckplatte (On build plate only)', 'Prozess › Stützen'],
   support_type: ['Stützen › Typ (Support type)', 'Prozess › Stützen › Typ'],
   brim_type: ['Randtyp (Brim type)', 'Prozess › Sonstige › Umrandung'],
   brim_width: ['Randbreite (Brim width)', 'Prozess › Sonstige › Umrandung'],
@@ -507,6 +508,9 @@ export function analyzeMesh(pos, index, { name = '', maxThickSamples = 6000 } = 
   const bb = [minX, minY, minZ, maxX, maxY, maxZ];
   const grid = buildGrid(vx, vy, vz, corner, nT, area, bb);
   const freeFrac = new Float32Array(nT);
+  // Überhang über dem eigenen Modell: Stützen müssten AUF dem Modell stehen – mit „Nur auf
+  // Druckplatte“ bekommt so eine Stelle gar keine Stütze (Bambu: „Nicht unterstützte Überhänge“)
+  let overModelArea = 0; const overModelPts = [];
   let budget = 60000;
   for (let t = 0; t < nT; t++) {
     const tilt = downTilt[t];
@@ -523,7 +527,13 @@ export function analyzeMesh(pos, index, { name = '', maxThickSamples = 6000 } = 
         const px = vx[a] + u * (vx[b] - vx[a]) + v * (vx[c] - vx[a]);
         const py = vy[a] + u * (vy[b] - vy[a]) + v * (vy[c] - vy[a]);
         const pz = vz[a] + u * (vz[b] - vz[a]) + v * (vz[c] - vz[a]);
-        if (!restsOn(grid, px, py, pz, t, minZ, corner, vx, vy, vz, nz)) free++;
+        if (!restsOn(grid, px, py, pz, t, minZ, corner, vx, vy, vz, nz)) {
+          free++;
+          if (tilt < 45 && modelBelow(grid, px, py, pz, t, minZ, corner, vx, vy, vz)) {
+            overModelArea += area[t] / k;
+            if (overModelPts.length < 20 && (overModelPts.length === 0 || overModelArea > overModelPts.length * 15)) overModelPts.push([px, py, pz]);
+          }
+        }
       }
       fr = free / k;
     }
@@ -612,7 +622,7 @@ export function analyzeMesh(pos, index, { name = '', maxThickSamples = 6000 } = 
     area: areaTot, volume: Math.abs(vol), contact,
     contactSize: contact > 0 ? [cMaxX - cMinX, cMaxY - cMinY] : [0, 0],
     upArea, gentleUp, downHist: Array.from(downHist), bridges: bridges.slice(0, 20), overhangs: overhangs.slice(0, 20),
-    islands, islandPts, openEdges, nonManifold, thick,
+    islands, islandPts, openEdges, nonManifold, thick, overModelArea, overModelPts,
     triClass: flag,   // je Eingabe-Dreieck: 1 = freier Überhang < 45°, 2 = freie waagerechte Unterseite
   };
 }
@@ -672,6 +682,25 @@ function restsOn(G, px, py, pz, self, minZ, corner, vx, vy, vz, nz) {
   }
   if (bestT < 0) return false;
   return best <= 0.3 || nz[bestT] < -0.05;
+}
+
+// Trifft der Strahl senkrecht nach unten das eigene Modell (statt der Druckplatte)?
+function modelBelow(G, px, py, pz, self, minZ, corner, vx, vy, vz) {
+  if (pz - minZ <= 0.5) return false;
+  const ox = px, oy = py, oz = pz - 1e-4;
+  const X = G.ci(ox, G.bb[0], G.GX), Y = G.ci(oy, G.bb[1], G.GY);
+  const id = ++G.stampId;
+  for (let z = G.ci(oz, G.bb[2], G.GZ); z >= 0; z--) {
+    const cell = (X * G.GY + Y) * G.GZ + z;
+    for (let i = G.start[cell]; i < G.start[cell + 1]; i++) {
+      const u = G.list[i];
+      if (u === self || G.stamp[u] === id) continue;
+      G.stamp[u] = id;
+      const d = rayTri(ox, oy, oz, 0, 0, -1, corner, u, vx, vy, vz);
+      if (d > 0.3 && oz - d - minZ > 0.3) return true;   // Modellfläche über der Platte getroffen
+    }
+  }
+  return false;
 }
 
 // Liegt der Punkt auf einem Dreieck, das tiefer hinunterreicht?
@@ -1030,6 +1059,16 @@ export function checkSettings(cfg, ctx = {}) {
       add(LEVEL.INFO, 'Stützen', 'stuetzen_aus', 'Stützen kannst du dir sparen',
         'Das Modell hat keine schwebenden Stellen und keine nennenswerten Überhänge. Ohne Stützen: schneller, weniger Material, sauberere Unterseite.',
         [{ key: 'enable_support', value: '0' }]);
+    }
+    // Stützen an, aber „Nur auf Druckplatte“: Überhänge über dem Modell bleiben ohne Stütze
+    // (Volker 9.11., Piston Skull: Bambu warnte „7 Überhangbereiche … nicht unterstützt“)
+    const ueberModell = models.reduce((s, m) => s + (m.overModelArea || 0), 0);
+    if (supportOn && cfgBool(cfg, 'support_on_build_plate_only') && ueberModell > 15) {
+      const omLoc = models.findIndex(m => m.overModelPts && m.overModelPts.length);
+      add(LEVEL.WARN, 'Stützen', 'nur_platte', 'Überhänge über dem Modell bekommen keine Stütze',
+        `${de(ueberModell / 100, 1)} cm² Überhang liegen über dem eigenen Modell, nicht über der Druckplatte. Mit „Nur auf Druckplatte“ dürfen Stützen dort nicht stehen – die Stellen werden ins Leere gedruckt. ` +
+        'Ausschalten: Baum-Stützen setzen dann auch auf dem Modell auf (kleine Abdrücke, meist leicht zu entfernen).',
+        [{ key: 'support_on_build_plate_only', value: '0' }], omLoc >= 0 ? { m: omLoc, pts: models[omLoc].overModelPts.slice(0, 8) } : null);
     }
     if (ohArea > 100 && has(cfg, 'enable_overhang_speed') && !cfgBool(cfg, 'enable_overhang_speed'))
       add(LEVEL.INFO, 'Qualität', 'ohspeed', 'Überhänge werden zu schnell gedruckt',
