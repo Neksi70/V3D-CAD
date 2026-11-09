@@ -2,6 +2,8 @@
 // ~10k Dreiecke) hing an OCCT bis zur 600-s-Notbremse — Balken bei 93 %.
 // Nachgestellt mit M12 (22k Dreiecke): OCCT 133 s. Muss über Manifold laufen,
 // darf den Server nicht anfragen und muss ein echtes Loch liefern.
+// Seit 9.11.2026 (v1.18.347, Volker): mehrere Körper bleiben beim Abziehen getrennt —
+// Scheibe und Mutter sind danach zwei Teile, BEIDE mit Loch (verbinden mit „Vereinen“).
 import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
 const PORT = 8847;
@@ -35,18 +37,18 @@ const info = await page.evaluate(vol => {
 }, vol);
 const t0 = Date.now();
 await page.evaluate(() => subtractHoles());
-await page.waitForFunction(() => objects.length === 1, null, { timeout: 30000 }).catch(() => {});
+await page.waitForFunction(() => !objects.some(o => o.userData.isHole) && objects.length === 2, null, { timeout: 30000 }).catch(() => {});
 const ms = Date.now() - t0;
 const r = await page.evaluate(() => {
-  const o = objects[0]; const bb = new THREE.Box3().setFromObject(o);
-  // Achse der Bohrung muss frei sein: Strahl von oben trifft im Kern (r 0,4 mm) nichts
+  const bb = new THREE.Box3(); objects.forEach(o => bb.expandByObject(o));
+  // Achse der Bohrung muss in BEIDEN Teilen frei sein: Strahl von oben trifft im Kern (r 0,4 mm) nichts
   const rc = new THREE.Raycaster(new THREE.Vector3(0.04, 10, 0), new THREE.Vector3(0, -1, 0));
-  return { n: objects.length, v: _vol(o), hits: rc.intersectObject(o, true).filter(h => h.object.isMesh && !h.object.userData.isEdgeLines).length,
+  return { n: objects.length, v: objects.reduce((a, o) => a + _vol(o), 0), hits: objects.reduce((a, o) => a + rc.intersectObject(o, true).filter(h => h.object.isMesh && !h.object.userData.isEdgeLines).length, 0),
            bb: [bb.min.y, bb.max.y].map(x => +x.toFixed(2)) };
 });
 console.log(JSON.stringify({ ...info, ...r }), 'in', ms, 'ms');
 console.log(logs.filter(l => /subtract|REQ|Manifold/i.test(l)).join('\n'));
-const ok = r.n === 1 && ms < 15000 && r.hits === 0 && r.v > 0 && r.v < info.vDisk + info.vNut
+const ok = r.n === 2 && ms < 15000 && r.hits === 0 && r.v > 0 && r.v < info.vDisk + info.vNut
         && !logs.some(l => l.startsWith('REQ')) && logs.some(l => /Manifold-Schnellweg:/.test(l));
 console.log(ok ? 'OK' : 'FEHLER');
 await browser.close(); srv.kill();

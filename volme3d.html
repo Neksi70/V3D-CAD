@@ -33192,7 +33192,14 @@ async function subtractHoles() {
   _progressCreep(93);   // kriecht während OCCT rechnet; springt am Ende auf 100%
   const ctl = _progressCancelable();
 
-  _doSubtractHoles(solids, holes, ctl)
+  // Mehrere Volumenkörper: JEDER wird einzeln geschnitten und bleibt ein eigenes Teil
+  // (Ralf 9.11.: zwei Gussform-Hälften übereinandergelegt, um die Stiftlöcher durch beide
+  // zu bohren — vorher wurden alle Körper zu EINEM verschmolzen und „Trennen“ fand keine
+  // Trennstelle, weil die Hälften flächig aufeinanderliegen). Volker 9.11.: immer getrennt,
+  // verbinden geht mit „Vereinen“. Jeder Körper bekommt eigene Kopien der Cutter, die ihn
+  // berühren; die Original-Cutter verschwinden am Ende.
+  const lauf = solids.length > 1 ? _subtractJeKoerper(solids, holes, ctl) : _doSubtractHoles(solids, holes, ctl);
+  lauf
     .then(() => _progressDone())
     .catch(err => {
       _progressHide();
@@ -33200,6 +33207,40 @@ async function subtractHoles() {
       console.error('CSG Fehler:', err);
       notify('Abgebrochen — die Teile sind unverändert. Grund: ' + err.message, 'e');
     });
+}
+
+async function _subtractJeKoerper(solids, holes, ctl) {
+  const box = o => { o.updateWorldMatrix(true, true); return new THREE.Box3().setFromObject(o).expandByScalar(1e-4); };
+  const hb = holes.map(box);
+  const paare = solids.map(s => { const sb = box(s); return { s, h: holes.filter((h, i) => hb[i].intersectsBox(sb)) }; }).filter(p => p.h.length);
+  if (!paare.length) return _doSubtractHoles([solids[0]], holes, ctl);   // trifft nichts → bekannte Meldung von dort
+  const kopie = h => {
+    const c = h.clone(); c.geometry = h.geometry.clone();
+    c.userData = { ...h.userData, id: idCtr++ };
+    scene.add(c); objects.push(c); return c;
+  };
+  // Kopien VORHER anlegen: der erste Schnitt verändert nichts an den Originalen
+  const laeufe = paare.map(p => ({ s: p.s, h: p.h.map(kopie) }));
+  const ergebnisse = [];
+  try {
+    for (let i = 0; i < laeufe.length; i++) {
+      if (ctl && ctl.signal.aborted) throw new DOMException('Abziehen abgebrochen', 'AbortError');
+      _progressSet(10 + Math.round(80 * i / laeufe.length), 'Abziehen: Teil ' + (i + 1) + ' von ' + laeufe.length + '…');
+      const vorher = new Set(objects);
+      await _doSubtractHoles([laeufe[i].s], laeufe[i].h, ctl);
+      ergebnisse.push(...objects.filter(o => !vorher.has(o) && !o.userData.isHole));
+    }
+  } catch (e) {
+    // Halb fertig nützt niemandem: Ausgangszustand wiederherstellen (saveUndo lief vorher)
+    if (ergebnisse.length) { try { undo(); } catch (e2) {} }
+    else laeufe.forEach(l => l.h.forEach(c => { if (objects.includes(c)) { scene.remove(c); objects = objects.filter(x => x !== c); } }));
+    throw e;
+  }
+  holes.forEach(h => { scene.remove(h); objects = objects.filter(x => x !== h); });
+  const bleiben = ergebnisse.filter(o => objects.includes(o));
+  if (bleiben.length) selectObjs(bleiben);
+  updateTree();
+  if (bleiben.length > 1) notify(bleiben.length + ' Teile einzeln abgezogen — sie bleiben getrennt (verbinden mit „Vereinen“)', 'ok');
 }
 
 async function _doSubtractHoles(solids, holes, ctl) {
@@ -80727,8 +80768,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.346';
+const VOLME3D_VERSION = '1.18.347';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.347', date:'2026-11-09', changes:[
+    ['✂️','<b>Abziehen: mehrere Körper bleiben getrennte Teile.</b> Wer zwei Teile übereinanderlegt, um Löcher durch beide gleichzeitig zu setzen – etwa die Stiftlöcher in beiden Hälften einer Gussform –, bekam nach dem Abziehen bisher EIN verschmolzenes Teil, das sich auch mit „Trennen“ nicht mehr auseinandernehmen ließ. Jetzt wird jeder ausgewählte Körper einzeln geschnitten und bleibt ein eigenes Teil; jeder bekommt die Cutter ab, die ihn berühren. Wer die Teile verbinden will, nimmt dafür „Vereinen“. Rückgängig stellt alles wie vorher her.'],
+  ]},
   { version:'1.18.346', date:'2026-11-09', changes:[
     ['🩴','<b>Neuer Generator: Badelatschen &amp; Clogs zum Anziehen.</b> Gib deine <b>EU-Größe</b> und Weite ein, dann entsteht ein tragbarer Schuh aus TPU. Die Sohle hat ein eingeformtes Fußbett mit Fersenschale und wahlweise ein Wellen- oder Noppen-Profil. Die <b>Badelatsche</b> hat einen breiten Riemen, glatt oder gelocht. Der <b>Clog</b> im Crocs-Stil hat eine geschlossene Zehenkappe mit Lüftungslöchern, eine offene Ferse und einen Fersenriemen. Einstellbar sind Luft am Fuß, Sohlendicke, Wandstärke und Farbe, auf Wunsch gleich als Paar. Zu finden unter Generatoren → <b>Badelatschen &amp; Clogs</b>.'],
   ]},
