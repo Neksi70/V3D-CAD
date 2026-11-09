@@ -24805,6 +24805,7 @@ function buildObjectFromData(data) {
   }
   if (data._lithoFarbTiefe) obj.userData._lithoFarbTiefe = data._lithoFarbTiefe;
   if (data._dispKeep) obj.userData._dispKeep = data._dispKeep;
+  if (data._offsetSumMm) obj.userData._offsetSumMm = data._offsetSumMm;
   if (data.faltenbaumParams && obj.isMesh && obj.geometry && obj.geometry.userData.generator === 'faltenbaum') _ftbMark(obj, obj.geometry, data.faltenbaumParams);
   if (data._origGeoData) obj.userData._origGeo = data._origGeoData.__snap
     ? _geoFromSnap(data._origGeoData.__snap)
@@ -25370,6 +25371,7 @@ function objectToData(o, modus) {
     d.geometry = _cachedGeoJSON(o.geometry, modus);
   }
   if (o.userData._dispKeep) d._dispKeep = o.userData._dispKeep;
+  if (o.userData._offsetSumMm) d._offsetSumMm = o.userData._offsetSumMm;   // Spielraum-Summe übersteht Rückgängig/Speichern
   if (o.userData._texBasisAuf) d._texBasisAuf = true;   // Textur-Basis = Form vor der Textur (Schale, Vereinen …)
   if (o.userData._origGeo) {
     if (o.userData._origGeo === o.geometry) d._origSameAsGeo = true;  // Doppelspeicherung vermeiden
@@ -26654,13 +26656,25 @@ function openOffsetTool() {
       <button id="offset-go" onclick="_offsetFeldAnwenden()" style="background:#F97316;border:none;color:#fff;border-radius:6px;padding:6px 12px;font-weight:700;cursor:pointer">Anwenden</button>
     </div>
     <div style="display:flex;justify-content:space-between;color:#9aa0a8">
-      <span>Bisher: <b id="offset-sum" style="color:#e6e8eb">0 mm</b></span>
+      <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Bisher: <b id="offset-sum" style="color:#e6e8eb">0 mm</b> <span id="offset-wer" style="color:#7d848e"></span></span>
       <span onclick="undo()" style="cursor:pointer;text-decoration:underline">rückgängig</span>
     </div>`;
   document.body.appendChild(p);
   _offsetPanel = p;
-  const sum = o.userData._offsetSumMm || 0, se = document.getElementById('offset-sum');
-  if (se) se.textContent = (sum > 0 ? '+' : '') + String(sum).replace('.', ',') + ' mm';
+  // „Bisher“ folgt dem gewählten Körper — auch nach Rückgängig, Auswahlwechsel oder
+  // Laden (Volker 9.11., Videos: beim Öffnen stand noch der Wert von vorher, z. B.
+  // −0,4, nach dem ersten −0,2 dann −0,2 → sah aus, als rechne es falsch)
+  _offsetBisher();
+  p._uhr = setInterval(_offsetBisher, 300);
+}
+function _offsetBisher() {
+  const se = document.getElementById('offset-sum'), we = document.getElementById('offset-wer'); if (!se) return;
+  const o = getFirst(), ok = o && o.isMesh && o.geometry;
+  const sum = ok ? (o.userData._offsetSumMm || 0) : null;
+  const t = sum == null ? '–' : (sum > 0 ? '+' : '') + String(sum).replace('.', ',') + ' mm';
+  if (se.textContent !== t) se.textContent = t;
+  const w = ok ? '(' + (o.userData.name || 'Körper') + ')' : 'kein Körper gewählt';
+  if (we && we.textContent !== w) we.textContent = w;
 }
 
 // Knöpfe −0,2 … +0,2 WÄHLEN nur den Wert (Feld + Markierung); angewendet wird erst mit
@@ -26687,7 +26701,7 @@ function _offsetFeldAnwenden() {
 }
 
 function _offsetClose() {
-  if (_offsetPanel) { _offsetPanel.remove(); _offsetPanel = null; }
+  if (_offsetPanel) { clearInterval(_offsetPanel._uhr); _offsetPanel.remove(); _offsetPanel = null; }
 }
 
 function _offsetApply(offMm) {
@@ -26699,8 +26713,7 @@ function _offsetApply(offMm) {
   const _preOffset = objectToData(o);   // Zustand vor der Op → Verlauf/Auflösen
   _offsetMeshWorld(o, offMm);
   o.userData._offsetSumMm = Math.round(((o.userData._offsetSumMm || 0) + offMm) * 100) / 100;
-  const sumEl = document.getElementById('offset-sum');
-  if (sumEl) sumEl.textContent = (o.userData._offsetSumMm > 0 ? '+' : '') + String(o.userData._offsetSumMm).replace('.', ',') + ' mm';
+  _offsetBisher();
   if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(o);
   o.userData.opJournal = { op: 'offset', mm: offMm, parts: [_preOffset] };
   updateFP();
@@ -80199,8 +80212,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.343';
+const VOLME3D_VERSION = '1.18.344';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.344', date:'2026-11-09', changes:[
+    ['⧈','<b>Spielraum: „Bisher“ zeigt jetzt immer den richtigen Wert.</b> Nach Rückgängig, Speichern/Öffnen oder Duplizieren stand die Summe wieder auf 0, obwohl der Körper schon aufgeblasen oder geschrumpft war – und das offene Fenster zeigte noch den Wert von vorher. Dann sah es so aus, als rechne der Spielraum falsch (z. B. „−0,4“ und nach −0,2 plötzlich „−0,2“). Jetzt wird die Summe mit dem Körper gespeichert, und „Bisher“ folgt live dem gewählten Körper – mit seinem Namen daneben, ohne Auswahl steht „kein Körper gewählt“.'],
+  ]},
   { version:'1.18.343', date:'2026-11-09', changes:[
     ['📦','<b>Oben rechts nur noch ein Knopf: 📦 Speichern &amp; Drucken.</b> Der zusätzliche „⬇ STL“-Knopf daneben ist weg. STL und alle anderen Formate stehen im Menü darunter, jeweils mit Erklärung.'],
   ]},
