@@ -9,8 +9,8 @@ import { dirname, join } from 'node:path';
 import { computeLayerPlan, build3mf } from '../web/adaptive-layers.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const BIN = join(here, '../OrcaSlicer/build-native/src/wasm/orca_native');
-const RESOURCES = join(here, '../OrcaSlicer/resources');
+const BIN = (process.env.ORCA_NATIVE_BIN || join(here, '../OrcaSlicer/build-native/src/wasm/orca_native'));
+const RESOURCES = process.env.ORCA_RESOURCES || join(here, '../OrcaSlicer/resources');
 const STL = process.argv[2] || join(here, 'adaptive-relief.stl');
 const OUT = process.env.OUT_DIR || '/tmp';
 

@@ -9,8 +9,9 @@ import re
 import sys
 from pathlib import Path
 
-ORCA = Path.home() / 'orca-wasm' / 'OrcaSlicer'
-OUT = Path(__file__).parent / 'params.json'
+# Optional: gen-params.py [ORCA-Quellbaum] [Ausgabe] — z. B. für /slicer2 gegen OrcaSlicer-migrate
+ORCA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.home() / 'orca-wasm' / 'OrcaSlicer'
+OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(__file__).parent / 'params.json'
 
 
 def parse_po(path):

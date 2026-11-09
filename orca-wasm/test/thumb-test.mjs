@@ -8,7 +8,7 @@ const errors = [];
 page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
 page.on('console', m => { if (m.type() === 'error') errors.push('CONSOLE: ' + m.text()); });
 
-await page.goto('http://127.0.0.1:8778/app/', { waitUntil: 'load' });
+await page.goto((process.env.APP_URL || 'http://127.0.0.1:8778/app/'), { waitUntil: 'load' });
 await page.setInputFiles('#file', '/home/v3da/orca-wasm/test/cube20.stl');
 // Warten, bis die Vorschau im Viewer steht (modelGroup hat Kinder)
 try {

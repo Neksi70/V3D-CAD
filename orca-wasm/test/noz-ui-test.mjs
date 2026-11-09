@@ -10,7 +10,7 @@ const errors = [];
 page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
 await page.addInitScript((s) => sessionStorage.setItem('vs-sid', s), sid);
 
-await page.goto('http://127.0.0.1:8778/app/', { waitUntil: 'load' });
+await page.goto((process.env.APP_URL || 'http://127.0.0.1:8778/app/'), { waitUntil: 'load' });
 
 // Drucker geladen + Düsen-Button sichtbar
 await page.waitForFunction(() => !document.getElementById('nozSync').hidden, null, { timeout: 30000 });

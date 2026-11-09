@@ -19,7 +19,7 @@ page.on('request', r => {
 await page.addInitScript((s) => sessionStorage.setItem('vs-sid', s), sid);
 const step = (m) => console.log('▸', m);
 
-await page.goto('http://127.0.0.1:8778/app/', { waitUntil: 'load' });
+await page.goto((process.env.APP_URL || 'http://127.0.0.1:8778/app/'), { waitUntil: 'load' });
 await page.waitForFunction(() => typeof window._paintDebug === 'function', null, { timeout: 60000 });
 step('Seite geladen');
 

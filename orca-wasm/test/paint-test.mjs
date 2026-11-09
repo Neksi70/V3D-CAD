@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const BIN = join(here, '../OrcaSlicer/build-native/src/wasm/orca_native');
-const RESOURCES = join(here, '../OrcaSlicer/resources');
+const BIN = (process.env.ORCA_NATIVE_BIN || join(here, '../OrcaSlicer/build-native/src/wasm/orca_native'));
+const RESOURCES = process.env.ORCA_RESOURCES || join(here, '../OrcaSlicer/resources');
 
 // STL parsen (binär), um das Mal-Mesh im Vorschau-Frame zu bauen:
 // center_and_drop zentriert XY auf die Bettmitte und setzt minZ auf 0 —

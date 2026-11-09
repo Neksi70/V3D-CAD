@@ -10,7 +10,7 @@ const errors = [];
 page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
 await page.addInitScript((s) => sessionStorage.setItem('vs-sid', s), sid);
 
-await page.goto('http://127.0.0.1:8778/app/', { waitUntil: 'load' });
+await page.goto((process.env.APP_URL || 'http://127.0.0.1:8778/app/'), { waitUntil: 'load' });
 
 // Drucker geladen → Gerät-Tab sichtbar, dann öffnen
 await page.waitForFunction(() => !document.getElementById('tabDevice').hidden, null, { timeout: 30000 });
@@ -47,7 +47,7 @@ const page2 = await browser2.newPage({ viewport: { width: 1720, height: 950 } })
 const errs2 = [];
 page2.on('pageerror', e => errs2.push('PAGEERROR: ' + e.message));
 await page2.addInitScript((s) => sessionStorage.setItem('vs-sid', s), sid);
-await page2.goto('http://127.0.0.1:8778/app/', { waitUntil: 'load' });
+await page2.goto((process.env.APP_URL || 'http://127.0.0.1:8778/app/'), { waitUntil: 'load' });
 await page2.waitForFunction(() => !document.getElementById('tabDevice').hidden, null, { timeout: 30000 });
 await page2.click('#tabDevice');
 await page2.waitForTimeout(500);

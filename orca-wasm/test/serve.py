@@ -13,14 +13,20 @@ import re
 import shutil
 import tempfile
 
-PORT = 8778
+# Alle Pfade/Ports per Umgebung überschreibbar — so läuft /slicer2 (OrcaSlicer 2.5) als zweite
+# Instanz neben /slicer. Ohne Variablen: Produktiv-Verhalten wie bisher.
+PORT = int(os.environ.get('SLICER_PORT', 8778))
+BIND = os.environ.get('SLICER_BIND', '0.0.0.0')
 DIR = os.path.dirname(os.path.abspath(__file__))
 # Cache für vorkomprimierte Dateien — bewusst AUSSERHALB des Quellbaums,
 # damit keine .gz-Artefakte neben den Quellen/im Repo landen.
 GZ_CACHE = os.path.join(tempfile.gettempdir(), 'v3d-gzcache')
-WASM_BUILD = os.path.join(DIR, '..', 'OrcaSlicer', 'build-wasm-main', 'src', 'wasm')
-PROFILES = os.path.join(DIR, '..', 'profiles-merged')  # Orca-main + BambuStudio-BBL (H2C/H2D/H2S)
-WEB = os.path.join(DIR, '..', 'web')
+WASM_BUILD = os.environ.get('SLICER_WASM') or os.path.join(DIR, '..', 'OrcaSlicer', 'build-wasm-main', 'src', 'wasm')
+PROFILES = os.environ.get('SLICER_PROFILES') or os.path.join(DIR, '..', 'profiles-merged')  # Orca-main + BambuStudio-BBL (H2C/H2D/H2S)
+WEB = os.environ.get('SLICER_WEB') or os.path.join(DIR, '..', 'web')
+# Git-Repo des ausgelieferten Slicer-Kerns → /source (AGPL); leer = Endpunkt aus
+SOURCE_REPO = os.environ.get('SLICER_SOURCE_REPO', '')
+_SOURCE_LOCK = __import__('threading').Lock()
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -28,7 +34,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # https://…/slicer/app/ (Standard-Port — restriktive Firewalls wie in der
     # VHS blocken :10000). tailscale serve reicht den Pfad-Präfix durch,
     # deshalb hier abstreifen, damit alle Routen unverändert funktionieren.
-    PREFIX = '/slicer'
+    PREFIX = os.environ.get('SLICER_PREFIX', '/slicer')
 
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=DIR, **kw)
@@ -54,6 +60,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Location', pfx + '/app/')
             self.send_header('Content-Length', '0')
             self.end_headers()
+            return
+        # AGPL-3.0 §13: Quelltext des laufenden Slicer-Kerns (OrcaSlicer-Fork) anbieten
+        if SOURCE_REPO and self.path.split('?')[0] == '/source':
+            self._send_source()
             return
         # Vendor-Liste dynamisch (kein echtes Verzeichnis-Listing nötig)
         if self.path.split('?')[0] == '/profiles/index.json':
@@ -119,6 +129,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
         super().do_GET()
+
+    def _send_source(self):
+        """git archive des Fork-HEADs als tar.gz, je Commit einmal erzeugt und gecacht."""
+        import subprocess
+        try:
+            rev = subprocess.check_output(['git', '-C', SOURCE_REPO, 'rev-parse', '--short=12', 'HEAD'],
+                                          text=True).strip()
+            out = os.path.join(GZ_CACHE, f'orcaslicer-v3d-{rev}.tar.gz')
+            with _SOURCE_LOCK:
+                if not os.path.exists(out):
+                    os.makedirs(GZ_CACHE, exist_ok=True)
+                    tmp = out + '.part'
+                    subprocess.check_call(['git', '-C', SOURCE_REPO, 'archive', '--format=tar.gz',
+                                           f'--prefix=orcaslicer-v3d-{rev}/', '-o', tmp, 'HEAD'])
+                    os.replace(tmp, out)
+            size = os.path.getsize(out)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/gzip')
+            self.send_header('Content-Disposition', f'attachment; filename="orcaslicer-v3d-{rev}.tar.gz"')
+            self.send_header('Content-Length', str(size))
+            self.end_headers()
+            with open(out, 'rb') as f:
+                shutil.copyfileobj(f, self.wfile)
+        except (OSError, subprocess.CalledProcessError) as e:
+            self.send_error(500, f'Quelltext nicht verfügbar: {e}')
 
     def do_POST(self):
         self._strip_prefix()
@@ -256,6 +291,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    with http.server.ThreadingHTTPServer(('0.0.0.0', PORT), Handler) as srv:
-        print(f'Orca-WASM-Test: http://0.0.0.0:{PORT}/')
+    with http.server.ThreadingHTTPServer((BIND, PORT), Handler) as srv:
+        print(f'Orca-WASM-Test: http://{BIND}:{PORT}/')
         srv.serve_forever()

@@ -12,7 +12,7 @@ page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
 await page.addInitScript((s) => sessionStorage.setItem('vs-sid', s), sid);
 
 const step = (m) => console.log('▸', m);
-await page.goto('http://127.0.0.1:8778/app/', { waitUntil: 'load' });
+await page.goto((process.env.APP_URL || 'http://127.0.0.1:8778/app/'), { waitUntil: 'load' });
 // Modul lädt oben den WASM-Kern — Handler existieren erst am Modulende
 await page.waitForFunction(() => typeof window._previewDebug === 'function', null, { timeout: 60000 });
 step('Seite geladen (Modul fertig)');

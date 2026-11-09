@@ -20,7 +20,7 @@ await page.addInitScript((entries) => {
 
 const step = (m) => console.log('▸', m);
 const fail = (m) => { console.log('❌', m); process.exitCode = 1; };
-await page.goto('http://127.0.0.1:8778/app/', { waitUntil: 'load' });
+await page.goto((process.env.APP_URL || 'http://127.0.0.1:8778/app/'), { waitUntil: 'load' });
 await page.waitForFunction(() => typeof window._previewDebug === 'function', null, { timeout: 60000 });
 step('Seite geladen (Modul fertig)');
 

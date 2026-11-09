@@ -12,7 +12,7 @@ let fails = 0;
 const ok = (c, m) => { console.log((c ? '  ✓ ' : '  ✗ ') + m); if (!c) fails++; };
 
 await page.addInitScript(() => { try { localStorage.removeItem('vs-presets'); } catch {} });
-await page.goto('http://127.0.0.1:8778/app/', { waitUntil: 'load' });
+await page.goto((process.env.APP_URL || 'http://127.0.0.1:8778/app/'), { waitUntil: 'load' });
 await page.setInputFiles('#file', new URL('./lbracket.stl', import.meta.url).pathname);
 await page.waitForFunction(() => !document.getElementById('tbCheck').disabled, null, { timeout: 120000 });
 await page.waitForFunction(() => typeof window._adaptDebug === 'function' && window._adaptDebug().cfgKeys > 0, null, { timeout: 60000 });
