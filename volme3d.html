@@ -4294,9 +4294,9 @@ Patrick</textarea>
   </div>
 </div>
 
-<div id="map-modal" class="g3dm" onclick="if(event.target===this)_closeMapModal()">
+<div id="map-modal" class="g3dm" onclick="if(event.target===this&&!_mapBusy)_closeMapModal()">
   <div class="g3box" style="width:760px">
-    <div class="g3hdr">🗺️ Karte → 3D (OpenStreetMap-Stadtmodell)<span class="vx" onclick="_closeMapModal()">✕</span></div>
+    <div class="g3hdr">🗺️ Karte → 3D (OpenStreetMap-Stadtmodell)<span class="vx" onclick="_mapAbbrechen();_closeMapModal()">✕</span></div>
     <div class="g3body" style="flex-direction:column">
       <div style="display:flex;gap:6px;padding:10px 14px 6px">
         <input id="map-search" type="text" placeholder="Ort suchen (z.B. Hamburg Rathaus)…" style="flex:1;font-family:var(--font);font-size:13px;border:1.5px solid var(--border);border-radius:9px;padding:8px 10px" onkeydown="if(event.key==='Enter'){event.preventDefault();_mapSearch();}">
@@ -4358,8 +4358,12 @@ Patrick</textarea>
         <div class="g3info" id="map-info">© OpenStreetMap-Mitwirkende. Tipp: kleiner Ausschnitt = schnellere Erzeugung, weniger Objekte. Gebäude grau, Grün grün, Wasser blau, Straßen als eigene Ebene (für Mehrfarb-Druck getrennt).</div>
       </div>
     </div>
-    <div class="g3foot">
-      <button class="btn" onclick="_closeMapModal()">Abbrechen</button>
+    <div class="g3foot" style="align-items:center">
+      <div id="map-status" style="display:none;flex:1;min-width:0;margin-right:6px">
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;color:#333"><span id="map-status-txt" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Lade Kartendaten…</span><span id="map-status-zeit" style="color:#888;font-variant-numeric:tabular-nums">0 s</span></div>
+        <div style="height:7px;background:#e9edf2;border-radius:4px;overflow:hidden;margin-top:5px"><div id="map-status-bar" style="height:100%;width:0;background:#F97316;border-radius:4px;transition:width .4s"></div></div>
+      </div>
+      <button class="btn" id="map-cancel-btn" onclick="_mapAbbrechenOderZu()">Abbrechen</button>
       <button class="btn pri" id="map-create-btn" onclick="_mapCreate()">✓ Modell erzeugen</button>
     </div>
   </div>
@@ -75457,6 +75461,74 @@ function _mapBBox(){
 }
 
 // Overpass abfragen + Modell bauen
+// Ralf 9.11.: nach „Modell erzeugen“ wurde der Knopf blass und es tat sich scheinbar
+// nichts — gemessen: Modellbau 0,2 s, aber der Haupt-Server lehnt oft sofort ab und
+// der Ausweich-Server brauchte 80 s (andere hingen ganz, ohne Zeitlimit). Abbrechen
+// schloss nur das Fenster, die Anfrage lief weiter und sperrte jeden neuen Versuch.
+// Jetzt: Fortschritt mit Sekunden unten im Fenster, Server gestaffelt (antwortet einer
+// 15 s nicht, wird zusätzlich der nächste gefragt, die erste gute Antwort gewinnt),
+// echtes Abbrechen, Gesamtgrenze 3 min, Antworten werden zwischengespeichert.
+const _MAP_SERVER=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.private.coffee/api/interpreter'];
+let _MAP_STAFFEL_MS=15000, _MAP_GRENZE_MS=180000;   // let: Tests verkürzen die Staffel
+let _mapLauf=null;            // { ctrl, t0, uhr, abgebrochen }
+const _mapCache=new Map();    // Overpass-Abfrage → Rohdaten (die letzten 4)
+
+function _mapStatus(txt, anteil){
+  const st=document.getElementById('map-status'); if(!st) return;
+  st.style.display='';
+  if(txt!=null) document.getElementById('map-status-txt').textContent=txt;
+  if(anteil!=null) document.getElementById('map-status-bar').style.width=Math.round(Math.max(0,Math.min(1,anteil))*100)+'%';
+}
+function _mapStatusAus(){ const st=document.getElementById('map-status'); if(st) st.style.display='none'; }
+function _mapAbbrechen(){
+  if(!_mapLauf) return false;
+  _mapLauf.abgebrochen=true;
+  try{ _mapLauf.ctrl.abort(); }catch(e){}
+  return true;
+}
+// Fußknopf: läuft etwas → abbrechen (Fenster bleibt offen für den nächsten Versuch), sonst schließen
+function _mapAbbrechenOderZu(){ if(!_mapAbbrechen()) _closeMapModal(); }
+
+// Eine Abfrage an mehrere Server, gestaffelt; Rückgabe JSON oder Fehler.
+async function _mapOverpass(query, lauf){
+  if(_mapCache.has(query)) return _mapCache.get(query);
+  return await new Promise((ok, fail)=>{
+    const n=_MAP_SERVER.length, fehler=[]; let fertig=false, gestartet=0, offen=0, timer=null;
+    const ctrls=[];
+    const ende=(err,data)=>{
+      if(fertig) return; fertig=true; clearTimeout(timer); clearTimeout(grenze);
+      lauf.ctrl.signal.removeEventListener('abort', aufAbbruch);
+      ctrls.forEach(c=>{ try{ c.abort(); }catch(e){} });
+      err ? fail(err) : ok(data);
+    };
+    const aufAbbruch=()=>ende(Object.assign(new Error('abgebrochen'),{abgebrochen:true}));
+    lauf.ctrl.signal.addEventListener('abort', aufAbbruch);
+    const grenze=setTimeout(()=>ende(new Error('keine Antwort nach '+Math.round(_MAP_GRENZE_MS/60000)+' Minuten')), _MAP_GRENZE_MS);
+    const naechster=()=>{
+      clearTimeout(timer);
+      if(fertig || gestartet>=n) { if(!fertig && offen===0) ende(new Error(fehler.join(', ')||'Server nicht erreichbar')); return; }
+      const k=gestartet++, c=new AbortController(); ctrls.push(c); offen++;
+      lauf.server=gestartet;
+      fetch(_MAP_SERVER[k],{method:'POST',signal:c.signal,headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(query)})
+        .then(async res=>{
+          if(!res.ok) throw new Error('HTTP '+res.status);
+          const data=await res.json();
+          if(data && data.remark && /runtime error|timed out|out of memory/i.test(data.remark) && !(data.elements||[]).length) throw new Error('Server-Zeitlimit');
+          _mapCache.set(query, data); if(_mapCache.size>4) _mapCache.delete(_mapCache.keys().next().value);
+          ende(null, data);
+        })
+        .catch(e=>{
+          offen--;
+          if(fertig || c.signal.aborted) return;
+          fehler.push('Server '+(k+1)+': '+(e.message||'Netzwerkfehler'));
+          naechster();                                   // Absage → sofort den nächsten fragen
+        });
+      if(gestartet<n) timer=setTimeout(naechster, _MAP_STAFFEL_MS);   // zu langsam → zusätzlich den nächsten
+    };
+    naechster();
+  });
+}
+
 async function _mapCreate(){
   if(typeof L==='undefined' || !_mapObj){ notify('Karte nicht bereit','e'); return; }
   if(_mapBusy){ return; }
@@ -75464,8 +75536,20 @@ async function _mapCreate(){
   const wantGreen=!document.getElementById('map-green')||document.getElementById('map-green').checked;
   const wantWater=!document.getElementById('map-water')||document.getElementById('map-water').checked;
   const wantRoads=!document.getElementById('map-roads')||document.getElementById('map-roads').checked;
-  _mapBusy=true; _mapSpinner(true,'Lade Kartendaten…');
-  const btn=document.getElementById('map-create-btn'); if(btn) btn.disabled=true;
+  const btn=document.getElementById('map-create-btn');
+  const lauf=_mapLauf={ ctrl:new AbortController(), t0:performance.now(), abgebrochen:false, server:1, schritt:'daten' };
+  _mapBusy=true;
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Wird erzeugt…'; }
+  const sek=()=>Math.round((performance.now()-lauf.t0)/1000);
+  const zeichne=()=>{
+    const t=sek(); document.getElementById('map-status-zeit').textContent=t+' s';
+    if(lauf.schritt==='daten'){
+      // Wartezeit auf den Server ist unbekannt: Balken nähert sich 70 % an
+      _mapStatus('Lade Kartendaten von OpenStreetMap'+(lauf.server>1?' (auch Ausweich-Server '+(lauf.server-1)+')':'')+'…'+(t>=20?' Server sind gerade langsam – du kannst abbrechen.':''), 0.05+0.65*(1-Math.exp(-t/40)));
+    }
+  };
+  _mapStatus('Lade Kartendaten von OpenStreetMap…', 0.03); document.getElementById('map-status-zeit').textContent='0 s';
+  lauf.uhr=setInterval(zeichne, 500);
   try{
     const bbox=bb.s.toFixed(6)+','+bb.w.toFixed(6)+','+bb.n.toFixed(6)+','+bb.e.toFixed(6);
     let q='way["building"]('+bbox+');relation["building"]('+bbox+');';
@@ -75482,38 +75566,36 @@ async function _mapCreate(){
     if(wantRoads){
       q+='way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|motorway_link|trunk_link|primary_link|secondary_link"]('+bbox+');';
     }
-    const query='[out:json][timeout:30];('+q+');out geom;';
-    // Mehrere Overpass-Server nacheinander probieren (der Haupt-Server ist oft überlastet → 504/429)
-    const endpoints=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.private.coffee/api/interpreter'];
-    let data=null, lastErr='';
-    for(let i=0;i<endpoints.length;i++){
-      try{
-        if(i>0) _mapSpinner(true,'Server überlastet — versuche Ausweich-Server…');
-        const res=await fetch(endpoints[i],{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(query)});
-        if(!res.ok){ lastErr='HTTP '+res.status; continue; }
-        data=await res.json(); break;
-      }catch(e){ lastErr=e.message||'Netzwerkfehler'; }
-    }
-    if(!data) throw new Error('Overpass-Server nicht erreichbar ('+lastErr+')');
+    const query='[out:json][timeout:90];('+q+');out geom;';
+    const data=await _mapOverpass(query, lauf);
     const parsed=_mapParseOverpass(data);
     const buildings=parsed.buildings, greens=parsed.greens, waters=parsed.waters, roads=parsed.roads;
-    if(!buildings.length && !greens.length && !waters.length && !roads.length){ notify('Keine Kartendaten in diesem Ausschnitt gefunden','w'); _mapBusy=false; _mapSpinner(false); if(btn)btn.disabled=false; return; }
-    if(buildings.length>4000){ notify('Sehr viele Gebäude ('+buildings.length+') — Ausschnitt verkleinern','w'); _mapBusy=false; _mapSpinner(false); if(btn)btn.disabled=false; return; }
+    if(!buildings.length && !greens.length && !waters.length && !roads.length) throw Object.assign(new Error('Keine Kartendaten in diesem Ausschnitt gefunden'),{hinweis:true});
+    if(buildings.length>4000) throw Object.assign(new Error('Sehr viele Gebäude ('+buildings.length+') — Ausschnitt verkleinern'),{hinweis:true});
     let terrain=null;
     if(document.getElementById('map-terrain') && document.getElementById('map-terrain').checked){
-      _mapSpinner(true,'Lade Höhendaten…');
-      try{ terrain=await _mapFetchTerrain(bb, 20); }
-      catch(e){ notify('Höhendaten nicht verfügbar ('+e.message+') — Modell ohne Relief','w'); terrain=null; }
+      lauf.schritt='hoehe'; _mapStatus('Lade Höhendaten…', 0.75);
+      try{ terrain=await _mapFetchTerrain(bb, 20, lauf.ctrl.signal); }
+      catch(e){ if(lauf.abgebrochen) throw Object.assign(new Error('abgebrochen'),{abgebrochen:true}); notify('Höhendaten nicht verfügbar ('+e.message+') — Modell ohne Relief','w'); terrain=null; }
+      if(lauf.abgebrochen) throw Object.assign(new Error('abgebrochen'),{abgebrochen:true});
     }
-    _mapSpinner(true,'Baue Modell ('+buildings.length+' Gebäude, '+greens.length+' Grün, '+waters.length+' Wasser, '+roads.length+' Straßen)…');
-    await new Promise(r=>setTimeout(r,30)); // UI-Repaint
+    lauf.schritt='bau';
+    _mapStatus('Baue Modell ('+buildings.length+' Gebäude, '+greens.length+' Grün, '+waters.length+' Wasser, '+roads.length+' Straßen)…', 0.9);
+    await new Promise(r=>setTimeout(r,60)); // UI-Repaint
+    if(lauf.abgebrochen) throw Object.assign(new Error('abgebrochen'),{abgebrochen:true});
     _mapBuildModel(parsed, bb, terrain);
-    notify(buildings.length+' Gebäude'+(greens.length?', '+greens.length+' Grün':'')+(waters.length?', '+waters.length+' Wasser':'')+(roads.length?', '+roads.length+' Straßen':'')+' erzeugt','ok');
+    _mapStatus(null, 1);
+    notify(buildings.length+' Gebäude'+(greens.length?', '+greens.length+' Grün':'')+(waters.length?', '+waters.length+' Wasser':'')+(roads.length?', '+roads.length+' Straßen':'')+' erzeugt ('+sek()+' s)','ok');
     _closeMapModal();
   }catch(e){
-    notify('Gebäude laden fehlgeschlagen: '+e.message+' (Overpass evtl. überlastet — später nochmal)','e');
+    if(e.abgebrochen || lauf.abgebrochen) notify('Karte abgebrochen — du kannst es gleich nochmal versuchen','w');
+    else if(e.hinweis) notify(e.message,'w');
+    else notify('Kartendaten laden fehlgeschlagen: '+e.message+' (OpenStreetMap-Server überlastet — später nochmal oder kleineren Ausschnitt wählen)','e');
   }
-  _mapBusy=false; _mapSpinner(false); if(btn) btn.disabled=false;
+  clearInterval(lauf.uhr);
+  if(_mapLauf===lauf) _mapLauf=null;
+  _mapBusy=false; _mapSpinner(false); _mapStatusAus();
+  if(btn){ btn.disabled=false; btn.textContent='✓ Modell erzeugen'; }
 }
 
 // Overpass-JSON → { buildings:[{ring,height}], greens:[{ring}], waters:[{ring}], roads:[{line,width}] }
@@ -75675,7 +75757,7 @@ function _clipPolyConvex(pts, clipPoly){
 }
 
 // Höhen-Grid (N×N) über die Ausschnitts-bbox von Open-Meteo holen → {N, heights[], bb}
-async function _mapFetchTerrain(bb, N){
+async function _mapFetchTerrain(bb, N, signal){
   const lats=[], lons=[];
   for(let j=0;j<N;j++) for(let i=0;i<N;i++){
     lats.push(bb.s + (bb.n-bb.s)*j/(N-1));
@@ -75685,7 +75767,7 @@ async function _mapFetchTerrain(bb, N){
   for(let off=0; off<lats.length; off+=BATCH){
     const la=lats.slice(off,off+BATCH), lo=lons.slice(off,off+BATCH);
     const url='https://api.open-meteo.com/v1/elevation?latitude='+la.map(v=>v.toFixed(5)).join(',')+'&longitude='+lo.map(v=>v.toFixed(5)).join(',');
-    const res=await fetch(url);
+    const res=await fetch(url, signal?{signal}:undefined);
     if(!res.ok) throw new Error('HTTP '+res.status);
     const d=await res.json(); const e=d.elevation||[];
     if(!e.length) throw new Error('leer');
@@ -78798,7 +78880,7 @@ async function _dcbOeffnen(idx) {
   if (!_proPruefen('druckcheck')) return;
   let buf;
   try { buf = await _stlReadBytes(f); } catch (e) { notify('Datei nicht lesbar: ' + (e.message || e), 'w'); return; }
-  _dcb.f = f; _dcb.buf = buf;
+  _dcb.f = f; _dcb.buf = buf; _dcb.sig = null;
   let el = document.getElementById('dcb-modal');
   if (!el) {
     el = document.createElement('div'); el.id = 'dcb-modal';
@@ -78828,19 +78910,49 @@ async function _dcbNachricht(e) {
     fr.contentWindow.postMessage({ typ: 'v3d-dc-oeffnen', name: _dcb.f.name, bytes: kopie }, location.origin, [kopie]);
   }
   if (e.data.typ === 'v3d-dc-schliessen') { _dcbZu(); return; }
+  if (e.data.typ === 'v3d-dc-slicer') {
+    try { const t = await _dcbImSlicer(_dcb.f, e.data.bytes); _dcbAntwort(true, t); }
+    catch (err) { _dcbAntwort(false, String(err.message || err)); notify('Im Slicer öffnen ging nicht: ' + (err.message || err), 'w'); }
+    return;
+  }
   if (e.data.typ === 'v3d-dc-speichern') {
     try { const t = await _dcbSpeichern(_dcb.f, e.data.bytes); _dcbAntwort(true, t); }
     catch (err) { _dcbAntwort(false, String(err.message || err)); notify('Speichern ging nicht: ' + (err.message || err), 'w'); }
   }
 }
+// Verbessertes 3MF speichern und gleich im Desktop-Slicer öffnen (Druck-Helfer /print, wie
+// „🖨 Drucken“ in der Bibliothek). Geslict und an den Drucker geschickt wird im Slicer – ein
+// Projekt-3MF enthält noch keinen G-Code, direkt an den Drucker geht es deshalb nicht.
+async function _dcbImSlicer(f, bytes) {
+  if (!_stlHelperOk) {
+    _downloadBlob(new Blob([bytes], { type: 'model/3mf' }), f.name.replace(/\.3mf$/i, '') + '_verbessert.3mf');
+    return 'Druck-Helfer nicht erreichbar – heruntergeladen, bitte in Bambu Studio öffnen';
+  }
+  const kopie = bytes.slice(0);
+  // schon genau diese Fassung gespeichert („Nur speichern“ davor)? Dann nicht noch einmal –
+  // der Helfer legte sonst eine zweite Kopie im Ordner „Original“ an
+  const sig = _dcbSig(kopie);
+  const gespeichert = _dcb.sig === sig ? 'schon gespeichert' : await _dcbSpeichern(f, bytes);
+  const slicer = (document.getElementById('stllib-slicer') || {}).value || '';
+  const res = f.lib
+    ? await fetch(STLLIB_HELPER + '/print', { method: 'POST', headers: { 'X-LibFile': encodeURIComponent(f.path), 'X-Slicer': slicer }, body: '' })
+    : await fetch(STLLIB_HELPER + '/print', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(f.name), 'X-Slicer': slicer }, body: kopie });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || !j.ok) throw new Error('Gespeichert, aber Öffnen im Slicer ging nicht: ' + (j.error || ('HTTP ' + res.status)));
+  notify('🖨 „' + f.name + '“ in ' + (j.slicer || 'Slicer') + ' geöffnet – dort neu slicen und drucken', 'ok');
+  return 'In ' + (j.slicer || 'Slicer') + ' geöffnet' + (/heruntergeladen/i.test(gespeichert) ? '' : ' (gespeichert, Original im Ordner „Original“)');
+}
+
 // Ordner-Handle zu einem relativen Pfad (Unterordner der freigegebenen Bibliothek)
 async function _dcbOrdner(pfad, anlegen) {
   let d = _stlDirHandle; if (!d) return null;
   for (const teil of pfad.split('/').slice(0, -1).filter(Boolean)) d = await d.getDirectoryHandle(teil, { create: !!anlegen });
   return d;
 }
+function _dcbSig(ab) { const u = new Uint8Array(ab); let h = 2166136261; for (let i = 0; i < u.length; i += 7) h = Math.imul(h ^ u[i], 16777619); return u.length + ':' + (h >>> 0); }
 async function _dcbSpeichern(f, bytes) {
   if (!f) throw new Error('keine Datei');
+  const sig = _dcbSig(bytes);
   if (f.lib) {   // Helfer-Bibliothek: ersetzen, Original wandert nach „Original“
     if (!_stlHelperOk) throw new Error('Druck-Helfer nicht erreichbar');
     if (_stlHelperVer < 12) throw new Error('Druck-Helfer zu alt – bitte oben „Helfer aktualisieren“');
@@ -78859,7 +78971,7 @@ async function _dcbSpeichern(f, bytes) {
     return 'Heruntergeladen (die Bibliothek ist nicht beschreibbar)';
   }
   f.size = bytes.byteLength; f.mtime = Date.now(); f._thumbUrl = null; f._thumbDone = false; f._thumbQueued = false; _stlListSig = '';
-  _dcb.buf = bytes.slice(0);
+  _dcb.buf = bytes.slice(0); _dcb.sig = sig;
   if (document.getElementById('stllib-modal').classList.contains('show')) _stlRenderGrid();
   notify('🩺 „' + f.name + '“ verbessert gespeichert – das Original liegt im Ordner „Original“', 'ok');
   return 'In der Bibliothek gespeichert (Original im Ordner „Original“)';
@@ -79993,8 +80105,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.338';
+const VOLME3D_VERSION = '1.18.339';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.339', date:'2026-11-09', changes:[
+    ['🖨','<b>Druck prüfen: „Speichern &amp; im Slicer öffnen“.</b> Nach dem Verbessern speichert ein Klick die Datei in der Bibliothek (das Original kommt in den Ordner „Original“) und öffnet sie über den Druck-Helfer gleich in deinem Slicer, z. B. Bambu Studio. Dort neu slicen und an den Drucker schicken. Direkt an den Drucker geht es nicht, weil ein Projekt-3MF noch keinen G-Code enthält. Ohne Druck-Helfer wird die Datei heruntergeladen.'],
+  ]},
   { version:'1.18.338', date:'2026-11-09', changes:[
     ['📦','<b>Speichern &amp; Drucken übersichtlicher.</b> Oben rechts stehen jetzt zwei deutliche Knöpfe statt eines kleinen Pfeils. <b>⬇ STL</b> lädt wie bisher direkt herunter. <b>📦 Speichern &amp; Drucken</b> öffnet alle Wege, geordnet nach <i>Herunterladen</i>, <i>Drucken</i> und <i>Bild &amp; Fertigung</i>, mit einem Satz dazu, wofür jeder gedacht ist. Auch im Symbol-Modus bleibt die Schrift stehen.'],
   ]},

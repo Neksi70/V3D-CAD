@@ -24,6 +24,7 @@ await pg.evaluate((b64) => {
     if (u.startsWith(STLLIB_HELPER + '/ping')) return new Response(JSON.stringify({ ok: true, version: 12, slicers: [] }));
     if (u.startsWith(STLLIB_HELPER + '/list')) return new Response(JSON.stringify({ ok: true, files: [{ name: 'Halter.3mf', path: 'Projekte/Halter.3mf', size: u8.length, mtime: Date.now() }] }));
     if (u.startsWith(STLLIB_HELPER + '/file')) return new Response(u8.slice(0));
+    if (u.startsWith(STLLIB_HELPER + '/print')) { window.__print = { datei: decodeURIComponent(o.headers['X-LibFile'] || o.headers['X-Filename'] || ''), slicer: o.headers['X-Slicer'] }; return new Response(JSON.stringify({ ok: true, slicer: 'Bambu Studio' })); }
     if (u.startsWith(STLLIB_HELPER + '/replace')) { window.__ersetzt = { pfad: decodeURIComponent(o.headers['X-LibFile']), bytes: new Uint8Array(o.body) }; return new Response(JSON.stringify({ ok: true })); }
     return fe(url, o);
   };
@@ -57,6 +58,15 @@ ok('verbessertes 3MF: Temperatur gesenkt, Modell drin', parseFloat([].concat(neu
 await frame.waitForFunction(() => /Bibliothek gespeichert/.test(document.getElementById('oBib').textContent), null, { timeout: 5000 }).catch(() => {});
 const rueck = await frame.evaluate(() => document.getElementById('oBib').textContent);
 ok('Rückmeldung in der Prüfseite', /✓ In der Bibliothek gespeichert/.test(rueck), rueck);
+// 🖨 Speichern & im Slicer öffnen: erst ersetzen, dann über den Helfer im Slicer öffnen
+await pg.evaluate(() => { window.__ersetzt = null; window.__print = null; });
+ok('Knopf „Speichern & im Slicer öffnen“ vorhanden', !!(await frame.$('#oSlc')));
+await frame.click('#oSlc');
+await pg.waitForFunction(() => !!window.__print, null, { timeout: 15000 }).catch(() => {});
+const sl = await pg.evaluate(() => ({ ersetzt: !!window.__ersetzt, print: window.__print }));
+ok('Slicer-Weg nach „Nur speichern“: kein zweites Speichern, /print mit derselben Datei', !sl.ersetzt && sl.print && sl.print.datei === pfadVorher, sl);
+await frame.waitForFunction(() => /Bambu Studio geöffnet/.test(document.getElementById('oSlc').textContent), null, { timeout: 5000 }).catch(() => {});
+ok('Rückmeldung „In Bambu Studio geöffnet“', /In Bambu Studio geöffnet/.test(await frame.evaluate(() => document.getElementById('oSlc').textContent)), await frame.evaluate(() => document.getElementById('oSlc').textContent));
 await pg.screenshot({ path: '/tmp/dcb_bibliothek.png' });
 await frame.click('body', { position: { x: 5, y: 5 } }).catch(() => {}); await pg.keyboard.press('Escape'); await pg.waitForTimeout(300);
 ok('Esc schließt', await pg.evaluate(() => document.getElementById('dcb-modal').style.display === 'none'));

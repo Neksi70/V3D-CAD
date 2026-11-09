@@ -590,11 +590,11 @@ $('magic').onclick = () => {
     <ul>${rows.map(x => `<li>${esc(x.label)}: <span style="color:var(--dim);text-decoration:line-through">${esc(PC.valueText(x.key, x.from) || '–')}</span> → <b>${esc(PC.valueText(x.key, x.to))}</b><span class="wh">${esc(x.where)}</span></li>`).join('')}</ul>
     ${cur.slicer && can3mf ? slProfileHtml(rows) : ''}
     <div class="dl">${cur.slicer && can3mf ? `<button class="sl" id="oSl">✔ In ${esc(cur.slicer.name)} übernehmen</button>` : ''}
-      ${EINGEBETTET && can3mf ? `<button class="primary" id="oBib">💾 In der Bibliothek speichern</button>` : ''}
+      ${EINGEBETTET && can3mf ? `<button class="primary" id="oSlc">🖨 Speichern &amp; im Slicer öffnen</button><button id="oBib">💾 Nur in der Bibliothek speichern</button>` : ''}
       ${can3mf ? `<button class="${cur.slicer || EINGEBETTET ? '' : 'primary'}" id="o3mf">📦 Verbessertes 3MF herunterladen</button>` : ''}
       <div class="row"><button id="oCopy">📋 Liste kopieren</button><button id="oTxt">⬇ Als Text</button></div></div>
     <div class="slRes" id="slRes" hidden></div>
-    <div class="hint">${cur.slicer && can3mf ? '👉 Übernehmen schreibt die Werte ins offene Projekt (die alte Fassung wird gesichert) und lädt es im Slicer neu. Häkchen „ins Profil“ legt zusätzlich ein eigenes Profil an.' : can3mf ? '👉 In Bambu Studio / OrcaSlicer öffnen, <b>neu slicen</b>, drucken – die neuen Werte sind schon eingetragen.'
+    <div class="hint">${EINGEBETTET && can3mf ? '👉 „Im Slicer öffnen“ speichert die verbesserte Datei in der Bibliothek (Original im Ordner „Original“) und öffnet sie in deinem Slicer – dort <b>neu slicen</b> und an den Drucker schicken.' : cur.slicer && can3mf ? '👉 Übernehmen schreibt die Werte ins offene Projekt (die alte Fassung wird gesichert) und lädt es im Slicer neu. Häkchen „ins Profil“ legt zusätzlich ein eigenes Profil an.' : can3mf ? '👉 In Bambu Studio / OrcaSlicer öffnen, <b>neu slicen</b>, drucken – die neuen Werte sind schon eingetragen.'
       : r.source === 'gcode' ? '👉 Ein G-Code enthält kein Modell: die Werte in Bambu Studio / OrcaSlicer ändern (Fundort steht jeweils drunter) und neu slicen.'
       : '👉 Diese Werte in Bambu Studio, OrcaSlicer oder im V3D Slicer einstellen.'}</div>`;
   animateRings(el);
@@ -606,14 +606,19 @@ $('magic').onclick = () => {
     finally { $('o3mf').disabled = false; }
   };
   if (cur.slicer && can3mf) { wireProfileRows(rows); $('oSl').onclick = () => applyToSlicer(fixes, rows); }
-  if (EINGEBETTET && can3mf) $('oBib').onclick = async () => {
-    const b = $('oBib'); b.disabled = true; b.textContent = '⏳ wird gespeichert …';
-    try {
-      const ab = await (await PC.patched3mf(r.zip, r.cfg, fixes)).arrayBuffer();
-      _bibAntwort = (ok, text) => { b.textContent = ok ? '✓ ' + text : '⚠️ ' + text; b.disabled = !!ok; };
-      parent.postMessage({ typ: 'v3d-dc-speichern', name: cur.name, bytes: ab, aenderungen: rows.length }, location.origin, [ab]);
-    } catch (e) { b.textContent = 'Fehler: ' + e.message; b.disabled = false; }
+  // Eingebettet: speichern (und auf Wunsch gleich im Desktop-Slicer öffnen – geslict/gedruckt wird dort)
+  const anV3d = (id, typ, warte) => {
+    const b = $(id); if (!b) return;
+    b.onclick = async () => {
+      b.disabled = true; b.textContent = warte;
+      try {
+        const ab = await (await PC.patched3mf(r.zip, r.cfg, fixes)).arrayBuffer();
+        _bibAntwort = (ok, text) => { b.textContent = ok ? '✓ ' + text : '⚠️ ' + text; b.disabled = !!ok; };
+        parent.postMessage({ typ, name: cur.name, bytes: ab, aenderungen: rows.length }, location.origin, [ab]);
+      } catch (e) { b.textContent = 'Fehler: ' + e.message; b.disabled = false; }
+    };
   };
+  if (EINGEBETTET && can3mf) { anV3d('oSlc', 'v3d-dc-slicer', '⏳ wird gespeichert und geöffnet …'); anV3d('oBib', 'v3d-dc-speichern', '⏳ wird gespeichert …'); }
   $('oCopy').onclick = async () => { try { await navigator.clipboard.writeText(txt()); $('oCopy').textContent = '✓ Kopiert'; } catch { $('oCopy').textContent = 'Kopieren nicht erlaubt'; } };
   $('oTxt').onclick = () => download(new Blob([txt()], { type: 'text/plain;charset=utf-8' }), cur.name.replace(/\.[^.]+$/, '') + '_aenderungen.txt');
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
