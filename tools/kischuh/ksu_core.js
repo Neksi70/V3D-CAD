@@ -17,11 +17,11 @@ function _ksuLeisten(w, p, extra, schacht) {
   const rund = (t, t0, len) => Math.sqrt(Math.max(0, 1 - ((t0 - t) / len) ** 2));   // Viertelkreis-Auslauf
   const sek = [];
   for (let i = 0; i <= nT; i++) {
-    const t = TS[i], x = t * Lf + (i === 0 ? -e : i === nT ? e : 0);
+    const t = TS[i], ende = i === 0 || i === nT, x = t * Lf + (i === 0 ? -e * 0.85 : i === nT ? e * 0.85 : 0);   // Enden nur teilweise vorziehen, sonst „Nase“
     let bf = _ksuKurve(_KSU_BREITE, t);
     if (t < 0.12) bf = 0.64 * rund(t, 0.12, 0.12) * 0.97 + 0.02;                  // runde Ferse
     if (t > 0.87) bf = _ksuKurve(_KSU_BREITE, 0.87) * rund(t, 0.87, -0.13) * 0.95 + 0.04;   // runde Zehenkappe
-    const b = bf * W / 2 + e, h = _ksuKurve(_KSU_HOEHE, t) * Lf * (t > 0.95 ? 0.6 + 0.4 * rund(t, 0.95, -0.05) : 1) + e;
+    const b = bf * W / 2 + (ende ? e * 0.5 : e), h = _ksuKurve(_KSU_HOEHE, t) * Lf * (t > 0.87 ? 0.25 + 0.75 * rund(t, 0.87, -0.13) : 1) + (ende ? e * 0.5 : e);   // Zehenkappe auch in der Höhe rund
     const pts = [];
     for (let k = 0; k <= nA; k++) {                                         // Querschnitt: flache Sohle, runde Flanken und Rist
       const a = Math.PI * k / nA, y = -Math.cos(a) * b, s = Math.sin(a);
