@@ -39,6 +39,7 @@ public class SidebarForm : Form
     readonly Dictionary<string, WebView2> _views = new();
     readonly Dictionary<string, Task<CoreWebView2Environment>> _envs = new(StringComparer.OrdinalIgnoreCase);
     readonly Panel _serviceHost = new();
+    readonly List<Form> _popups = new();
     int _scroll;
     readonly Dictionary<string, ServiceButton> _buttons = new();
     readonly Dictionary<string, int> _unread = new();
@@ -205,8 +206,7 @@ public class SidebarForm : Form
                 e.SavesInProfile = true;
             }
         };
-        // Links aus Chats im normalen Browser oeffnen
-        c.NewWindowRequested += (_, e) => { e.Handled = true; OpenExternal(e.Uri); };
+        c.NewWindowRequested += OnNewWindowRequested;
         c.DocumentTitleChanged += (_, _) => SetUnread(svc.Id, ParseUnread(c.DocumentTitle));
         c.NotificationReceived += (_, e) =>
         {
@@ -221,6 +221,57 @@ public class SidebarForm : Form
             try { c.Reload(); } catch { }
         };
         c.Navigate(svc.Url);
+    }
+
+    // Popups: Anmeldefenster (z. B. Google-Login von V3D CAD) bleiben in der App, damit die
+    // Seite das Ergebnis zurückbekommt. Normale Links (z. B. aus Chats) gehen in den Browser.
+    async void OnNewWindowRequested(object sender, CoreWebView2NewWindowRequestedEventArgs e)
+    {
+        if (!OpenInApp(e)) { e.Handled = true; OpenExternal(e.Uri); return; }
+        var opener = (CoreWebView2)sender;
+        var deferral = e.GetDeferral();
+        try
+        {
+            var f = e.WindowFeatures;
+            int w = f.HasSize ? (int)(Math.Max(f.Width, 360) * S) : (int)(520 * S);
+            int h = f.HasSize ? (int)(Math.Max(f.Height, 420) * S) : (int)(680 * S);
+            var popup = new Form
+            {
+                Text = "Anmelden …", Icon = _baseIcon, StartPosition = FormStartPosition.CenterScreen,
+                ClientSize = new Size(w, h), TopMost = true, ShowInTaskbar = true,
+            };
+            var wv = new WebView2 { Dock = DockStyle.Fill };
+            popup.Controls.Add(wv);
+            popup.Show();
+            await wv.EnsureCoreWebView2Async(opener.Environment);
+            var pc = wv.CoreWebView2;
+            pc.WindowCloseRequested += (_, _) => popup.Close();
+            pc.DocumentTitleChanged += (_, _) => { if (!string.IsNullOrWhiteSpace(pc.DocumentTitle)) popup.Text = pc.DocumentTitle; };
+            pc.NewWindowRequested += OnNewWindowRequested;
+            _popups.Add(popup);
+            popup.FormClosed += (_, _) => { _popups.Remove(popup); wv.Dispose(); };
+            e.NewWindow = pc;
+            e.Handled = true;
+        }
+        catch { e.Handled = true; OpenExternal(e.Uri); }
+        finally { deferral.Complete(); }
+    }
+
+    static readonly string[] AuthHosts =
+    {
+        "accounts.google.com", "firebaseapp.com", "web.app", "login.microsoftonline.com",
+        "login.live.com", "appleid.apple.com", "github.com", "facebook.com",
+    };
+
+    static bool OpenInApp(CoreWebView2NewWindowRequestedEventArgs e)
+    {
+        // Fenster mit Größenangabe = window.open-Popup einer Seite (Login, Zahlung …)
+        if (e.WindowFeatures.HasSize || e.WindowFeatures.HasPosition) return true;
+        if (string.IsNullOrEmpty(e.Uri) || e.Uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase)) return true;
+        if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out var u)) return false;
+        if (u.AbsolutePath.StartsWith("/__/auth/", StringComparison.OrdinalIgnoreCase)) return true;
+        return AuthHosts.Any(h => u.Host.Equals(h, StringComparison.OrdinalIgnoreCase)
+                                  || u.Host.EndsWith("." + h, StringComparison.OrdinalIgnoreCase));
     }
 
     static int ParseUnread(string title)
@@ -374,7 +425,7 @@ public class SidebarForm : Form
         var fg = GetForegroundWindow();
         if (fg == IntPtr.Zero) return false;
         var root = GetAncestor(fg, 2 /* GA_ROOT */);
-        return fg == Handle || root == Handle || OwnedForms.Any(f => f.Handle == fg);
+        return fg == Handle || root == Handle || OwnedForms.Any(f => f.Handle == fg) || _popups.Any(f => f.Handle == root);
     }
 
     Screen TargetScreen() =>
