@@ -428,6 +428,10 @@
               title="Düsenstatus und geladenes AMS-Filament vom gewählten Drucker übernehmen">🔄 Sync</button>
     </div>
     <small id="nozHint" style="opacity:.65"></small>
+    <div id="imexRow" hidden style="margin-top:.4rem">
+      <label title="imex_parallel_mode — OrcaSlicer 2.5: mehrere unabhängige Druckköpfe drucken parallel">IDEX/IQEX-Druckmodus</label>
+      <select id="imexMode"></select>
+    </div>
   </div>
   <div>
     <label>Druckprofil</label>
@@ -437,6 +441,26 @@
     <label>Filament</label>
     <select id="filament"></select>
     <div id="filChips" style="display:none;gap:.4rem;flex-wrap:wrap;margin-top:.4rem"></div>
+    <div id="mixRow" hidden style="margin-top:.4rem">
+      <button id="mixToggle" class="secondary" style="padding:.25rem .55rem"
+              title="OrcaSlicer 2.5: zwei Filamente schichtweise abwechselnd drucken, das Auge mischt die Farbe">🎨 Mischfilament hinzufügen</button>
+      <div id="mixBox" hidden style="margin-top:.4rem;padding:.5rem;border:1px solid #8884;border-radius:6px;display:grid;gap:.35rem">
+        <div style="display:flex;gap:.4rem;align-items:center">
+          <select id="mixA" style="flex:1;min-width:0"></select><span>+</span><select id="mixB" style="flex:1;min-width:0"></select>
+        </div>
+        <label style="display:flex;align-items:center;gap:.5rem;font-size:.85rem">
+          <span id="mixRatioTxt" style="min-width:7.5em">50 % / 50 %</span>
+          <input type="range" id="mixRatio" min="5" max="95" step="5" value="50" style="flex:1">
+          <span id="mixSwatch" style="width:18px;height:18px;border-radius:4px;border:1px solid #0003"></span>
+        </label>
+        <label style="display:flex;align-items:center;gap:.4rem;font-size:.85rem" title="filament_mixed_gradient: Verhältnis läuft von unten nach oben vom eingestellten Wert zum Gegenwert">
+          <input type="checkbox" id="mixGradient" style="width:auto"> Verlauf des Mischfilaments (Z)</label>
+        <div style="display:flex;gap:.4rem">
+          <button id="mixAdd">Mischfilament anlegen</button>
+          <button id="mixDel" class="secondary" title="Letztes Mischfilament entfernen">Letztes entfernen</button>
+        </div>
+      </div>
+    </div>
     <small id="amsHint" style="opacity:.65"></small>
   </div>
 
@@ -1415,7 +1439,12 @@ async function openSendDialog(p) {
     <div class="sdRow" style="opacity:.85">🖨️ ${p.name}${nozLine ? ' — Düsen: ' + nozLine : ''}</div>
     <div class="sdRow" style="opacity:.85">⏱ ${time || '–'} &nbsp;·&nbsp; 🧵 ${gram ? gram + ' g' : '–'}</div>
     ${trays.length ? `<div style="margin-top:.5rem;font-weight:600">Filament → AMS-Slot</div>`
-      + fils.map((f, i) => `<div class="sdRow">
+      + fils.map((f, i) => f.mixed
+        ? `<div class="sdRow" style="opacity:.75">
+          <span class="nozChip" style="width:14px;height:14px;background:${mixSwatchCss(f)}"></span>
+          <span style="min-width:6rem">${i + 1} · ${f.label}</span>
+          <select class="sdTray" disabled><option value="-1" selected>druckt aus Slot ${f.mixed.a} + ${f.mixed.b}</option></select></div>`
+        : `<div class="sdRow">
           <span class="nozChip" style="width:14px;height:14px;background:${f.color || '#ccc'}"></span>
           <span style="min-width:6rem">${i + 1} · ${f.label || f.type || f.name.slice(0, 20)}</span>
           <select class="sdTray" data-ftype="${f.type || ''}">${options(best(f))}</select>
@@ -1463,7 +1492,7 @@ $('sendGo').onclick = () => {
     flowCali: $('sdFlow').checked,
     nozzleOffsetCali: $('sdNozOff').checked,
     // Extern-Spulen (254/255) brauchen kein AMS
-    ...(mapping.length ? { amsMapping: mapping, useAms: mapping.some(g => g < 254) } : {}),
+    ...(mapping.length ? { amsMapping: mapping, useAms: mapping.some(g => g >= 0 && g < 254) } : {}),
   });
 };
 
@@ -1490,7 +1519,15 @@ async function vendorIndex(v) {
   if (!vendorCache.has(v)) vendorCache.set(v, await (await fetch(`${ROOTP}/profiles/${v}.json`)).json());
   return vendorCache.get(v);
 }
+// Hersteller ohne eigene Filamentprofile (18 Stück, u. a. Vivedino mit den IDEX/IQEX-Xplorern)
+// nutzen wie in Orca die OrcaFilamentLibrary — ihre Presets sind für alle Drucker freigegeben.
+const FIL_LIBRARY = 'OrcaFilamentLibrary';
+const filamentIdx = async (idx) => (idx.filament_list || []).length ? idx : await vendorIndex(FIL_LIBRARY);
 async function profileChain(vendor, listKey, presetName) {
+  if (listKey === 'filament_list'
+      && !((await vendorIndex(vendor)).filament_list || []).some(e => e.name === presetName)
+      && ((await vendorIndex(FIL_LIBRARY)).filament_list || []).some(e => e.name === presetName))
+    vendor = FIL_LIBRARY;
   const idx = await vendorIndex(vendor);
   const byName = new Map(idx[listKey].map(e => [e.name, e.sub_path]));
   const chain = []; let name = presetName;
@@ -1552,6 +1589,7 @@ function effVal(key) {
 }
 
 async function refreshSettings() {
+  renderImexMode().catch(() => {});
   try {
     await ensureCompatiblePresets();
     const c = await loadChains();
@@ -1565,6 +1603,24 @@ async function refreshSettings() {
   renderSettings();
   // Adaptiv-Panel hängt an Schichthöhe/Min/Max des Profils → neu zeichnen
   try { if (activeTool === 'adapt' || activeTool === 'check') renderToolPanel(); } catch {}
+}
+
+// IDEX/IQEX (OrcaSlicer 2.5): nur bei Maschinen mit is_imex; Modi kommen aus dem Druckerprofil
+const IMEX_LABELS = { primary: 'Primär (ein Kopf)', copy: 'Kopieren (alle Köpfe gleich)', mirror: 'Spiegeln' };
+// Liest direkt die Maschinenkette — unabhängig davon, ob Prozess/Filament schon zum Drucker passen.
+async function renderImexMode() {
+  let mc = {};
+  try {
+    for (const j of await profileChain($('vendor').value, 'machine_list', $('machine').value))
+      Object.assign(mc, JSON.parse(j));
+  } catch { mc = {}; }
+  const on = ['1', 'true'].includes(String(mc.is_imex ?? '0'));
+  const names = [].concat(mc.imex_mode_names || []).filter(Boolean);
+  $('imexRow').hidden = !on || names.length < 2;
+  if ($('imexRow').hidden) return;
+  const cur = names.includes($('imexMode').value) ? $('imexMode').value : (mc.imex_parallel_mode || names[0]);
+  $('imexMode').innerHTML = names.map(n =>
+    `<option value="${n}"${n === cur ? ' selected' : ''}>${IMEX_LABELS[n] || n}</option>`).join('');
 }
 
 function fieldHtml(key) {
@@ -1745,7 +1801,7 @@ async function fillPresets(saved = {}) {
   const fill = (listId, entries) => $(listId).innerHTML =
     entries.map(e => `<option value="${e.name.replaceAll('"', '&quot;')}">${e.name}</option>`).join('');
   fillProcessOptions(idx);            // #process = <select>, nach gewähltem Drucker gefiltert
-  fillFilamentOptions(idx, saved.filament || machines.find(x => x.name === $('machine').value)?.defFilament);
+  fillFilamentOptions(await filamentIdx(idx), saved.filament || machines.find(x => x.name === $('machine').value)?.defFilament);
   applyMachineDefaults(saved);
 }
 
@@ -1834,7 +1890,8 @@ async function ensureCompatiblePresets() {
       const score = (n) => (n.includes(short) ? 4 : 0)
         + (field === 'process' ? (/standard/i.test(n) ? 2 : 0) : (/\bPLA\b/.test(n) ? 2 : 0))
         + (/base\s*$/i.test(n) || /benchy|draft|extra/i.test(n) ? -3 : 0);
-      const names = idx[listKey].map(e => e.name).sort((a, b) => score(b) - score(a));
+      const names = (listKey === 'filament_list' ? (await filamentIdx(idx)) : idx)[listKey]
+        .map(e => e.name).sort((a, b) => score(b) - score(a));
       for (const n of names) {
         if (await presetCompatible(listKey, n, machine)) { repl = n; break; }
       }
@@ -1882,7 +1939,7 @@ async function applyMachineBed() {
   } catch { /* unbekannter Drucker → Bett unverändert */ }
   requestPreview();
 }
-$('machine').onchange = async () => { chainsCache = null; const idx = await vendorIndex($('vendor').value); fillProcessOptions(idx); fillFilamentOptions(idx, machines.find(x => x.name === $('machine').value)?.defFilament); applyMachineDefaults(); await applyMachineBed(); await refreshSettings(); savePresets(); };
+$('machine').onchange = async () => { chainsCache = null; const idx = await vendorIndex($('vendor').value); fillProcessOptions(idx); fillFilamentOptions(await filamentIdx(idx), machines.find(x => x.name === $('machine').value)?.defFilament); applyMachineDefaults(); await applyMachineBed(); await refreshSettings(); savePresets(); };
 
 // ---------- AMS → Filament-Sync ----------
 // Tray-Daten (Typ, Bambu-Produktname, Filament-ID, Farbe) kommen über die Brücke;
@@ -1969,14 +2026,114 @@ let projectFilaments = [];   // [{ name: Preset, color: '#hex', type, label }]
 
 function renderFilChips() {
   const div = $('filChips');
+  renderMixBox();
   if (projectFilaments.length <= 1) { div.style.display = 'none'; div.innerHTML = ''; return; }
   div.style.display = 'flex';
   div.innerHTML = projectFilaments.map((f, i) =>
-    `<button class="secondary" data-i="${i}" title="${f.name} — Taste ${i + 1} weist dem markierten Objekt zu"
+    `<button class="secondary" data-i="${i}" title="${f.mixed ? mixTitle(f) : f.name} — Taste ${i + 1} weist dem markierten Objekt zu"
              style="display:flex;align-items:center;gap:.35rem;padding:.25rem .55rem">
-       <b>${i + 1}</b><span style="width:13px;height:13px;border-radius:4px;background:${f.color};border:1px solid #0003"></span>
+       <b>${i + 1}</b><span style="width:13px;height:13px;border-radius:4px;background:${mixSwatchCss(f)};border:1px solid #0003"></span>
        ${f.label || f.type || ''}</button>`).join('');
-  div.querySelectorAll('button').forEach(b => b.onclick = () => assignFilament(+b.dataset.i + 1));
+  div.querySelectorAll('button').forEach(b => b.onclick = () => {
+    const f = projectFilaments[+b.dataset.i];
+    if (f?.mixed) assignToFilament(+b.dataset.i + 1, f.color, `Mischfilament ${+b.dataset.i + 1}`);
+    else assignFilament(+b.dataset.i + 1);
+  });
+}
+
+// ---------- Mischfilament (OrcaSlicer 2.5: filament_is_mixed) ----------
+// Ein Mischslot ist KEINE Spule: der Kern druckt ihn als Unterschichten seiner zwei Komponenten
+// (filament_mixed_components 1-basiert, filament_mixed_sublayer_ratios Anteile), das Auge mischt.
+// Eintrag in projectFilaments: { name (Preset der 1. Komponente), color (Mischfarbe), type:'Mix',
+//   label, mixed: { a, b, ratio (Anteil a, 0..1), gradient } } — a/b = 1-basierte Slot-Nummern.
+const mixHex = (h1, h2, r) => {
+  const c = (h, k) => parseInt(h.replace('#', '').slice(k, k + 2), 16) || 0;
+  return '#' + [0, 2, 4].map(k => Math.round(c(h1, k) * r + c(h2, k) * (1 - r)).toString(16).padStart(2, '0')).join('');
+};
+const mixSwatchCss = (f) => f.mixed
+  ? `linear-gradient(135deg, ${projectFilaments[f.mixed.a - 1]?.color || f.color} 0 ${Math.round(f.mixed.ratio * 100)}%, ${projectFilaments[f.mixed.b - 1]?.color || f.color} 0)`
+  : f.color;
+const mixTitle = (f) => `Mischfilament: ${Math.round(f.mixed.ratio * 100)} % Slot ${f.mixed.a} + ${Math.round((1 - f.mixed.ratio) * 100)} % Slot ${f.mixed.b}${f.mixed.gradient ? ' (Verlauf in Z)' : ''}`;
+
+function renderMixBox() {
+  const phys = projectFilaments.map((f, i) => ({ f, no: i + 1 })).filter(x => !x.f.mixed);
+  $('mixRow').hidden = phys.length < 2;
+  if (phys.length < 2) { $('mixBox').hidden = true; return; }
+  const opt = (sel) => phys.map(({ f, no }) =>
+    `<option value="${no}"${no === sel ? ' selected' : ''}>${no} · ${f.label || f.type || f.name.slice(0, 18)}</option>`).join('');
+  const a = +$('mixA').value || phys[0].no, b = +$('mixB').value || phys[1].no;
+  $('mixA').innerHTML = opt(phys.some(x => x.no === a) ? a : phys[0].no);
+  $('mixB').innerHTML = opt(phys.some(x => x.no === b) && b !== a ? b : phys.find(x => x.no !== +$('mixA').value).no);
+  updateMixPreview();
+  $('mixDel').disabled = !projectFilaments.some(f => f.mixed);
+}
+function updateMixPreview() {
+  const r = +$('mixRatio').value / 100;
+  const fa = projectFilaments[+$('mixA').value - 1], fb = projectFilaments[+$('mixB').value - 1];
+  $('mixRatioTxt').textContent = `${Math.round(r * 100)} % / ${Math.round((1 - r) * 100)} %`;
+  if (fa && fb) $('mixSwatch').style.background = mixHex(fa.color, fb.color, r);
+}
+$('mixToggle').onclick = () => { $('mixBox').hidden = !$('mixBox').hidden; renderMixBox(); };
+$('mixRatio').oninput = updateMixPreview;
+$('mixA').onchange = $('mixB').onchange = updateMixPreview;
+$('mixAdd').onclick = async () => {
+  const a = +$('mixA').value, b = +$('mixB').value, ratio = +$('mixRatio').value / 100;
+  if (!a || !b || a === b) { $('amsHint').textContent = 'Zwei verschiedene Filamente wählen'; return; }
+  if (projectFilaments.length >= 9) { $('amsHint').textContent = 'Maximal 9 Filamente (Tasten 1–9)'; return; }
+  const fa = projectFilaments[a - 1], fb = projectFilaments[b - 1];
+  projectFilaments.push({ name: fa.name, color: mixHex(fa.color, fb.color, ratio), type: 'Mix',
+    label: `Mix ${a}+${b}`, mixed: { a, b, ratio, gradient: $('mixGradient').checked } });
+  renderFilChips();
+  const no = projectFilaments.length;
+  $('amsHint').textContent = `Mischfilament ${no} angelegt — Objekt markieren und Taste ${no} drücken (oder Chip klicken)`;
+  await refreshSettings();
+};
+$('mixDel').onclick = async () => {
+  const i = projectFilaments.map(f => !!f.mixed).lastIndexOf(true);
+  if (i < 0) return;
+  projectFilaments.splice(i, 1);
+  // Objekte auf dem entfernten Slot zurück auf Filament 1, spätere Indizes nachziehen
+  for (const st of objectStates) {
+    if (st.deleted) continue;
+    if (st.filament === i + 1) { st.filament = 1; st.mesh.material.color.set(projectFilaments[0].color); }
+    else if (st.filament > i + 1) st.filament--;
+  }
+  renderFilChips();
+  await refreshSettings();
+};
+
+// Filament-Index direkt zuweisen (Mischslots haben keinen AMS-/ACE-Slot)
+function assignToFilament(filIdx, color, what) {
+  const targets = selectedSet.size ? [...selectedSet] : [];
+  if (!targets.length) {
+    $('amsHint').textContent = 'Erst Objekt(e) markieren — Klick, Strg+Klick = mehrere, Strg+A = alle';
+    return;
+  }
+  let n = 0;
+  for (const j of targets) {
+    const st = objectStates[j];
+    if (!st || st.deleted) continue;
+    st.filament = filIdx;
+    if (st.paint) paintRefreshColors(st);
+    else st.mesh.material.color.set(color);
+    n++;
+  }
+  $('amsHint').textContent = `${what} → ${n} Objekt${n > 1 ? 'e' : ''}`;
+}
+
+// Profilkette eines Mischslots: Preset der 1. Komponente + Misch-Optionen (beide Kerne kombinieren
+// die Filament-Ketten zu Vektor-Optionen; Nicht-Misch-Slots behalten die Defaults)
+function mixedChainOverride(f) {
+  const r = Math.round(f.mixed.ratio * 100) / 100, q = Math.round((1 - r) * 100) / 100;
+  return JSON.stringify({
+    filament_colour: [f.color],
+    filament_is_mixed: ['1'],
+    filament_mixed_components: [`${f.mixed.a},${f.mixed.b}`],
+    filament_mixed_sublayer_ratios: [`${r},${q}`],
+    filament_mixed_gradient: [f.mixed.gradient ? '1' : '0'],
+    // Verlauf: Anteil der 1. Komponente läuft von r (unten) nach q (oben)
+    filament_mixed_gradient_range: [f.mixed.gradient ? `${r},${q}` : ''],
+  });
 }
 
 function assignFilament(slotNo) {
@@ -4457,7 +4614,9 @@ document.addEventListener('keydown', (e) => {
       if (+e.key <= projectFilaments.length) { paintFil = +e.key; paintClearPreview(); renderToolPanel(); }
       return;
     }
-    if (aceSlots.length) assignFilament(+e.key);
+    const mf = projectFilaments[+e.key - 1];
+    if (mf?.mixed) assignToFilament(+e.key, mf.color, `Mischfilament ${+e.key}`);
+    else if (aceSlots.length) assignFilament(+e.key);
   }
 });
 
@@ -4966,7 +5125,8 @@ $('btnSlice').onclick = async () => {
         let chain;
         try { chain = await profileChain($('vendor').value, 'filament_list', f.name); }
         catch (e) { throw new Error(`Filament ${i + 1} („${f.name}"): ${e.message}`); }
-        chain.push(JSON.stringify({ filament_colour: [f.color] }));   // Slot-Farbe je Filament
+        // Slot-Farbe je Filament; Mischslots zusätzlich mit den 2.5-Misch-Optionen
+        chain.push(f.mixed ? mixedChainOverride(f) : JSON.stringify({ filament_colour: [f.color] }));
         filamentChains.push(chain);
       }
     }
@@ -5027,6 +5187,10 @@ $('btnSlice').onclick = async () => {
       // liefern 0/0. Byte-Diff des hängenden AMS-Lade-Blocks gegen Bambu bestätigt.
       'long_retractions_when_ec = 1',
       'retraction_distances_when_ec = 10',
+      // OrcaSlicer 2.5: Mischslots werden nur mit aktivierter Unterschicht-Aufteilung gemischt
+      ...(multi && projectFilaments.some(f => f.mixed) ? ['enable_mixed_color_sublayer = 1'] : []),
+      // OrcaSlicer 2.5 IDEX/IQEX: gewählter Parallel-Druckmodus (primary/copy/mirror …)
+      ...(!$('imexRow').hidden && $('imexMode').value ? [`imex_parallel_mode = ${$('imexMode').value}`] : []),
       `printer_settings_id = ${$('machine').value}`,
       `print_settings_id = ${$('process').value}`,
       multi ? '' : `filament_settings_id = "${$('filament').value}"`,
