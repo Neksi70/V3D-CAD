@@ -36,6 +36,12 @@ if (fs.existsSync(path.join(__dirname, 'orca-wasm/web/adaptive-layers.js'))) {
 if (fs.existsSync(path.join(__dirname, 'orca-wasm/web/print-check.js'))) {
   require('child_process').execFileSync(process.execPath, [path.join(__dirname, 'tools/bau_druck_kern.mjs')], { stdio: 'inherit' });
 }
+// Die ganze Druckcheck-Seite (Bibliothek → 🩺 Druck prüfen lädt sie als /druckcheck.html).
+// index.html ist ein Bau-Ergebnis und nicht im Git → hier frisch bauen (auch auf netcup).
+if (fs.existsSync(path.join(__dirname, 'v3ddruckcheck/bauen.py'))) {
+  try { require('child_process').execFileSync('python3', [path.join(__dirname, 'v3ddruckcheck/bauen.py')], { stdio: 'inherit' }); }
+  catch (e) { console.warn('WARNUNG: v3ddruckcheck/bauen.py fehlgeschlagen – /druckcheck.html bleibt alt:', e.message); }
+}
 
 const SCRIPT_RE = /<script\b([^>]*)>([\s\S]*?)<\/script>/g;
 

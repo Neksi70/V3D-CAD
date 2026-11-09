@@ -312,6 +312,7 @@
 <script src="three.min.js"></script>
 <script type="module">
 import * as PC from './print-check.js';
+const EINGEBETTET = window.parent !== window && new URLSearchParams(location.search).has('eingebettet');
 const $ = id => document.getElementById(id);
 const esc = t => String(t ?? '').replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
 const de = (v, n = 1) => (Math.round(v * 10 ** n) / 10 ** n).toFixed(n).replace('.', ',');
@@ -368,6 +369,19 @@ $('back').onclick = goStart;
 $('home').onclick = e => { e.preventDefault(); goStart(); };
 window.addEventListener('popstate', () => showScreen(history.state?.screen === 'live' ? 'live' : history.state?.screen === 'result' && cur ? 'result' : 'start', true));
 $('liveBtn').onclick = () => showScreen('live');
+
+// ---------- Eingebettet in V3D CAD (Bibliothek → 🩺 Druck prüfen) ----------
+// V3D CAD öffnet diese Seite im Rahmen (?eingebettet=1), schickt die Datei per postMessage
+// und bekommt das verbesserte 3MF zurück, um es an derselben Stelle zu speichern.
+var _bibAntwort = null;
+window.addEventListener('message', e => {
+  if (e.origin !== location.origin || !e.data) return;
+  if (e.data.typ === 'v3d-dc-oeffnen') openBytes(e.data.name, new Uint8Array(e.data.bytes));
+  if (e.data.typ === 'v3d-dc-gespeichert' && _bibAntwort) _bibAntwort(!!e.data.ok, e.data.text || (e.data.ok ? 'Gespeichert' : 'Nicht gespeichert'));
+});
+if (EINGEBETTET) { document.documentElement.classList.add('eingebettet'); parent.postMessage({ typ: 'v3d-dc-bereit' }, location.origin); }
+// Esc landet bei Fokus im Rahmen hier – an V3D CAD weitergeben (schließt die Prüfung)
+if (EINGEBETTET) document.addEventListener('keydown', e => { if (e.key === 'Escape' && !e.defaultPrevented) parent.postMessage({ typ: 'v3d-dc-schliessen' }, location.origin); });
 
 // Beispiel: Wandhalter (Γ) als Projekt-3MF mit typischen Fehlern (PLA zu heiß, Stützen aus, dünne Oberseite)
 $('demo').onclick = async () => {
@@ -573,7 +587,8 @@ $('magic').onclick = () => {
     <ul>${rows.map(x => `<li>${esc(x.label)}: <span style="color:var(--dim);text-decoration:line-through">${esc(PC.valueText(x.key, x.from) || '–')}</span> → <b>${esc(PC.valueText(x.key, x.to))}</b><span class="wh">${esc(x.where)}</span></li>`).join('')}</ul>
     ${cur.slicer && can3mf ? slProfileHtml(rows) : ''}
     <div class="dl">${cur.slicer && can3mf ? `<button class="sl" id="oSl">✔ In ${esc(cur.slicer.name)} übernehmen</button>` : ''}
-      ${can3mf ? `<button class="${cur.slicer ? '' : 'primary'}" id="o3mf">📦 Verbessertes 3MF herunterladen</button>` : ''}
+      ${EINGEBETTET && can3mf ? `<button class="primary" id="oBib">💾 In der Bibliothek speichern</button>` : ''}
+      ${can3mf ? `<button class="${cur.slicer || EINGEBETTET ? '' : 'primary'}" id="o3mf">📦 Verbessertes 3MF herunterladen</button>` : ''}
       <div class="row"><button id="oCopy">📋 Liste kopieren</button><button id="oTxt">⬇ Als Text</button></div></div>
     <div class="slRes" id="slRes" hidden></div>
     <div class="hint">${cur.slicer && can3mf ? '👉 Übernehmen schreibt die Werte ins offene Projekt (die alte Fassung wird gesichert) und lädt es im Slicer neu. Häkchen „ins Profil“ legt zusätzlich ein eigenes Profil an.' : can3mf ? '👉 In Bambu Studio / OrcaSlicer öffnen, <b>neu slicen</b>, drucken – die neuen Werte sind schon eingetragen.'
@@ -588,6 +603,14 @@ $('magic').onclick = () => {
     finally { $('o3mf').disabled = false; }
   };
   if (cur.slicer && can3mf) { wireProfileRows(rows); $('oSl').onclick = () => applyToSlicer(fixes, rows); }
+  if (EINGEBETTET && can3mf) $('oBib').onclick = async () => {
+    const b = $('oBib'); b.disabled = true; b.textContent = '⏳ wird gespeichert …';
+    try {
+      const ab = await (await PC.patched3mf(r.zip, r.cfg, fixes)).arrayBuffer();
+      _bibAntwort = (ok, text) => { b.textContent = ok ? '✓ ' + text : '⚠️ ' + text; b.disabled = !!ok; };
+      parent.postMessage({ typ: 'v3d-dc-speichern', name: cur.name, bytes: ab, aenderungen: rows.length }, location.origin, [ab]);
+    } catch (e) { b.textContent = 'Fehler: ' + e.message; b.disabled = false; }
+  };
   $('oCopy').onclick = async () => { try { await navigator.clipboard.writeText(txt()); $('oCopy').textContent = '✓ Kopiert'; } catch { $('oCopy').textContent = 'Kopieren nicht erlaubt'; } };
   $('oTxt').onclick = () => download(new Blob([txt()], { type: 'text/plain;charset=utf-8' }), cur.name.replace(/\.[^.]+$/, '') + '_aenderungen.txt');
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });

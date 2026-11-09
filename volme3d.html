@@ -78419,7 +78419,7 @@ function _stlMakeCard(f, grid){
   const star = `<span class="ds-star${isFav?' on':''}" onclick="event.stopPropagation();_stlToggleFav(${idx})" title="Favorit">${isFav?'★':'☆'}</span>`;
   card.innerHTML=`<div class="ds-thumb-wrap">${inner}${chk}${star}${badge}</div>`+
     `<div class="ds-info"><div style="display:flex;align-items:center;gap:2px"><div class="ds-name" id="stlnm-${idx}" title="${_stlEsc(f.path)}"${canEdit?` ondblclick="_stlRenameStart(${idx})"`:''} style="flex:1;min-width:0">${_stlEsc(f.name)}</div>${ren}</div><div class="ds-date">${_stlFmtSize(f.size)} · ${new Date(f.mtime).toLocaleDateString()}</div></div>`+
-    `<div class="ds-acts"><button class="btn" onclick="_stlOpenInScene(${idx})">📥 Öffnen</button><button class="btn pri" onclick="_stlPrint(${idx})" title="Im Slicer öffnen">🖨 Drucken</button>${/\.(stl|3mf|obj)$/i.test(f.name)?`<button class="btn" onclick="_stzOpen(${idx})" title="Mit Zielhöhe drucken: gleichmäßig auf eine Höhe (z. B. 32 mm) oder Prozent skalieren und direkt im Slicer öffnen – die Datei selbst bleibt unverändert">📏</button>`:''}${del}</div>`;
+    `<div class="ds-acts"><button class="btn" onclick="_stlOpenInScene(${idx})">📥 Öffnen</button><button class="btn pri" onclick="_stlPrint(${idx})" title="Im Slicer öffnen">🖨 Drucken</button>${/\.3mf$/i.test(f.name)?`<button class="btn" onclick="_dcbOeffnen(${idx})" title="Druck prüfen: Einstellungen und Modell mit dem V3D Druckcheck prüfen, mit einem Klick verbessern und wieder hier speichern (Original bleibt im Ordner „Original“)">🩺</button>`:''}${/\.(stl|3mf|obj)$/i.test(f.name)?`<button class="btn" onclick="_stzOpen(${idx})" title="Mit Zielhöhe drucken: gleichmäßig auf eine Höhe (z. B. 32 mm) oder Prozent skalieren und direkt im Slicer öffnen – die Datei selbst bleibt unverändert">📏</button>`:''}${del}</div>`;
   grid.appendChild(card);
   const tw=card.querySelector('.ds-thumb-wrap'); f._thumbEl=tw;
   if(!f._thumbUrl && !f._thumbDone){ tw._stlF=f; _stlThumbObs.observe(tw); }
@@ -78718,6 +78718,84 @@ async function _stlPrint(idx){
     else notify('Drucken: '+(j.error||('HTTP '+res.status)),'w');
   }catch(e){ _stlHelperOk=false; _stlUpdateHelperUI(); _stlHelperMissing(); }
 }
+// ═══ 🩺 DRUCK PRÜFEN AUS DER BIBLIOTHEK (_dcb*) ═══════════════════════════════
+// Volker 9.11.: 3MF-Druckdateien (z. B. aus Bambu Studio) direkt in der Bibliothek
+// prüfen, verbessern und an derselben Stelle wieder speichern. Die ganze V3D-Druck-
+// check-Seite (/druckcheck.html, aus ~/v3ddruckcheck/app.html) läuft eingebettet;
+// Datei hin und verbessertes 3MF zurück per postMessage. Gespeichert wird wie beim
+// Vereinfachen: die Datei wird ersetzt, das Original liegt im Ordner „Original“.
+const _dcb = { f: null, el: null };
+async function _dcbOeffnen(idx) {
+  const f = _stlFiles[idx]; if (!f) return;
+  let buf;
+  try { buf = await _stlReadBytes(f); } catch (e) { notify('Datei nicht lesbar: ' + (e.message || e), 'w'); return; }
+  _dcb.f = f; _dcb.buf = buf;
+  let el = document.getElementById('dcb-modal');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'dcb-modal';
+    el.style.cssText = 'position:fixed;inset:0;z-index:9000;background:#fff;display:flex;flex-direction:column';
+    el.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--border);font:600 14px system-ui,sans-serif">'
+      + '<span>🩺 Druck prüfen</span><span id="dcb-name" style="color:var(--dim);font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1"></span>'
+      + '<button class="btn" onclick="_dcbZu()" title="Zurück zur Bibliothek (Esc)">✕ Schließen</button></div>'
+      + '<iframe id="dcb-frame" style="flex:1;border:0;width:100%" title="V3D Druckcheck"></iframe>';
+    document.body.appendChild(el);
+    window.addEventListener('message', _dcbNachricht);
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && _dcb.el && _dcb.el.style.display !== 'none') { e.stopPropagation(); _dcbZu(); } }, true);
+  }
+  _dcb.el = el; el.style.display = 'flex';
+  document.getElementById('dcb-name').textContent = f.name;
+  document.getElementById('dcb-frame').src = 'druckcheck.html?eingebettet=1&t=' + Date.now();
+}
+function _dcbZu() { if (_dcb.el) { _dcb.el.style.display = 'none'; document.getElementById('dcb-frame').src = 'about:blank'; } _dcb.f = null; _dcb.buf = null; }
+function _dcbAntwort(ok, text) {
+  const fr = document.getElementById('dcb-frame');
+  if (fr && fr.contentWindow) fr.contentWindow.postMessage({ typ: 'v3d-dc-gespeichert', ok, text }, location.origin);
+}
+async function _dcbNachricht(e) {
+  const fr = document.getElementById('dcb-frame');
+  if (e.origin !== location.origin || !fr || e.source !== fr.contentWindow || !e.data) return;
+  if (e.data.typ === 'v3d-dc-bereit' && _dcb.buf) {
+    const kopie = _dcb.buf.slice(0);
+    fr.contentWindow.postMessage({ typ: 'v3d-dc-oeffnen', name: _dcb.f.name, bytes: kopie }, location.origin, [kopie]);
+  }
+  if (e.data.typ === 'v3d-dc-schliessen') { _dcbZu(); return; }
+  if (e.data.typ === 'v3d-dc-speichern') {
+    try { const t = await _dcbSpeichern(_dcb.f, e.data.bytes); _dcbAntwort(true, t); }
+    catch (err) { _dcbAntwort(false, String(err.message || err)); notify('Speichern ging nicht: ' + (err.message || err), 'w'); }
+  }
+}
+// Ordner-Handle zu einem relativen Pfad (Unterordner der freigegebenen Bibliothek)
+async function _dcbOrdner(pfad, anlegen) {
+  let d = _stlDirHandle; if (!d) return null;
+  for (const teil of pfad.split('/').slice(0, -1).filter(Boolean)) d = await d.getDirectoryHandle(teil, { create: !!anlegen });
+  return d;
+}
+async function _dcbSpeichern(f, bytes) {
+  if (!f) throw new Error('keine Datei');
+  if (f.lib) {   // Helfer-Bibliothek: ersetzen, Original wandert nach „Original“
+    if (!_stlHelperOk) throw new Error('Druck-Helfer nicht erreichbar');
+    if (_stlHelperVer < 12) throw new Error('Druck-Helfer zu alt – bitte oben „Helfer aktualisieren“');
+    const res = await fetch(STLLIB_HELPER + '/replace', { method: 'POST', headers: { 'X-LibFile': encodeURIComponent(f.path) }, body: bytes });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.ok) throw new Error(j.error || ('HTTP ' + res.status));
+  } else if (f.handle && f.handle.createWritable) {   // freigegebener Ordner: Original sichern, dann überschreiben
+    if (f.handle.requestPermission && (await f.handle.requestPermission({ mode: 'readwrite' })) !== 'granted') throw new Error('Kein Schreibrecht für den Ordner');
+    try {
+      const d = await _dcbOrdner(f.path, false), orig = d && await d.getDirectoryHandle('Original', { create: true });
+      if (orig) { const alt = await (await orig.getFileHandle(f.name, { create: true })).createWritable(); await alt.write(_dcb.buf); await alt.close(); }
+    } catch (e) { console.warn('[dcb] Original nicht gesichert', e); }
+    const w = await f.handle.createWritable(); await w.write(bytes); await w.close();
+  } else {   // ohne Helfer/Ordner-Zugriff: herunterladen
+    _downloadBlob(new Blob([bytes], { type: 'model/3mf' }), f.name.replace(/\.3mf$/i, '') + '_verbessert.3mf');
+    return 'Heruntergeladen (die Bibliothek ist nicht beschreibbar)';
+  }
+  f.size = bytes.byteLength; f.mtime = Date.now(); f._thumbUrl = null; f._thumbDone = false; f._thumbQueued = false; _stlListSig = '';
+  _dcb.buf = bytes.slice(0);
+  if (document.getElementById('stllib-modal').classList.contains('show')) _stlRenderGrid();
+  notify('🩺 „' + f.name + '“ verbessert gespeichert – das Original liegt im Ordner „Original“', 'ok');
+  return 'In der Bibliothek gespeichert (Original im Ordner „Original“)';
+}
+
 // ═══ 📏 MIT ZIELHÖHE DRUCKEN (Bibliothek, _stz*) ═════════════════════════════
 // Idee aus KIS3D (eigene Umsetzung): Datei aus der Bibliothek gleichmäßig auf eine
 // Zielhöhe (oder Prozent) skalieren und direkt in den Slicer schicken – ohne Umweg
@@ -79846,8 +79924,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.334';
+const VOLME3D_VERSION = '1.18.335';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.335', date:'2026-11-09', changes:[
+    ['🩺','<b>Neu in der 📚 Bibliothek: Druck prüfen.</b> 3MF-Dateien, zum Beispiel aus Bambu Studio oder OrcaSlicer, haben jetzt den Knopf <b>🩺</b>. Er öffnet den V3D Druckcheck mit der Datei. Der Druckcheck prüft die Einstellungen gegen Material, Düse und Modell (Temperatur, Schichten, Stützen, Überhänge …) und erklärt jeden Fund. <b>✨ Alles verbessern</b> zeigt Vorher und Nachher. <b>💾 In der Bibliothek speichern</b> legt die verbesserte Datei an dieselbe Stelle, das Original kommt in den Ordner <b>Original</b>. Danach in Bambu Studio öffnen und neu slicen.'],
+  ]},
   { version:'1.18.334', date:'2026-11-09', changes:[
     ['🧶','<b>Neuer Weihnachts-Generator: Strick-Stern.</b> Deko-Sterne, die aussehen wie aus dicker Wolle gestrickt: Ein dicker Rand-Strang läuft um den Stern, in jeder Zacke sitzt ein Zopf von der Mitte zur Spitze, alles mit Maschen wie Grobstrick. Wahlweise ist innen ein gewölbtes Strickkissen statt der Zöpfe. Einstellbar sind Zacken (4–9), Größe, Zacken-Form, Strangdicke, Dicke, Maschen und Wollfarbe. Auf Wunsch gibt es eine Öse zum Aufhängen am Baum. Er druckt flach, ohne Stützen. Zu finden in der Rubrik <b>🎄 Weihnachten</b>.'],
   ]},
