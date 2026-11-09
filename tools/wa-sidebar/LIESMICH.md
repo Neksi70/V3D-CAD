@@ -27,6 +27,14 @@ automatisch auf. Ist die Seite nicht erreichbar, gilt eine eingebaute Liste.
 - Alle V3D Tools teilen sich ein Anmelde-Profil. Einmal anmelden reicht also für alle Tools auf demselben Server.
 - Sie laden erst beim ersten Klick.
 - Rechtsklick auf ein Icon → „Im Browser öffnen“.
+- **Angemeldet bleiben:** Sitzungen der V3D Tools überstehen einen Neustart (30 Tage).
+- **PIN merken:** Bei reinen PIN-Anmeldungen (Mail, Rechnung, Familie …) merkt sich die Leiste
+  die PIN nach der ersten erfolgreichen Anmeldung und trägt sie künftig selbst ein.
+  - Gespeichert wird sie verschlüsselt mit Windows (DPAPI) in `pins.dat`, lesbar nur für dein Windows-Konto.
+  - Eine falsche PIN wird automatisch vergessen.
+  - Seiten mit E-Mail + Passwort fasst die Leiste nicht an.
+  - Abschalten oder löschen geht im Menü „⋯“.
+- Google-Anmeldung (z. B. V3D CAD) öffnet sich in einem kleinen Fenster der App.
 
 Im Menü: Seite links/rechts, Bildschirm, Benachrichtigungen, **Mit Windows starten**,
 Dienst hinzufügen (z. B. Telegram, Signal-Web, Outlook), Beenden.

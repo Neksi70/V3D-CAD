@@ -207,6 +207,12 @@ public class SidebarForm : Form
             }
         };
         c.NewWindowRequested += OnNewWindowRequested;
+        if (svc.Group == "v3d")
+        {
+            await c.AddScriptToExecuteOnDocumentCreatedAsync(PinStore.Script);
+            c.WebMessageReceived += (_, e) => OnPinMessage(c, e);
+            c.NavigationCompleted += (_, _) => _ = KeepSessionCookies(c);
+        }
         c.DocumentTitleChanged += (_, _) => SetUnread(svc.Id, ParseUnread(c.DocumentTitle));
         c.NotificationReceived += (_, e) =>
         {
@@ -272,6 +278,57 @@ public class SidebarForm : Form
         if (u.AbsolutePath.StartsWith("/__/auth/", StringComparison.OrdinalIgnoreCase)) return true;
         return AuthHosts.Any(h => u.Host.Equals(h, StringComparison.OrdinalIgnoreCase)
                                   || u.Host.EndsWith("." + h, StringComparison.OrdinalIgnoreCase));
+    }
+
+    // ---------- Angemeldet bleiben (V3D Tools) ----------
+    void OnPinMessage(CoreWebView2 c, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(e.WebMessageAsJson);
+            var r = doc.RootElement;
+            string t = r.GetProperty("t").GetString();
+            string key = r.GetProperty("key").GetString();
+            // nur PINs für die Seite annehmen, die gerade wirklich geladen ist
+            if (!Uri.TryCreate(e.Source, UriKind.Absolute, out var src) || !key.StartsWith(src.GetLeftPart(UriPartial.Authority) + "/")) return;
+            switch (t)
+            {
+                case "pin-need":
+                    if (_s.RememberPins && PinStore.Get(key) is string pin)
+                        c.PostWebMessageAsJson(System.Text.Json.JsonSerializer.Serialize(new { t = "pin", pin }));
+                    break;
+                case "pin-pending":
+                    if (_s.RememberPins) PinStore.SetPending(key, r.GetProperty("pin").GetString());
+                    _ = KeepSessionCookies(c);
+                    break;
+                case "pin-ok":
+                    PinStore.Confirm(key);
+                    _ = KeepSessionCookies(c);
+                    break;
+                case "pin-bad":
+                    PinStore.Reject(key);
+                    break;
+            }
+        }
+        catch { }
+    }
+
+    // Sitzungs-Cookies verfallen beim Schließen der App. Für V3D Tools machen wir daraus
+    // 30-Tage-Cookies, damit man nach einem Neustart angemeldet bleibt.
+    async Task KeepSessionCookies(CoreWebView2 c)
+    {
+        if (!_s.KeepSessions) return;
+        try
+        {
+            await Task.Delay(1500); // Anmeldung per fetch setzt Cookies oft erst kurz danach
+            var cookies = await c.CookieManager.GetCookiesAsync(c.Source);
+            foreach (var ck in cookies.Where(x => x.IsSession))
+            {
+                ck.Expires = DateTime.Now.AddDays(30);
+                c.CookieManager.AddOrUpdateCookie(ck);
+            }
+        }
+        catch { }
     }
 
     static int ParseUnread(string title)
@@ -557,6 +614,10 @@ public class SidebarForm : Form
         _menu.Items.Add(Check("Offene Leiste anheften (Platz reservieren)", _s.Pinned, TogglePinned));
         _menu.Items.Add(Check("Beim Wegklicken einklappen", _s.AutoCollapse, () => { _s.AutoCollapse = !_s.AutoCollapse; _s.Save(); }));
         _menu.Items.Add(Check("Benachrichtigungen anzeigen", _s.Notifications, () => { _s.Notifications = !_s.Notifications; _s.Save(); }));
+        _menu.Items.Add(Check("V3D Tools: PINs merken und eintragen", _s.RememberPins, () => { _s.RememberPins = !_s.RememberPins; _s.Save(); }));
+        _menu.Items.Add(Check("V3D Tools: angemeldet bleiben", _s.KeepSessions, () => { _s.KeepSessions = !_s.KeepSessions; _s.Save(); }));
+        if (PinStore.Count > 0)
+            _menu.Items.Add($"Gespeicherte PINs löschen ({PinStore.Count})", null, (_, _) => PinStore.Clear());
         _menu.Items.Add(Check("Mit Windows starten", IsAutostart(), () => SetAutostart(!IsAutostart())));
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("V3D Tools auswählen …", null, (_, _) => PickV3dTools());

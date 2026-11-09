@@ -21,6 +21,8 @@ public class AppSettings
     public bool Pinned { get; set; } = false;            // Platz am Bildschirmrand fuer offene Leiste reservieren
     public bool AutoCollapse { get; set; } = true;       // nicht angeheftet: beim Wegklicken einklappen
     public bool Notifications { get; set; } = true;
+    public bool RememberPins { get; set; } = true;     // PINs der V3D Tools merken + eintragen
+    public bool KeepSessions { get; set; } = true;     // Sitzungs-Cookies der V3D Tools dauerhaft machen
     public string ScreenDevice { get; set; } = "";       // leer = Hauptbildschirm
     public string ActiveId { get; set; } = "privat";
     public List<ServiceDef> Services { get; set; } = new();
