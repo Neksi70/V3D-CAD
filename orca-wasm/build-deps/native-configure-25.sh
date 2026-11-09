@@ -27,6 +27,8 @@ cmake -S . -B build-native \
   -DORCA_TOOLS=OFF \
   -DSLIC3R_CAD=ON \
   -DCMAKE_CXX_FLAGS=-DORCA_NO_OPENVDB \
+  -DOpenCV_DIR="$PREFIX/lib/cmake/opencv4" \
+  -DCMAKE_EXE_LINKER_FLAGS="-L$PREFIX/x11/usr/lib/x86_64-linux-gnu" \
   -DOpenCASCADE_DIR="$PREFIX/lib/cmake/occt" \
   -DOPENSSL_ROOT_DIR="$PREFIX" \
   -DOPENSSL_USE_STATIC_LIBS=TRUE \

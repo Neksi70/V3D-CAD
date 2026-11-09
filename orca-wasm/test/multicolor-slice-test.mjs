@@ -4,7 +4,7 @@
 import { chromium } from 'playwright';
 import { readFileSync } from 'fs';
 
-const sid = JSON.parse(readFileSync('/home/v3da/orca-wasm/bridge/sessions.json', 'utf8'))[0][0];
+const sid = (JSON.parse(readFileSync('/home/v3da/orca-wasm/bridge/sessions.json', 'utf8'))[0] || [''])[0];
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 const errors = [];
@@ -13,7 +13,7 @@ page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
 import { writeFileSync } from 'fs';
 page.on('request', r => {
   if (r.url().includes('/api/slice') && r.method() === 'POST') {
-    try { writeFileSync('/tmp/claude-1000/-home-v3da/3c78b2ae-35da-457c-9da0-975ecf6cf3b4/scratchpad/slice-payload.json', r.postData() || ''); console.log('▸ Payload gesichert'); } catch (e) { console.log('Payload-Dump:', e.message); }
+    try { writeFileSync((process.env.OUT_DIR || '/tmp') + '/slice-payload.json', r.postData() || ''); console.log('▸ Payload gesichert'); } catch (e) { console.log('Payload-Dump:', e.message); }
   }
 });
 await page.addInitScript((s) => sessionStorage.setItem('vs-sid', s), sid);

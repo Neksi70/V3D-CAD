@@ -977,6 +977,17 @@ app.get('/api/slice/health', (req, res) => res.json({ available: nativeSlicer.av
 // Job einreichen: { filename, model (base64), profiles, overrides, transforms,
 //                   filamentChains, paints } — paints (Mal-Werkzeug): je
 //                   (Objekt,Instanz) null oder { verts, tris, states } als base64
+// OrcaSlicer 2.5 hat Bambus Filament-IDs (GFA00 …) in den Profilen durch eigene OF*-Hashes ersetzt
+// und übersetzt nur an der Grenze zum Bambu-Drucker (docs/HLSD/filament_id.md, „Bambu catalog map“).
+// Die Grenze ist hier: filament_ids landen als tray_info_idx im .gcode.3mf, die H2-Firmware kennt nur GF*.
+const BAMBU_FILAMENT_IDS = (() => {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'OrcaSlicer-migrate', 'resources', 'printers', 'bambu_filament_ids.json'), 'utf8'));
+    return new Map(Object.entries(j.filaments || {}).map(([of, r]) => [of, r.bambu_id]));
+  } catch (e) { console.log('[slice] bambu_filament_ids.json fehlt:', e.message); return new Map(); }
+})();
+const toBambuFilamentIds = (ids) => Array.isArray(ids) ? ids.map(id => BAMBU_FILAMENT_IDS.get(id) || id) : ids;
+
 app.post('/api/slice', (req, res) => {
   if (!fleetOk(req)) return needCode(res);
   if (!nativeSlicer.available())
@@ -988,7 +999,7 @@ app.post('/api/slice', (req, res) => {
     const id = nativeSlicer.submit({
       filename, bytes: Buffer.from(model, 'base64'),
       profiles, overrides, transforms, filamentChains, paints, ops, printerModelId,
-      extruderAmsCount, filamentIds,
+      extruderAmsCount, filamentIds: toBambuFilamentIds(filamentIds),
     });
     res.json({ ok: true, id });
   } catch (e) { res.status(500).json({ error: e.message }); }

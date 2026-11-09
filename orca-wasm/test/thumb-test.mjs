@@ -31,7 +31,7 @@ const b64 = await page.evaluate(() => window._vs.plateThumb());
 if (!b64) { console.log('FEHLER: window._vs.plateThumb() lieferte null'); process.exit(1); }
 const buf = Buffer.from(b64, 'base64');
 console.log('PNG-Bytes:', buf.length, 'Header ok:', buf.slice(0, 8).toString('hex') === '89504e470d0a1a0a');
-writeFileSync('/tmp/claude-1000/-home-v3da/3acd721c-9009-49bf-8115-1ff4d3a829eb/scratchpad/thumb.png', buf);
+writeFileSync((process.env.OUT_DIR || '/tmp') + '/thumb.png', buf);
 
 // Danach: Viewer unversehrt? (Bett wieder sichtbar, Hintergrund zurück)
 const after = await page.evaluate(() => ({

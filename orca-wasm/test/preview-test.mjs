@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
-const createOrcaSlicer = (await import(join(here, '../OrcaSlicer/build-wasm/src/wasm/orca-slicer.js'))).default;
+const createOrcaSlicer = (await import(process.env.ORCA_WASM_JS || join(here, '../OrcaSlicer/build-wasm/src/wasm/orca-slicer.js'))).default;
 const orca = await createOrcaSlicer();
 const f = process.env.MODEL || 'offset.3mf';
 const res = orca.previewModel(new Uint8Array(readFileSync(join(here, f))), f, 128, 128);

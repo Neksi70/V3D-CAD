@@ -3,7 +3,7 @@
 import { chromium } from 'playwright';
 import { readFileSync } from 'fs';
 
-const sid = JSON.parse(readFileSync('/home/v3da/orca-wasm/bridge/sessions.json', 'utf8'))[0][0];
+const sid = (JSON.parse(readFileSync('/home/v3da/orca-wasm/bridge/sessions.json', 'utf8'))[0] || [''])[0];
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1720, height: 950 } });
 const errors = [];
