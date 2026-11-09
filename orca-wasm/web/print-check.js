@@ -627,6 +627,71 @@ export function analyzeMesh(pos, index, { name = '', maxThickSamples = 6000 } = 
   };
 }
 
+// Stützen-Vorschau (Volker 9.11.: „anzeigen, wo er stützt“) – vereinfacht, der echte Baum entsteht
+// erst beim Slicen. Stichproben auf den freien Unterseiten (triClass 1/2 aus analyzeMesh) und an
+// den Luft-Inseln; je Punkt ein Strahl senkrecht nach unten: Platte (stützbar), Modell (Stütze
+// steht auf dem Modell bzw. fehlt bei „Nur auf Druckplatte“). Liefert [{p:[x,y,z], z1, aufModell}].
+export function supportPreview(pos, index, triClass, { islandPts = [], spacing = 3, max = 2500 } = {}) {
+  const nT = index ? index.length / 3 : pos.length / 9;
+  const nV = pos.length / 3, vx = new Float64Array(nV), vy = new Float64Array(nV), vz = new Float64Array(nV);
+  for (let i = 0; i < nV; i++) { vx[i] = pos[i * 3]; vy[i] = pos[i * 3 + 1]; vz[i] = pos[i * 3 + 2]; }
+  const corner = index ? Uint32Array.from(index) : Uint32Array.from({ length: nT * 3 }, (_, i) => i);
+  const area = new Float64Array(nT);
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < nV; i++) { if (vx[i] < minX) minX = vx[i]; if (vx[i] > maxX) maxX = vx[i]; if (vy[i] < minY) minY = vy[i]; if (vy[i] > maxY) maxY = vy[i]; if (vz[i] < minZ) minZ = vz[i]; if (vz[i] > maxZ) maxZ = vz[i]; }
+  for (let t = 0; t < nT; t++) {
+    const a = corner[t * 3], b = corner[t * 3 + 1], c = corner[t * 3 + 2];
+    const ux = vx[b] - vx[a], uy = vy[b] - vy[a], uz = vz[b] - vz[a], wx = vx[c] - vx[a], wy = vy[c] - vy[a], wz = vz[c] - vz[a];
+    area[t] = 0.5 * Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx);
+  }
+  const G = buildGrid(vx, vy, vz, corner, nT, area, [minX, minY, minZ, maxX, maxY, maxZ]);
+  const runter = (px, py, pz, self) => {   // nächster Treffer senkrecht nach unten (Abstand) oder Infinity
+    if (!G) return Infinity;
+    const oz = pz - 1e-4, X = G.ci(px, G.bb[0], G.GX), Y = G.ci(py, G.bb[1], G.GY), id = ++G.stampId;
+    let best = Infinity;
+    for (let z = G.ci(oz, G.bb[2], G.GZ); z >= 0; z--) {
+      const cell = (X * G.GY + Y) * G.GZ + z;
+      for (let i = G.start[cell]; i < G.start[cell + 1]; i++) {
+        const u = G.list[i]; if (u === self || G.stamp[u] === id) continue; G.stamp[u] = id;
+        const d = rayTri(px, py, oz, 0, 0, -1, corner, u, vx, vy, vz);
+        if (d > 0.05 && d < best) best = d;
+      }
+      if (best < oz - (G.bb[2] + z * G.cs)) break;
+    }
+    return best;
+  };
+  const out = [], belegt = new Set(), sp = Math.max(0.5, spacing);
+  const nimm = (x, y, z, self) => {
+    if (out.length >= max || z - minZ < 0.3) return;
+    const key = Math.round(x / sp) + ',' + Math.round(y / sp) + ',' + Math.round(z / (sp * 2));
+    if (belegt.has(key)) return; belegt.add(key);
+    const d = runter(x, y, z, self), zEnde = z - d;
+    const aufModell = Number.isFinite(d) && zEnde - minZ > 0.3;
+    out.push({ p: [x, y, z], z1: aufModell ? zEnde : minZ, aufModell });
+  };
+  for (const q of islandPts) nimm(q[0], q[1], q[2], -1);
+  for (let t = 0; t < nT && out.length < max; t++) {
+    if (!triClass || !triClass[t]) continue;
+    const a = corner[t * 3], b = corner[t * 3 + 1], c = corner[t * 3 + 2];
+    // gleichmäßiges XY-Raster im Dreieck (Unterseiten sind nie senkrecht → Projektion trägt);
+    // kleine Dreiecke: Schwerpunkt
+    const x0 = Math.min(vx[a], vx[b], vx[c]), x1 = Math.max(vx[a], vx[b], vx[c]), y0 = Math.min(vy[a], vy[b], vy[c]), y1 = Math.max(vy[a], vy[b], vy[c]);
+    const det = (vy[b] - vy[c]) * (vx[a] - vx[c]) + (vx[c] - vx[b]) * (vy[a] - vy[c]);
+    let gesetzt = false;
+    if (Math.abs(det) > 1e-9 && (x1 - x0 > sp || y1 - y0 > sp)) {
+      for (let gx = Math.ceil(x0 / sp) * sp; gx <= x1 && out.length < max; gx += sp)
+        for (let gy = Math.ceil(y0 / sp) * sp; gy <= y1 && out.length < max; gy += sp) {
+          const l1 = ((vy[b] - vy[c]) * (gx - vx[c]) + (vx[c] - vx[b]) * (gy - vy[c])) / det;
+          const l2 = ((vy[c] - vy[a]) * (gx - vx[c]) + (vx[a] - vx[c]) * (gy - vy[c])) / det, l3 = 1 - l1 - l2;
+          if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) continue;
+          nimm(gx, gy, l1 * vz[a] + l2 * vz[b] + l3 * vz[c], t); gesetzt = true;
+        }
+    }
+    if (!gesetzt) nimm((vx[a] + vx[b] + vx[c]) / 3, (vy[a] + vy[b] + vy[c]) / 3, (vz[a] + vz[b] + vz[c]) / 3, t);
+  }
+  return out;
+}
+
 // Gleichmäßiges 3D-Raster über alle Dreiecke (CSR); null wenn zu groß
 function buildGrid(vx, vy, vz, corner, nT, area, bb) {
   const sx = bb[3] - bb[0], sy = bb[4] - bb[1], sz = bb[5] - bb[2];

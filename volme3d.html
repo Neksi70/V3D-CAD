@@ -4360,7 +4360,7 @@ Patrick</textarea>
     </div>
     <div class="g3foot" style="align-items:center">
       <div id="map-status" style="display:none;flex:1;min-width:0;margin-right:6px">
-        <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;color:#333"><span id="map-status-txt" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Lade Kartendaten…</span><span id="map-status-zeit" style="color:#888;font-variant-numeric:tabular-nums">0 s</span></div>
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;color:#333"><span id="map-status-txt" style="line-height:1.3">Lade Kartendaten…</span><span id="map-status-zeit" style="color:#888;font-variant-numeric:tabular-nums;white-space:nowrap">0 s</span></div>
         <div style="height:7px;background:#e9edf2;border-radius:4px;overflow:hidden;margin-top:5px"><div id="map-status-bar" style="height:100%;width:0;background:#F97316;border-radius:4px;transition:width .4s"></div></div>
       </div>
       <button class="btn" id="map-cancel-btn" onclick="_mapAbbrechenOderZu()">Abbrechen</button>
@@ -6325,8 +6325,8 @@ Patrick</textarea>
           <button class="vtb" data-v="svg" onclick="_mdsStr('quelle','svg')">🖼️ Eigenes SVG</button>
         </div>
         <div id="mds-row-text">
-          <div class="vrow"><label>Text</label> <input type="text" id="mds-text" value="Mein Name" style="flex:1" oninput="_mdsP.text=this.value;_mdsSync()"></div>
-          <div class="vrow"><label>Schrift</label> <select id="mds-font" style="flex:1" onchange="_mdsP.font=this.value"></select></div>
+          <div class="vrow"><label>Text</label> <input type="text" id="mds-text" value="Mein Name" style="flex:1" oninput="_mdsP.text=this.value;_mdsSync();_mdsRepaint()"></div>
+          <div class="vrow"><label>Schrift</label> <select id="mds-font" style="flex:1" onchange="_mdsP.font=this.value;_mdsRepaint()"></select></div>
         </div>
         <div id="mds-row-svg" style="display:none">
           <button class="btn" style="width:100%;margin-bottom:6px" onclick="document.getElementById('mds-svgfile').click()">📂 SVG-Datei wählen</button>
@@ -58616,10 +58616,86 @@ function _mdsDeckelGeoMm(p) {
 }
 function _mdsVorschauGeo(p) {
   const g = _mdsGeoMm(p);
-  if (p.oben !== 'deckel') { g.scale(0.1, 0.1, 0.1); return g; }
-  const dk = _mdsDeckelGeoMm(p); dk.translate(p.breite * Math.max(1, p.konisch / 100) + 10, 0, 0);
-  const m = THREE.BufferGeometryUtils.mergeBufferGeometries([g.toNonIndexed(), dk.toNonIndexed()]);
+  // Ralf 9.11.: „schön wäre eine Vorschau mit dem eingegebenen Text oder SVG“ —
+  // Motiv flach aus den Umrissen, rechnerisch um den Dosen-Umriss gelegt (wie beim
+  // Erstellen, aber ohne Abziehen). Erhaben orange, vertieft/durchbrochen dunkel.
+  const teile = [g.toNonIndexed()], farben = [[0.76, 0.78, 0.82]];
+  const mot = _mdsMotivVorschauGeo(p);
+  if (mot) { teile.push(mot); farben.push(p.art === 'hoch' ? [0.98, 0.45, 0.09] : [0.13, 0.15, 0.19]); }
+  if (p.oben === 'deckel') {
+    const dk = _mdsDeckelGeoMm(p); dk.translate(p.breite * Math.max(1, p.konisch / 100) + 10, 0, 0);
+    teile.push(dk.toNonIndexed()); farben.push(farben[0]);
+  }
+  teile.forEach((t, i) => { if (t.getAttribute('uv')) t.deleteAttribute('uv'); if (t.getAttribute('normal')) t.deleteAttribute('normal');
+    const n = t.attributes.position.count, c = new Float32Array(n * 3); for (let k = 0; k < n; k++) c.set(farben[i], k * 3);
+    t.setAttribute('color', new THREE.Float32BufferAttribute(c, 3)); });
+  const m = teile.length > 1 ? THREE.BufferGeometryUtils.mergeBufferGeometries(teile) : teile[0];
   m.scale(0.1, 0.1, 0.1); m.computeVertexNormals(); return m;
+}
+// Umrisse des Motivs (mm, y nach oben) — Text braucht die Schrift (lädt einmal nach,
+// dann zeichnet die Vorschau neu), SVG kommt aus der gewählten Datei.
+let _mdsMotivCache = { key: null, shapes: null };
+function _mdsMotivUmrisse(p) {
+  const key = p.quelle === 'svg' ? 'svg:' + (_mdsSvg ? _mdsSvg.length + ':' + _mdsSvgName : '') : 'text:' + p.font + ':' + String(p.text || '').trim();
+  if (_mdsMotivCache.key === key) return _mdsMotivCache.shapes;
+  let shapes = null;
+  try {
+    if (p.quelle === 'svg') {
+      if (_mdsSvg && THREE.SVGLoader) {
+        const data = new THREE.SVGLoader().parse(_mdsSvg); shapes = [];
+        for (const path of data.paths) {
+          const st = path.userData && path.userData.style;
+          if (st && st.fill === 'none' && (!st.stroke || st.stroke === 'none')) continue;
+          shapes.push(...(THREE.SVGLoader.createShapes ? THREE.SVGLoader.createShapes(path) : path.toShapes(true)));
+        }
+        // SVG: y zeigt nach unten → spiegeln (Löcher bleiben Löcher)
+        shapes = shapes.map(sh => { const f = pts => pts.map(v => new THREE.Vector2(v.x, -v.y));
+          const n = new THREE.Shape(f(sh.getPoints(8))); n.holes = sh.holes.map(h => new THREE.Path(f(h.getPoints(8)))); return n; });
+      }
+    } else {
+      const txt = String(p.text || '').trim(), font = window['_threeFont_' + p.font];
+      if (txt && font) shapes = font.generateShapes(txt, 10);
+      else if (txt) { _mdsFont(p.font).then(() => _mdsRepaint()).catch(() => {}); return null; }   // nicht cachen: nach dem Laden neu
+    }
+  } catch (e) { shapes = null; }
+  _mdsMotivCache = { key, shapes: shapes && shapes.length ? shapes : null };
+  return _mdsMotivCache.shapes;
+}
+function _mdsMotivVorschauGeo(p) {
+  const shapes = _mdsMotivUmrisse(p); if (!shapes) return null;
+  const d = _mdsDims(p), tief = p.art === 'hoch' ? Math.max(0.4, p.mtiefe) : 0.35;
+  const flach = new THREE.ExtrudeGeometry(shapes, { depth: 1, bevelEnabled: false, curveSegments: 6 });
+  flach.computeBoundingBox();
+  const bb = flach.boundingBox, w0 = Math.max(1e-6, bb.max.x - bb.min.x), h0 = Math.max(1e-6, bb.max.y - bb.min.y);
+  // Größe wie beim Erstellen: Höhe = Motivhöhe, höchstens der eigene Anteil am Umfang
+  const f = 1 + (p.konisch / 100 - 1) * p.lage / 100;
+  const umfang = (2 * (p.breite + p.tiefe) - (8 - 2 * Math.PI) * d.rA) * f;
+  let k = p.motivH / h0; if (w0 * k > umfang / p.anzahl * 0.9) k = umfang / p.anzahl * 0.9 / w0;
+  const cx = (bb.min.x + bb.max.x) / 2, cy = (bb.min.y + bb.max.y) / 2, yM = p.hoehe * p.lage / 100;
+  // Außenumriss fein als Polylinie mit Bogenlänge (gegen den Uhrzeigersinn von oben = +x bei +z)
+  const nArc = 24, kw = Math.max(1, Math.ceil(p.breite - 2 * d.rA)), kt = Math.max(1, Math.ceil(p.tiefe - 2 * d.rA));
+  const R = _mdsRing(p.breite, p.tiefe, d.rA, nArc, [kw, kt, kw, kt]); R.push(R[0]);
+  const sl = [0]; for (let i = 1; i < R.length; i++) sl.push(sl[i - 1] + Math.hypot(R[i][0] - R[i - 1][0], R[i][1] - R[i - 1][1]));
+  const L = sl[sl.length - 1];
+  const bei = s => { s = ((s % L) + L) % L; let lo = 0, hi = sl.length - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (sl[m] <= s) lo = m; else hi = m; }
+    const t = (s - sl[lo]) / Math.max(1e-9, sl[hi] - sl[lo]), a = R[lo], b = R[hi], tx = b[0] - a[0], tz = b[1] - a[1], tl = Math.hypot(tx, tz) || 1;
+    return [a[0] + t * tx, a[1] + t * tz, tz / tl, -tx / tl]; };              // Punkt + Normale nach außen
+  // Startpunkt je Motiv: Richtung wie beim Erstellen (vorn, hinten, rechts, links)
+  const sAn = dir => { let best = 0, bd = -Infinity; for (let i = 0; i < R.length - 1; i++) { const l = Math.hypot(R[i][0], R[i][1]) || 1, q = (R[i][0] * dir[0] + R[i][1] * dir[1]) / l; if (q > bd) { bd = q; best = sl[i]; } } return best; };
+  const nVor = bei(sAn([0, 1])), lauf = nVor[2] >= 0 ? -1 : 1;                 // so, dass der Text von vorn gelesen von links nach rechts läuft
+  const richt = [[0, 1], [0, -1], [1, 0], [-1, 0]], out = [];
+  const pos = flach.toNonIndexed().attributes.position;
+  for (let i = 0; i < p.anzahl; i++) {
+    const s0 = sAn(richt[i]), arr = new Float32Array(pos.count * 3);
+    for (let v = 0; v < pos.count; v++) {
+      const u = (pos.getX(v) - cx) * k, y = yM + (pos.getY(v) - cy) * k, w = pos.getZ(v) * tief + 0.05;
+      const fy = 1 + (p.konisch / 100 - 1) * y / p.hoehe, q = bei(s0 + lauf * u / fy);
+      arr[v * 3] = (q[0] + q[2] * w / fy) * fy; arr[v * 3 + 1] = y; arr[v * 3 + 2] = (q[1] + q[3] * w / fy) * fy;
+    }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3)); out.push(g);
+  }
+  flach.dispose();
+  return out.length > 1 ? THREE.BufferGeometryUtils.mergeBufferGeometries(out) : out[0];
 }
 
 function _mdsOpen() {
@@ -58632,12 +58708,12 @@ function _mdsOpen() {
 function _mdsClose() { document.getElementById('mds-modal').classList.remove('show'); _gpvStop('mds'); }
 function _mdsRepaint() { if (_mdsRT) clearTimeout(_mdsRT); _mdsRT = setTimeout(() => { _mdsRT = null; if (_gpv['mds']) _gpvUpdate('mds'); }, 120); }
 function _mdsSet(k, v) { _mdsP[k] = parseFloat(v); _mdsSync(); _mdsRepaint(); }
-function _mdsStr(k, v) { _mdsP[k] = v; _mdsSync(); if (k === 'oben') _mdsRepaint(); }
+function _mdsStr(k, v) { _mdsP[k] = v; _mdsSync(); _mdsRepaint(); }
 function _mdsReset() { Object.assign(_mdsP, _MDS_DEF); const t = document.getElementById('mds-text'); if (t) t.value = _mdsP.text; _mdsSync(); _mdsRepaint(); }
 function _mdsSvgLaden(inp) {
   const f = inp.files && inp.files[0]; if (!f) return;
   const r = new FileReader();
-  r.onload = () => { _mdsSvg = String(r.result); _mdsSvgName = f.name.replace(/\.svg$/i, ''); _mdsSync(); };
+  r.onload = () => { _mdsSvg = String(r.result); _mdsSvgName = f.name.replace(/\.svg$/i, ''); _mdsSync(); _mdsRepaint(); };
   r.readAsText(f); inp.value = '';
 }
 function _mdsSync() {
@@ -65473,10 +65549,14 @@ function _kgUbootBau(H, p){
     akzent.push(H.cyl(rP, zTop - 1, zTop + h, x, 0, 16));
     if (T.form === 'rund') akzent.push(H.stab([x, 0, zTop + h], [x + h * 0.3, 0, zTop + h + h * 0.3], rP * 1.2));   // Comic: Knick nach vorn (45°)
   }
-  // Kanone auf dem Deck (Rohr 25° nach oben → kein Überhang)
-  if (F.kanone && p.kanone) {
-    const x = xT + lT * 1.15, z0 = zc + R * 1.05, rr = Math.max(0.8, R * 0.07), hS = R * 0.3, lr = L * 0.08, a = 25 * Math.PI / 180;
-    akzent.push(H.cyl(Math.max(1.2, R * 0.14), z0 - 0.5, z0 + hS, x, 0, 20));
+  // Kanone vor dem Turm (Rohr 25° nach oben → kein Überhang). Mit Deck steht sie darauf,
+  // sonst auf dem Rumpfrücken: Sockel reicht in den Rumpf (Ralf 9.11.: „Deckkanone gibt
+  // es nur beim klassischen U-Boot“ — Schalter war überall da, wirkte aber nur dort).
+  if (p.kanone) {
+    const x = Math.min(xT + lT * 1.15, L * 0.84), rr = Math.max(0.8, R * 0.07), lr = L * 0.08, a = 25 * Math.PI / 180;
+    const z0 = F.deck ? zc + R * 1.05 : zc + rad(x / L) * 0.98, hS = F.deck ? R * 0.3 : Math.max(2, Math.min(R * 0.3, L * 0.035));
+    const zS = F.deck ? z0 - 0.5 : zc + rad(x / L) * 0.7;
+    akzent.push(H.cyl(Math.max(1.2, Math.min(R * 0.14, L * 0.02)), zS, z0 + hS, x, 0, 20));
     akzent.push(H.stab([x, 0, z0 + hS], [x + lr * Math.cos(a), 0, z0 + hS + lr * Math.sin(a)], rr));
   }
   // Ruder am Heck: Flossen um die Längsachse; „Ganz“ als X, untere bis aufs Bett
@@ -65560,7 +65640,7 @@ _kgReg('uboot', {
     { k: 'turmH', t: 'range', l: 'Turm-Höhe', min: 30, max: 200, step: 5, u: '%', v: 100 },
     { k: 'periskop', t: 'wahl', l: 'Periskope', o: [[0, 'Keins'], [1, 'Eins'], [2, 'Zwei']], v: 2 },
     { k: 'bullaugen', t: 'wahl', l: 'Bullaugen', o: [[1, 'Ja'], [0, 'Nein']], v: 0 },
-    { k: 'kanone', t: 'wahl', l: 'Deckkanone', o: [[1, 'Ja', 'nur beim klassischen U-Boot'], [0, 'Nein']], v: 0 },
+    { k: 'kanone', t: 'wahl', l: 'Deckkanone', o: [[1, 'Ja', 'Kanone vor dem Turm – beim klassischen auf dem Deck, sonst auf dem Rumpf'], [0, 'Nein']], v: 0 },
     { sec: 'Darstellung' },
     { k: 'darst', t: 'wahl', l: 'Wie?', o: [['wasser', 'Aufgetaucht', 'Wasserlinien-Modell: flach auf dem Bett, druckt ohne Stützen'], ['voll', 'Ganz + Ständer', 'Ganzer Rumpf mit Schraube, liegt im Gabel-Ständer']], v: 'wasser' },
     { k: 'platte', t: 'wahl', l: 'Wasserplatte', o: [[1, 'Mit Wellen', 'Blaue Platte mit Wellen unter dem aufgetauchten U-Boot'], [0, 'Ohne']], v: 1 },
@@ -75471,7 +75551,7 @@ function _mapBBox(){
 const _MAP_SERVER=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.private.coffee/api/interpreter'];
 let _MAP_STAFFEL_MS=15000, _MAP_GRENZE_MS=180000;   // let: Tests verkürzen die Staffel
 let _mapLauf=null;            // { ctrl, t0, uhr, abgebrochen }
-const _mapCache=new Map();    // Overpass-Abfrage → Rohdaten (die letzten 4)
+const _mapCache=[];           // { s,w,n,e, inhalt, data } — die letzten 4 Abrufe (10 % größer geladen)
 
 function _mapStatus(txt, anteil){
   const st=document.getElementById('map-status'); if(!st) return;
@@ -75491,7 +75571,6 @@ function _mapAbbrechenOderZu(){ if(!_mapAbbrechen()) _closeMapModal(); }
 
 // Eine Abfrage an mehrere Server, gestaffelt; Rückgabe JSON oder Fehler.
 async function _mapOverpass(query, lauf){
-  if(_mapCache.has(query)) return _mapCache.get(query);
   return await new Promise((ok, fail)=>{
     const n=_MAP_SERVER.length, fehler=[]; let fertig=false, gestartet=0, offen=0, timer=null;
     const ctrls=[];
@@ -75514,7 +75593,6 @@ async function _mapOverpass(query, lauf){
           if(!res.ok) throw new Error('HTTP '+res.status);
           const data=await res.json();
           if(data && data.remark && /runtime error|timed out|out of memory/i.test(data.remark) && !(data.elements||[]).length) throw new Error('Server-Zeitlimit');
-          _mapCache.set(query, data); if(_mapCache.size>4) _mapCache.delete(_mapCache.keys().next().value);
           ende(null, data);
         })
         .catch(e=>{
@@ -75539,19 +75617,26 @@ async function _mapCreate(){
   const btn=document.getElementById('map-create-btn');
   const lauf=_mapLauf={ ctrl:new AbortController(), t0:performance.now(), abgebrochen:false, server:1, schritt:'daten' };
   _mapBusy=true;
-  if(btn){ btn.disabled=true; btn.textContent='⏳ Wird erzeugt…'; }
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Wird erzeugt…'; btn.style.opacity='1'; btn.style.cursor='progress'; btn.style.color='#fff'; btn.style.filter='none'; }
   const sek=()=>Math.round((performance.now()-lauf.t0)/1000);
   const zeichne=()=>{
     const t=sek(); document.getElementById('map-status-zeit').textContent=t+' s';
     if(lauf.schritt==='daten'){
       // Wartezeit auf den Server ist unbekannt: Balken nähert sich 70 % an
-      _mapStatus('Lade Kartendaten von OpenStreetMap'+(lauf.server>1?' (auch Ausweich-Server '+(lauf.server-1)+')':'')+'…'+(t>=20?' Server sind gerade langsam – du kannst abbrechen.':''), 0.05+0.65*(1-Math.exp(-t/40)));
+      _mapStatus('Lade Kartendaten von OpenStreetMap'+(lauf.server>1?' (auch Ausweich-Server '+(lauf.server-1)+')':'')+'…'+(t>=20?' Die Server sind gerade langsam – Abbrechen geht jederzeit.':''), 0.05+0.65*(1-Math.exp(-t/40)));
     }
   };
   _mapStatus('Lade Kartendaten von OpenStreetMap…', 0.03); document.getElementById('map-status-zeit').textContent='0 s';
   lauf.uhr=setInterval(zeichne, 500);
   try{
-    const bbox=bb.s.toFixed(6)+','+bb.w.toFixed(6)+','+bb.n.toFixed(6)+','+bb.e.toFixed(6);
+    // Zwischenspeicher: liegt der Ausschnitt in einem schon geladenen Bereich mit gleichem
+    // Inhalt, ohne Server weiter (beim erneuten Öffnen verrutscht die Kartenmitte um Meter →
+    // deshalb 10 % größer laden und auf Enthaltensein prüfen, nicht auf gleiche Abfrage).
+    const inhalt=(wantGreen?'g':'')+(wantWater?'w':'')+(wantRoads?'r':'');
+    const imSpeicher=_mapCache.find(c=>c.inhalt===inhalt && c.s<=bb.s && c.w<=bb.w && c.n>=bb.n && c.e>=bb.e);
+    const pl=(bb.n-bb.s)*0.05, pw=(bb.e-bb.w)*0.05;
+    const gs=bb.s-pl, gw=bb.w-pw, gn=bb.n+pl, ge=bb.e+pw;
+    const bbox=gs.toFixed(6)+','+gw.toFixed(6)+','+gn.toFixed(6)+','+ge.toFixed(6);
     let q='way["building"]('+bbox+');relation["building"]('+bbox+');';
     if(wantGreen){
       q+='way["leisure"~"park|garden|pitch|playground|recreation_ground"]('+bbox+');'+
@@ -75567,7 +75652,12 @@ async function _mapCreate(){
       q+='way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|motorway_link|trunk_link|primary_link|secondary_link"]('+bbox+');';
     }
     const query='[out:json][timeout:90];('+q+');out geom;';
-    const data=await _mapOverpass(query, lauf);
+    let data;
+    if(imSpeicher) data=imSpeicher.data;
+    else {
+      data=await _mapOverpass(query, lauf);
+      _mapCache.push({ s:gs, w:gw, n:gn, e:ge, inhalt, data }); if(_mapCache.length>4) _mapCache.shift();
+    }
     const parsed=_mapParseOverpass(data);
     const buildings=parsed.buildings, greens=parsed.greens, waters=parsed.waters, roads=parsed.roads;
     if(!buildings.length && !greens.length && !waters.length && !roads.length) throw Object.assign(new Error('Keine Kartendaten in diesem Ausschnitt gefunden'),{hinweis:true});
@@ -75595,7 +75685,7 @@ async function _mapCreate(){
   clearInterval(lauf.uhr);
   if(_mapLauf===lauf) _mapLauf=null;
   _mapBusy=false; _mapSpinner(false); _mapStatusAus();
-  if(btn){ btn.disabled=false; btn.textContent='✓ Modell erzeugen'; }
+  if(btn){ btn.disabled=false; btn.textContent='✓ Modell erzeugen'; btn.style.opacity=''; btn.style.cursor=''; btn.style.color=''; btn.style.filter=''; }
 }
 
 // Overpass-JSON → { buildings:[{ring,height}], greens:[{ring}], waters:[{ring}], roads:[{line,width}] }
@@ -80105,8 +80195,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.339';
+const VOLME3D_VERSION = '1.18.340';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.340', date:'2026-11-09', changes:[
+    ['🌳','<b>Druck prüfen: Stützen zeigen.</b> Unter dem 3D-Bild gibt es den Schalter <b>🌳 Stützen zeigen</b>. Er zeichnet ein, wo Stützen hinkommen: <span style="color:#2e9e57">grün</span> von der Druckplatte, <span style="color:#d9761a">orange</span> auf dem Modell, <span style="color:#d42f42">rot</span> gar nicht, z. B. bei „Nur auf Druckplatte“. Nach „Alles verbessern“ zeigt er die Stützen mit den neuen Werten. Das ist eine vereinfachte Vorschau, die echten Baum-Stützen entstehen beim Slicen.'],
+  ]},
   { version:'1.18.339', date:'2026-11-09', changes:[
     ['🖨','<b>Druck prüfen: „Speichern &amp; im Slicer öffnen“.</b> Nach dem Verbessern speichert ein Klick die Datei in der Bibliothek (das Original kommt in den Ordner „Original“) und öffnet sie über den Druck-Helfer gleich in deinem Slicer, z. B. Bambu Studio. Dort neu slicen und an den Drucker schicken. Direkt an den Drucker geht es nicht, weil ein Projekt-3MF noch keinen G-Code enthält. Ohne Druck-Helfer wird die Datei heruntergeladen.'],
   ]},

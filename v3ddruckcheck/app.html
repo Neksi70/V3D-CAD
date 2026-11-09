@@ -178,6 +178,9 @@
   #viewMsg div { font-size: 2.6rem; }
   #legend { position: absolute; left: .8rem; bottom: .8rem; background: rgba(13,16,20,.86); border: 1px solid var(--line);
             border-radius: 10px; padding: .45rem .65rem; font-size: .78rem; display: flex; gap: .8rem; flex-wrap: wrap; max-width: calc(100% - 1.6rem); }
+  #legend .supT { display: inline-flex; align-items: center; gap: .35rem; margin-left: .6rem; padding: .15rem .55rem; border: 1px solid #3fbf6a; border-radius: 999px; color: #c9f5d6; cursor: pointer; font-weight: 600; }
+  #legend .supT input { accent-color: #3fbf6a; margin: 0; }
+  #supLeg { flex-basis: 100%; margin-top: .1rem; } #supLeg span { margin-right: .7rem; } #supInfo { color: var(--dim); }
   #legend i { display: inline-block; width: .75rem; height: .75rem; border-radius: 3px; vertical-align: -1px; margin-right: .3rem; }
   #viewHelp { position: absolute; right: .8rem; top: .8rem; color: var(--dim); font-size: .74rem; background: rgba(13,16,20,.7); padding: .3rem .55rem; border-radius: 8px; }
   #focusInfo { position: absolute; left: .8rem; top: .8rem; background: rgba(13,16,20,.92); border: 1px solid var(--accent);
@@ -302,7 +305,9 @@
     <div id="viewMsg" hidden><div>🧾</div>Kein Modell in der Datei – nur die Einstellungen wurden geprüft.</div>
     <div id="focusInfo" hidden></div>
     <div id="legend" hidden><span><i style="background:#c8ccd2"></i>Modell</span><span><i style="background:#e5544b"></i>Overhang – braucht Stützen</span>
-      <span><i style="background:#eda33b"></i>freie Unterseite</span><span><i style="background:#ff2d78;border-radius:50%"></i>beginnt in der Luft</span></div>
+      <span><i style="background:#eda33b"></i>freie Unterseite</span><span><i style="background:#ff2d78;border-radius:50%"></i>beginnt in der Luft</span>
+      <label class="supT" title="Zeigt, wo Stützen hinkommen: von der Platte, auf dem Modell oder gar nicht (vereinfacht – der echte Baum entsteht beim Slicen)"><input type="checkbox" id="supShow"> 🌳 Stützen zeigen</label>
+      <div id="supLeg" hidden><span><i style="background:#3fbf6a"></i>Stütze von der Platte</span><span><i style="background:#f08c2a"></i>Stütze steht auf dem Modell</span><span><i style="background:#e5384b"></i>bekommt keine Stütze</span><span id="supInfo"></span></div></div>
     <div id="viewHelp">Ziehen = drehen · rechte Maustaste oder Umschalt = verschieben · Mausrad = zoomen</div>
   </div>
 </section>
@@ -498,7 +503,8 @@ function evaluate() {
   cur.hasCfg = hasCfg;
   cur.cfg = hasCfg ? r.cfg : baseCfg();
   cur.findings = check(cur.cfg);
-  cur.sel = -1;
+  cur.sel = -1; cur.cfgNachher = null;
+  if ($('supShow').checked) setTimeout(zeigeStuetzen, 0);
   $('improve').hidden = true;
   renderHead(); renderCards(); clearFocus();
 }
@@ -577,6 +583,8 @@ $('magic').onclick = () => {
   // Folge-Änderungen mitrechnen (feinere Schichten → mehr Boden-/Deckschichten) und nie schlechter werden
   const res = PC.improveAll(cur.cfg, cur.findings, gewaehlt, check);
   const fixes = res.fixes, before = res.before, after = res.after;
+  cur.cfgNachher = PC.applyFixes(cur.cfg, fixes);
+  if ($('supShow').checked) zeigeStuetzen();
   const rows = PC.fixRows(cur.cfg, [...cur.findings.map(f => ({ ...f, fixes: f.fixes.filter(x => res.chosen.includes(x)) })), ...res.extra]);
   const { r, models, hasCfg } = cur;
   const can3mf = !!(r.zip && hasCfg && models.length && r.zip.has('Metadata/project_settings.config'));
@@ -947,6 +955,39 @@ function showModel(meshes, models) {
   home = { target: orbit.target.clone(), r: orbit.r, theta: orbit.theta, phi: orbit.phi };
   updateCam();
 }
+// ---------- 🌳 Stützen-Vorschau (vereinfacht; der echte Baum entsteht beim Slicen) ----------
+// grün = von der Platte, orange = steht auf dem Modell, rot = keine Stütze (Stützen aus bzw. „Nur auf Druckplatte“)
+const C_SUP = { platte: new THREE.Color(0x3fbf6a), modell: new THREE.Color(0xf08c2a), keine: new THREE.Color(0xe5384b) };
+function zeigeStuetzen() {
+  const alt = group.getObjectByName('stuetzen'); if (alt) { group.remove(alt); alt.traverse(o => { if (o.geometry) o.geometry.dispose(); }); }
+  const an = $('supShow').checked && cur && cur.r && cur.models;
+  $('supLeg').hidden = !an;
+  if (!an) { render(); return; }
+  const cfg = cur.cfgNachher || cur.cfg || {};
+  const supAn = PC.cfgBool(cfg, 'enable_support'), nurPlatte = PC.cfgBool(cfg, 'support_on_build_plate_only');
+  cur.sup = cur.sup || cur.r.meshes.map((m, k) => PC.supportPreview(m.pos, m.index, cur.models[k].triClass, { islandPts: cur.models[k].islandPts }));
+  const g = new THREE.Group(); g.name = 'stuetzen';
+  const n = { platte: 0, modell: 0, keine: 0 };
+  const alle = cur.sup.flat();
+  if (alle.length) {
+    const r0 = Math.max(0.35, Math.min(1.2, modelSize / 400));
+    const geo = new THREE.CylinderGeometry(r0, r0 * 1.25, 1, 6, 1); geo.rotateX(Math.PI / 2); geo.translate(0, 0, 0.5);
+    const inst = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial({ color: 0xffffff }), alle.length);
+    const M = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), po = new THREE.Vector3();
+    alle.forEach((s, i) => {
+      const art = !supAn ? 'keine' : !s.aufModell ? 'platte' : nurPlatte ? 'keine' : 'modell'; n[art]++;
+      const h = Math.max(0.2, s.p[2] - s.z1);
+      M.compose(po.set(s.p[0], s.p[1], s.z1), q, sc.set(1, 1, h)); inst.setMatrixAt(i, M); inst.setColorAt(i, C_SUP[art]);
+    });
+    inst.instanceMatrix.needsUpdate = true; if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+    g.add(inst);
+  }
+  group.add(g);
+  $('supInfo').textContent = !alle.length ? 'braucht keine Stützen' : !supAn ? '· Stützen sind aus' : `· ${n.platte + n.modell} gestützt${n.keine ? ', ' + n.keine + ' ohne Stütze' : ''}`;
+  render();
+}
+$('supShow').onchange = zeigeStuetzen;
+
 function flyTo(to) { anim = { t0: performance.now(), from: { target: orbit.target.clone(), r: orbit.r, theta: orbit.theta, phi: orbit.phi }, to }; }
 function clearFocus() { marks.clear(); $('focusInfo').hidden = true; document.querySelectorAll('.card.sel').forEach(c => c.classList.remove('sel')); render(); }
 function selectCard(i) {
