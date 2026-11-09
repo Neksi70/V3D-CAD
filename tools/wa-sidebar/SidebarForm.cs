@@ -270,7 +270,6 @@ public class SidebarForm : Form
         {
             await c.AddScriptToExecuteOnDocumentCreatedAsync(PinStore.Script);
             c.WebMessageReceived += (_, e) => OnPinMessage(c, e);
-            c.NavigationCompleted += (_, _) => _ = KeepSessionCookies(c);
         }
         c.DocumentTitleChanged += (_, _) => SetUnread(svc.Id, ParseUnread(c.DocumentTitle));
         c.NotificationReceived += (_, e) =>
@@ -358,33 +357,13 @@ public class SidebarForm : Form
                     break;
                 case "pin-pending":
                     if (_s.RememberPins) PinStore.SetPending(key, r.GetProperty("pin").GetString());
-                    _ = KeepSessionCookies(c);
                     break;
                 case "pin-ok":
                     PinStore.Confirm(key);
-                    _ = KeepSessionCookies(c);
                     break;
                 case "pin-bad":
                     PinStore.Reject(key);
                     break;
-            }
-        }
-        catch { }
-    }
-
-    // Sitzungs-Cookies verfallen beim Schließen der App. Für V3D Tools machen wir daraus
-    // 30-Tage-Cookies, damit man nach einem Neustart angemeldet bleibt.
-    async Task KeepSessionCookies(CoreWebView2 c)
-    {
-        if (!_s.KeepSessions) return;
-        try
-        {
-            await Task.Delay(1500); // Anmeldung per fetch setzt Cookies oft erst kurz danach
-            var cookies = await c.CookieManager.GetCookiesAsync(c.Source);
-            foreach (var ck in cookies.Where(x => x.IsSession))
-            {
-                ck.Expires = DateTime.Now.AddDays(30);
-                c.CookieManager.AddOrUpdateCookie(ck);
             }
         }
         catch { }
@@ -690,7 +669,6 @@ public class SidebarForm : Form
         _menu.Items.Add(Check("Beim Wegklicken einklappen", _s.AutoCollapse, () => { _s.AutoCollapse = !_s.AutoCollapse; _s.Save(); }));
         _menu.Items.Add(Check("Benachrichtigungen anzeigen", _s.Notifications, () => { _s.Notifications = !_s.Notifications; _s.Save(); }));
         _menu.Items.Add(Check("V3D Tools: PINs merken und eintragen", _s.RememberPins, () => { _s.RememberPins = !_s.RememberPins; _s.Save(); }));
-        _menu.Items.Add(Check("V3D Tools: angemeldet bleiben", _s.KeepSessions, () => { _s.KeepSessions = !_s.KeepSessions; _s.Save(); }));
         if (PinStore.Count > 0)
             _menu.Items.Add($"Gespeicherte PINs löschen ({PinStore.Count})", null, (_, _) => PinStore.Clear());
         _menu.Items.Add(Check("Mit Windows starten", IsAutostart(), () => SetAutostart(!IsAutostart())));

@@ -146,7 +146,10 @@ static class PinStore
   document.addEventListener('click', e => { if (e.target.closest && e.target.closest('button,input[type=submit]')) setTimeout(capture, 0); }, true);
   function check() { if (!reported && findPin()) { reported = true; W.postMessage({ t: 'pin-need', key }); } }
   function start() {
-    new MutationObserver(check).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
+    // nur kurz beobachten: PIN-Masken erscheinen gleich beim Laden; danach die Seite nicht mehr belasten
+    const mo = new MutationObserver(check);
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+    setTimeout(() => mo.disconnect(), 15000);
     check();
     setTimeout(() => { if (!findPin()) W.postMessage({ t: 'pin-ok', key }); }, 2500);
   }
