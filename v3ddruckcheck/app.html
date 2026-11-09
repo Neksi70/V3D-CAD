@@ -572,11 +572,12 @@ function chosenFixes() {
 
 // ---------- ✨ Alles verbessern: Vorher/Nachher + Download ----------
 $('magic').onclick = () => {
-  const fixes = chosenFixes();
-  if (!fixes.length) return;
-  const before = PC.summarize(cur.findings).score;
-  const after = PC.summarize(check(PC.applyFixes(cur.cfg, fixes))).score;
-  const rows = PC.fixRows(cur.cfg, cur.findings.map(f => ({ ...f, fixes: f.fixes.filter(x => fixes.includes(x)) })));
+  const gewaehlt = chosenFixes();
+  if (!gewaehlt.length) return;
+  // Folge-Änderungen mitrechnen (feinere Schichten → mehr Boden-/Deckschichten) und nie schlechter werden
+  const res = PC.improveAll(cur.cfg, cur.findings, gewaehlt, check);
+  const fixes = res.fixes, before = res.before, after = res.after;
+  const rows = PC.fixRows(cur.cfg, [...cur.findings.map(f => ({ ...f, fixes: f.fixes.filter(x => res.chosen.includes(x)) })), ...res.extra]);
   const { r, models, hasCfg } = cur;
   const can3mf = !!(r.zip && hasCfg && models.length && r.zip.has('Metadata/project_settings.config'));
   cur.lastImprove = { before, after, rows: rows.length, can3mf };
@@ -584,6 +585,8 @@ $('magic').onclick = () => {
   el.hidden = false;
   el.innerHTML = `<div class="ba"><div class="ring">${ringSvg(before, 78, 8)}</div><span class="to">➜</span><div class="ring">${ringSvg(after, 78, 8)}</div></div>
     <h3>${after > before ? `+${after - before} Punkte – ` : ''}das habe ich geändert:</h3>
+    ${res.extra.length ? `<div class="hint" style="margin:-4px 0 8px">↪ ${res.extra.length === 1 ? 'Eine Folge-Änderung' : res.extra.length + ' Folge-Änderungen'} gleich mit erledigt (${res.extra.map(f => esc(f.title)).join(' · ')}).</div>` : ''}
+    ${res.dropped.length ? `<div class="hint" style="margin:-4px 0 8px">⏸ Nicht übernommen, weil es insgesamt schlechter würde: ${res.dropped.map(x => esc(PC.keyLabel(x.key))).join(', ')}.</div>` : ''}
     <ul>${rows.map(x => `<li>${esc(x.label)}: <span style="color:var(--dim);text-decoration:line-through">${esc(PC.valueText(x.key, x.from) || '–')}</span> → <b>${esc(PC.valueText(x.key, x.to))}</b><span class="wh">${esc(x.where)}</span></li>`).join('')}</ul>
     ${cur.slicer && can3mf ? slProfileHtml(rows) : ''}
     <div class="dl">${cur.slicer && can3mf ? `<button class="sl" id="oSl">✔ In ${esc(cur.slicer.name)} übernehmen</button>` : ''}

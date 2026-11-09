@@ -1184,6 +1184,41 @@ export function summarize(findings) {
   return { counts: n, score, worst: findings.length ? findings[0].level : LEVEL.OK };
 }
 
+// „Alles verbessern“ zu Ende rechnen (Volker 9.11.: nach dem Verbessern 86 → 78 Punkte).
+// Eine Änderung kann einen NEUEN Befund auslösen – z. B. feinere Schichten (0,2 → 0,12 mm)
+// machen Boden/Decke bei gleicher Schichtzahl zu dünn. Darum nach dem Anwenden neu prüfen,
+// die Fixes neuer Befunde mitnehmen (bis nichts mehr dazukommt) und sicherstellen, dass es
+// nie schlechter wird: sonst die gewählte Änderung weglassen, deren Wegfall am meisten bringt.
+// check(cfg) → Befunde. Ergebnis: { fixes, extra (Folge-Befunde mit ihren Fixes), dropped, before, after }
+export function improveAll(cfg, findings, chosen, check, maxRounds = 4) {
+  const k = x => x.key + '|' + (x.idx === undefined ? '' : x.idx);
+  const before = summarize(findings).score;
+  const ids0 = new Set(findings.map(f => f.id));
+  const run = sel => {
+    let all = sel.slice(); const extra = [];
+    for (let r = 0; r <= maxRounds; r++) {
+      const fs = check(applyFixes(cfg, all));
+      if (r === maxRounds) return { fixes: all, extra, after: summarize(fs).score };
+      const have = new Set(all.map(k)), neu = [];
+      for (const f of fs) {
+        if (ids0.has(f.id)) continue;
+        const fx = (f.fixes || []).filter(x => !have.has(k(x)));
+        if (fx.length) { fx.forEach(x => have.add(k(x))); neu.push({ ...f, fixes: fx }); }
+      }
+      if (!neu.length) return { fixes: all, extra, after: summarize(fs).score };
+      for (const f of neu) { all = all.concat(f.fixes); extra.push(f); }
+    }
+  };
+  let sel = chosen.slice(), res = run(sel);
+  const dropped = [];
+  while (res.after < before && sel.length) {
+    let best = null;
+    for (const x of sel) { const t = run(sel.filter(y => y !== x)); if (!best || t.after > best.t.after) best = { x, t }; }
+    sel = sel.filter(y => y !== best.x); dropped.push(best.x); res = best.t;
+  }
+  return { fixes: res.fixes, chosen: sel, extra: res.extra, dropped, before, after: res.after };
+}
+
 // Fix-Liste → Tabelle (alt → neu) für Anzeige/Export
 export function fixRows(cfg, findings) {
   const rows = new Map();
