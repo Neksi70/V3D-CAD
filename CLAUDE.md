@@ -22,6 +22,7 @@
   auf Port 8766 (nur localhost, nicht im Funnel). Tester sehen weiter 8765/dist.
 
 ## Konventionen
+- Unterhaltung mit Volker IMMER auf Deutsch (auch Zwischenmeldungen und Rückfragen)
 - Vanilla JS / Three.js, keine neuen Abhängigkeiten ohne Rückfrage
 - Koordinaten-Transformation: World-Transform IMMER vor CSG-Operationen anwenden
 - Nach jeder funktionierenden Änderung: git commit mit aussagekräftiger Message
