@@ -177,7 +177,7 @@ export default {
       say:
         'Passt alles, exportierst du die STL-Datei und schickst sie in den Slicer. ' +
         'Das war der ganze Weg.',
-      at: '.btn.pri.main-stl',
+      at: '#stl-wrap .spl',
       hold: 0.8,
       run: async (v) => {
         // Prüf-Fenster schließen, damit der Export-Knopf frei liegt
@@ -187,7 +187,7 @@ export default {
             .forEach((m) => m.classList.remove('show'));
         });
         await v.sleep(600);
-        await v.moveTo('.btn.pri.main-stl', 800);
+        await v.moveTo('#stl-wrap .spl', 800);
       },
     },
   ],

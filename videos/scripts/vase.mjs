@@ -159,10 +159,10 @@ export default {
       kapitel: 'Export',
       say:
         'Dann exportieren und ab in den Slicer. Das war der Vasen-Generator.',
-      at: '.btn.pri.main-stl',
+      at: '#stl-wrap .spl',
       hold: 0.8,
       run: async (v) => {
-        await v.moveTo('.btn.pri.main-stl', 800);
+        await v.moveTo('#stl-wrap .spl', 800);
       },
     },
   ],

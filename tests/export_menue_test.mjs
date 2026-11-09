@@ -9,9 +9,9 @@ await ctx.addInitScript(() => { localStorage.setItem('v3d_umsteiger_hinweis', '1
 const pg = await ctx.newPage(); const errs = []; pg.on('pageerror', e => errs.push(String(e)));
 await pg.goto(APP); await pg.waitForFunction(() => typeof toggleStlMenu === 'function', { timeout: 60000 });
 await pg.evaluate(() => { document.getElementById('auth-overlay')?.classList.add('hidden'); _newCreate(false); addShape('box'); });
-const k = await pg.evaluate(() => { const a = document.querySelector('#stl-wrap .main-stl').getBoundingClientRect(), s = document.querySelector('#stl-wrap .spl');
-  return { a: [Math.round(a.width), Math.round(a.height)], s: [Math.round(s.getBoundingClientRect().width)], text: s.textContent.trim(), haupt: document.querySelector('#stl-wrap .main-stl').textContent.trim() }; });
-ok('Knöpfe mit Schrift: „⬇ STL“ + „📦 Speichern & Drucken“', k.haupt === '⬇ STL' && /Speichern & Drucken/.test(k.text) && k.s[0] > 120, k);
+const k = await pg.evaluate(() => { const s = document.querySelector('#stl-wrap .spl');
+  return { knoepfe: document.querySelectorAll('#stl-wrap > button').length, s: Math.round(s.getBoundingClientRect().width), text: s.textContent.trim() }; });
+ok('nur EIN Knopf „📦 Speichern & Drucken“ (kein extra STL-Knopf)', k.knoepfe === 1 && /Speichern & Drucken/.test(k.text) && k.s > 120, k);
 await pg.click('#stl-wrap .spl');
 const m = await pg.evaluate(() => ({ sicht: document.getElementById('stl-menu').classList.contains('show'),
   sek: [...document.querySelectorAll('#stl-menu .stl-sec')].map(e => e.textContent), erkl: document.querySelectorAll('#stl-menu .sli-erkl .si-d').length,
@@ -23,8 +23,8 @@ await pg.screenshot({ path: '/tmp/export_menue.png' });
 const r = await pg.evaluate(() => { let n = 0; const o = window._3mfSpeichern; window._3mfSpeichern = () => { n++; }; [...document.querySelectorAll('#stl-menu .sli-erkl')].find(e => /3MF/.test(e.textContent)).click(); window._3mfSpeichern = o; return n; });
 ok('Eintrag „3MF (mit Farben)“ ruft _3mfSpeichern', r === 1, r);
 // Symbol-Modus: Export bleibt mit Schrift
-const sym = await pg.evaluate(() => { _symToggle(true); const t = [document.querySelector('#stl-wrap .main-stl').textContent.trim(), document.querySelector('#stl-wrap .spl').textContent.trim()]; _symToggle(false); return t; });
-ok('Symbol-Modus: Export-Knöpfe behalten Schrift', sym[0] === '⬇ STL' && /Speichern/.test(sym[1]), sym);
+const sym = await pg.evaluate(() => { _symToggle(true); const t = document.querySelector('#stl-wrap .spl').textContent.trim(); _symToggle(false); return t; });
+ok('Symbol-Modus: Knopf behält Schrift', /Speichern/.test(sym), sym);
 ok('keine Seitenfehler', errs.length === 0, errs.slice(0, 3));
 await b.close();
 console.log(fails.length ? '\n' + fails.length + ' FEHLER' : '\nALLE OK');

@@ -162,7 +162,7 @@ export default {
     {
       kapitel: 'Export',
       say: 'Oder ganz klassisch als STL exportieren. Das war die Bild-Box.',
-      at: '.btn.pri.main-stl',
+      at: '#stl-wrap .spl',
       hold: 0.8,
       run: async (v) => {
         await v.eval(() => {
@@ -173,7 +173,7 @@ export default {
           if (m) m.classList.remove('show');
         });
         await v.sleep(500);
-        await v.moveTo('.btn.pri.main-stl', 800);
+        await v.moveTo('#stl-wrap .spl', 800);
       },
     },
   ],

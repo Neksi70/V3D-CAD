@@ -201,10 +201,10 @@ export default {
       say:
         'Bleibt der Export — und die Schublade sieht endlich aus wie im ' +
         'Werkzeugkoffer. Das war der Werkzeug-Einleger.',
-      at: '.btn.pri.main-stl',
+      at: '#stl-wrap .spl',
       hold: 0.8,
       run: async (v) => {
-        await v.moveTo('.btn.pri.main-stl', 800);
+        await v.moveTo('#stl-wrap .spl', 800);
       },
     },
   ],
