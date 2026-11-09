@@ -79016,21 +79016,27 @@ async function _dcbNachricht(e) {
 async function _dcbImSlicer(f, bytes) {
   if (!_stlHelperOk) {
     _downloadBlob(new Blob([bytes], { type: 'model/3mf' }), f.name.replace(/\.3mf$/i, '') + '_verbessert.3mf');
-    return 'Druck-Helfer nicht erreichbar – heruntergeladen, bitte in Bambu Studio öffnen';
+    return 'Druck-Helfer nicht erreichbar – heruntergeladen, bitte im Slicer öffnen';
   }
-  const kopie = bytes.slice(0);
-  // schon genau diese Fassung gespeichert („Nur speichern“ davor)? Dann nicht noch einmal –
-  // der Helfer legte sonst eine zweite Kopie im Ordner „Original“ an
-  const sig = _dcbSig(kopie);
-  const gespeichert = _dcb.sig === sig ? 'schon gespeichert' : await _dcbSpeichern(f, bytes);
   const slicer = (document.getElementById('stllib-slicer') || {}).value || '';
-  const res = f.lib
-    ? await fetch(STLLIB_HELPER + '/print', { method: 'POST', headers: { 'X-LibFile': encodeURIComponent(f.path), 'X-Slicer': slicer }, body: '' })
-    : await fetch(STLLIB_HELPER + '/print', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(f.name), 'X-Slicer': slicer }, body: kopie });
+  // Schon gespeichert (dieselbe Fassung)? Dann genau die Bibliotheksdatei öffnen; sonst eine Kopie
+  // „…_verbessert.3mf“ an den Slicer geben – die Bibliothek bleibt dabei unverändert.
+  const gespeichert = f.lib && _dcb.sig === _dcbSig(bytes);
+  const name = f.name.replace(/\.3mf$/i, '') + '_verbessert.3mf';
+  const res = gespeichert
+    ? await _dcbFetch(STLLIB_HELPER + '/print', { method: 'POST', headers: { 'X-LibFile': encodeURIComponent(f.path), 'X-Slicer': slicer }, body: '' })
+    : await _dcbFetch(STLLIB_HELPER + '/print', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(name), 'X-Slicer': slicer }, body: bytes });
   const j = await res.json().catch(() => ({}));
-  if (!res.ok || !j.ok) throw new Error('Gespeichert, aber Öffnen im Slicer ging nicht: ' + (j.error || ('HTTP ' + res.status)));
-  notify('🖨 „' + f.name + '“ in ' + (j.slicer || 'Slicer') + ' geöffnet – dort neu slicen und drucken', 'ok');
-  return 'In ' + (j.slicer || 'Slicer') + ' geöffnet' + (/heruntergeladen/i.test(gespeichert) ? '' : ' (gespeichert, Original im Ordner „Original“)');
+  if (!res.ok || !j.ok) throw new Error('Öffnen im Slicer ging nicht: ' + (j.error || ('HTTP ' + res.status)));
+  notify('🖨 „' + (gespeichert ? f.name : name) + '“ in ' + (j.slicer || 'Slicer') + ' geöffnet – dort neu slicen und drucken', 'ok');
+  return 'In ' + (j.slicer || 'Slicer') + ' geöffnet';
+}
+// Helfer-Aufrufe mit Zeitgrenze – ein hängender Helfer ließ den Knopf auf „⏳ …“ stehen
+async function _dcbFetch(url, opt, ms) {
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms || 60000);
+  try { return await fetch(url, Object.assign({}, opt, { signal: ctl.signal })); }
+  catch (e) { throw new Error(e.name === 'AbortError' ? 'Druck-Helfer antwortet nicht (Zeitlimit)' : (e.message || e)); }
+  finally { clearTimeout(t); }
 }
 
 // Ordner-Handle zu einem relativen Pfad (Unterordner der freigegebenen Bibliothek)
@@ -79046,7 +79052,7 @@ async function _dcbSpeichern(f, bytes) {
   if (f.lib) {   // Helfer-Bibliothek: ersetzen, Original wandert nach „Original“
     if (!_stlHelperOk) throw new Error('Druck-Helfer nicht erreichbar');
     if (_stlHelperVer < 12) throw new Error('Druck-Helfer zu alt – bitte oben „Helfer aktualisieren“');
-    const res = await fetch(STLLIB_HELPER + '/replace', { method: 'POST', headers: { 'X-LibFile': encodeURIComponent(f.path) }, body: bytes });
+    const res = await _dcbFetch(STLLIB_HELPER + '/replace', { method: 'POST', headers: { 'X-LibFile': encodeURIComponent(f.path) }, body: bytes });
     const j = await res.json().catch(() => ({}));
     if (!res.ok || !j.ok) throw new Error(j.error || ('HTTP ' + res.status));
   } else if (f.handle && f.handle.createWritable) {   // freigegebener Ordner: Original sichern, dann überschreiben
@@ -79064,7 +79070,7 @@ async function _dcbSpeichern(f, bytes) {
   _dcb.buf = bytes.slice(0); _dcb.sig = sig;
   if (document.getElementById('stllib-modal').classList.contains('show')) _stlRenderGrid();
   notify('🩺 „' + f.name + '“ verbessert gespeichert – das Original liegt im Ordner „Original“', 'ok');
-  return 'In der Bibliothek gespeichert (Original im Ordner „Original“)';
+  return 'Gespeichert';
 }
 
 // ═══ 📏 MIT ZIELHÖHE DRUCKEN (Bibliothek, _stz*) ═════════════════════════════
@@ -80195,8 +80201,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.341';
+const VOLME3D_VERSION = '1.18.342';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.342', date:'2026-11-09', changes:[
+    ['🖨','<b>Druck prüfen: zwei getrennte Knöpfe.</b> <b>💾 Speichern</b> legt die verbesserte Datei in die Bibliothek, das Original kommt in den Ordner „Original“. <b>🖨 Im Slicer öffnen</b> öffnet die verbesserte Fassung in deinem Slicer. Wurde schon gespeichert, ist es genau diese Datei, sonst eine Kopie „…_verbessert.3mf“, und die Bibliothek bleibt unverändert. Hängt der Druck-Helfer, meldet sich der Knopf nach einer Minute, statt stehen zu bleiben.'],
+  ]},
   { version:'1.18.341', date:'2026-11-09', changes:[
     ['🗺️','<b>Karte → 3D: Ladebalken und echtes Abbrechen.</b> Nach „Modell erzeugen“ wurde der Knopf nur blass, und man wusste nicht, ob noch etwas passiert. Gemessen: Das Modell selbst ist in einer Viertelsekunde gebaut – die Wartezeit kommt von den OpenStreetMap-Servern, die oft eine Minute oder länger brauchen. Jetzt zeigt das Fenster unten einen <b>Fortschrittsbalken mit Sekunden</b> und den aktuellen Schritt. Antwortet ein Server 15 s nicht, wird zusätzlich der nächste gefragt – wer zuerst liefert, gewinnt. <b>Abbrechen</b> stoppt die Anfragen wirklich, das Fenster bleibt offen und ein neuer Versuch geht sofort. Wer nach dem Laden nur Höhe oder Breite ändert, muss nicht noch einmal warten.'],
     ['🫙','<b>Dose mit Motiv: Vorschau zeigt den Text bzw. das SVG.</b> Das Motiv erscheint direkt in der Vorschau an der richtigen Stelle, läuft um die Ecken und zeigt 1×, 2× oder 4× rundum – erhaben in Orange, vertieft und durchbrochen dunkel.'],

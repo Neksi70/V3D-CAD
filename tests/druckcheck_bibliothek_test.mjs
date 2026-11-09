@@ -47,6 +47,13 @@ ok('Befund: Düse zu heiß für PLA erkannt', /250|Düsentemperatur|Temperatur/i
 ok('„Verbessern“-Knopf angeboten', befund.magic);
 await frame.click('#magic');
 await frame.waitForSelector('#oBib', { timeout: 10000 });
+ok('zwei Knöpfe nebeneinander: Speichern + Im Slicer öffnen', await frame.evaluate(() => { const a = document.getElementById('oBib').getBoundingClientRect(), b = document.getElementById('oSlc').getBoundingClientRect(); return /Speichern/.test(document.getElementById('oBib').textContent) && /Im Slicer öffnen/.test(document.getElementById('oSlc').textContent) && Math.abs(a.top - b.top) < 2 && b.left > a.left; }));
+// erst nur im Slicer öffnen: Kopie „…_verbessert.3mf“, Bibliothek unverändert
+await frame.click('#oSlc');
+await pg.waitForFunction(() => !!window.__print, null, { timeout: 15000 }).catch(() => {});
+const s0 = await pg.evaluate(() => ({ ersetzt: !!window.__ersetzt, print: window.__print }));
+ok('Im Slicer öffnen ohne Speichern: Kopie _verbessert.3mf, Bibliothek unverändert', !s0.ersetzt && s0.print && /_verbessert\.3mf$/.test(s0.print.datei), s0);
+await pg.evaluate(() => { window.__print = null; });
 await frame.click('#oBib');
 await pg.waitForFunction(() => !!window.__ersetzt, null, { timeout: 15000 }).catch(async () => { console.log('Knopf:', await frame.evaluate(() => document.getElementById('oBib').textContent), 'Helfer:', await pg.evaluate(() => [_stlHelperOk, _stlHelperVer])); });
 const neu = await pg.evaluate(() => {
@@ -55,16 +62,16 @@ const neu = await pg.evaluate(() => {
 });
 ok('über den Helfer an dieselbe Stelle ersetzt', neu.pfad === pfadVorher, [neu.pfad, pfadVorher]);
 ok('verbessertes 3MF: Temperatur gesenkt, Modell drin', parseFloat([].concat(neu.temp)[0]) < 250 && neu.modell, neu);
-await frame.waitForFunction(() => /Bibliothek gespeichert/.test(document.getElementById('oBib').textContent), null, { timeout: 5000 }).catch(() => {});
+await frame.waitForFunction(() => /Gespeichert/.test(document.getElementById('oBib').textContent), null, { timeout: 5000 }).catch(() => {});
 const rueck = await frame.evaluate(() => document.getElementById('oBib').textContent);
-ok('Rückmeldung in der Prüfseite', /✓ In der Bibliothek gespeichert/.test(rueck), rueck);
+ok('Rückmeldung in der Prüfseite', /✓ Gespeichert/.test(rueck), rueck);
 // 🖨 Speichern & im Slicer öffnen: erst ersetzen, dann über den Helfer im Slicer öffnen
 await pg.evaluate(() => { window.__ersetzt = null; window.__print = null; });
-ok('Knopf „Speichern & im Slicer öffnen“ vorhanden', !!(await frame.$('#oSlc')));
+ok('Knopf „Im Slicer öffnen“ vorhanden', !!(await frame.$('#oSlc')));
 await frame.click('#oSlc');
 await pg.waitForFunction(() => !!window.__print, null, { timeout: 15000 }).catch(() => {});
 const sl = await pg.evaluate(() => ({ ersetzt: !!window.__ersetzt, print: window.__print }));
-ok('Slicer-Weg nach „Nur speichern“: kein zweites Speichern, /print mit derselben Datei', !sl.ersetzt && sl.print && sl.print.datei === pfadVorher, sl);
+ok('Slicer-Weg nach „Speichern“: kein zweites Speichern, /print mit derselben Datei', !sl.ersetzt && sl.print && sl.print.datei === pfadVorher, sl);
 await frame.waitForFunction(() => /Bambu Studio geöffnet/.test(document.getElementById('oSlc').textContent), null, { timeout: 5000 }).catch(() => {});
 ok('Rückmeldung „In Bambu Studio geöffnet“', /In Bambu Studio geöffnet/.test(await frame.evaluate(() => document.getElementById('oSlc').textContent)), await frame.evaluate(() => document.getElementById('oSlc').textContent));
 await pg.screenshot({ path: '/tmp/dcb_bibliothek.png' });
