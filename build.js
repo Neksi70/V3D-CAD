@@ -70,7 +70,7 @@ async function build() {
     // Auslieferung soll eine einzige Datei bleiben. Nur was hier steht —
     // lib/three.min.js & Co. bleiben absichtlich draussen, die sind gross
     // und aendern sich nie.
-    const EINBETTEN = ['cam-kern.js', 'schicht-kern.js', 'druckcheck-kern.js'];
+    const EINBETTEN = ['cam-kern.js', 'schicht-kern.js', 'druckcheck-kern.js', 'weihnachts-kern.js'];
     if (hasSrc) {
       const m2 = /\bsrc\s*=\s*["']([^"']+)["']/.exec(match.attrs);
       const datei = m2 && m2[1];

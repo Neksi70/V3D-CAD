@@ -317,6 +317,7 @@ ALLOW = {
     '/cam-kern.js':                       ('cam-kern.js', 'text/javascript; charset=utf-8'),
     '/schicht-kern.js':                   ('schicht-kern.js', 'text/javascript; charset=utf-8'),
     '/druckcheck-kern.js':                ('druckcheck-kern.js', 'text/javascript; charset=utf-8'),
+    '/weihnachts-kern.js':                ('weihnachts-kern.js', 'text/javascript; charset=utf-8'),
     # Bambu-Projektprofile fuer den 3MF-Export (tools/bau_bambu_projekt.py)
     '/bambu-projekt.json':                ('bambu-projekt.json', 'application/json; charset=utf-8'),
     '/lib/three.min.js':                  ('lib/three.min.js', 'text/javascript; charset=utf-8'),
