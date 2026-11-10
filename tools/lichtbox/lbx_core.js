@@ -19,6 +19,19 @@ const _LBX_WICHTEL = [[-0.42, 0], [0.42, 0], [0.47, 0.2], [0.48, 0.42], [0.40, 0
 function _lbxUmriss(CS, p) {
   const W = p.breite, H = p.hoehe, r = Math.min(4, W / 10);
   let pts;
+  if (p.form === 'tanne') {                                                // drei Etagen, runde Spitzen, flacher Boden
+    const T = [[-0.5, 0], [0.5, 0], [0.3, 0.33], [0.4, 0.33], [0.2, 0.64], [0.29, 0.64], [0, 1], [-0.29, 0.64], [-0.2, 0.64], [-0.4, 0.33], [-0.3, 0.33]];
+    const roh = new CS([T.map(([x, y]) => [x * W, y * H])]), r = Math.min(W, H) * 0.05, a2 = roh.offset(-r, 'Round', 2, 48), b2 = a2.offset(r, 'Round', 2, 48);
+    roh.delete(); a2.delete(); return b2;
+  }
+  if (p.form === 'stern') {                                                // 5 Zacken, unten zwei Spitzen abgeflacht (steht)
+    const R = Math.min(W, H) / 2, pts = [];
+    for (let i = 0; i < 10; i++) { const a = Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? R * 0.5 : R; pts.push([rr * Math.cos(a), R + rr * Math.sin(a)]); }
+    const roh = new CS([pts]), r = R * 0.09, a2 = roh.offset(-r, 'Round', 2, 48), b2 = a2.offset(r, 'Round', 2, 48);
+    const yMin = b2.bounds().min[1], schnitt = CS.square([4 * R, 4 * R]).translate([-2 * R, yMin + R * 0.06]), c2 = b2.intersect(schnitt);
+    roh.delete(); a2.delete(); b2.delete(); schnitt.delete();
+    const yb = c2.bounds().min[1], c3 = c2.translate([0, -yb]); c2.delete(); return c3;
+  }
   if (p.form === 'wichtel') {
     const roh = new CS([_LBX_WICHTEL.map(([x, y]) => [x * W, y * H])], 'NonZero'), a2 = roh.offset(-2, 'Round', 2, 32), b2 = a2.offset(2, 'Round', 2, 32);
     roh.delete(); a2.delete(); return b2;
@@ -62,6 +75,44 @@ function _lbxKrippe(CS, x0, y0, s, b, sx) {
   T.push(_lbxKreis(CS, x0 + 0.77 * sx, y0 + 0.80 * s, 0.065 * s, b));
   const u = CS.union(T); T.forEach(t => t.delete()); return u;
 }
+// Häuserzeile (Breite 1, Höhe ≈ 0,8): Satteldach gefüllt, Wellendach, Turm, Haus mit Rundfenster.
+// Liefert {strich, fuell} als CrossSections (Mitte unten bei x0, y0; Gesamtbreite s).
+function _lbxHaeuser(CS, x0, y0, s, b) {
+  const X = x => x0 + (x - 0.44) * s, Y = y => y0 + y * s, P = q => q.map(([x, y]) => [X(x), Y(y)]);
+  const S = [], F = [], U = [];
+  const haus = (xa, xb, hw, hd) => { const q = P([[xa, 0], [xb, 0], [xb, hw], [(xa + xb) / 2, hd], [xa, hw]]); S.push(_lbxStrich(CS, q, b, true)); U.push(new CS([q])); };
+  const dach = (xa, xb, hw, hd) => F.push(new CS([P([[xa, hw], [xb, hw], [(xa + xb) / 2, hd]])]));
+  const fenster = (x, y, q) => F.push(new CS([P([[x - q / 2, y - q / 2], [x + q / 2, y - q / 2], [x + q / 2, y + q / 2], [x - q / 2, y + q / 2]])]));
+  const kreuzF = (x, y, q) => { for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) fenster(x + dx * q * 0.55, y + dy * q * 0.55, q * 0.9); };
+  const tuer = (x, br, ho) => { const pts = [[x - br / 2, 0], [x - br / 2, ho - br / 2]]; for (let i = 1; i < 12; i++) { const a = Math.PI - Math.PI * i / 12; pts.push([x + br / 2 * Math.cos(a), ho - br / 2 + br / 2 * Math.sin(a)]); } pts.push([x + br / 2, ho - br / 2], [x + br / 2, 0]); S.push(_lbxStrich(CS, P(pts), b)); };
+  // A: kleines Haus, Dach gefüllt
+  haus(0.00, 0.20, 0.20, 0.33); dach(0.00, 0.20, 0.20, 0.33); kreuzF(0.065, 0.11, 0.03); tuer(0.145, 0.045, 0.11);
+  // B: hohes Haus, Wellendach
+  haus(0.25, 0.43, 0.40, 0.58);
+  for (let j = 0; j < 3; j++) { const yy = 0.43 + j * 0.035, hb = (0.58 - yy) / 0.18 * 0.09 * 0.95, pts = []; for (let i = 0; i <= 10; i++) { const t = i / 10; pts.push([0.34 - hb + 2 * hb * t, yy + 0.008 * Math.sin(t * Math.PI * 4)]); } S.push(_lbxStrich(CS, P(pts), b * 0.8)); }
+  for (const yy of [0.31, 0.23, 0.15]) fenster(0.295, yy, 0.03); tuer(0.375, 0.045, 0.12);
+  // C: Turm, steiles Dach gefüllt
+  haus(0.48, 0.64, 0.50, 0.80); dach(0.48, 0.64, 0.50, 0.80); F.push(new CS([P([[0.55, 0.58], [0.57, 0.58], [0.57, 0.64], [0.55, 0.64]])]));
+  for (const yy of [0.40, 0.32, 0.24]) fenster(0.60, yy, 0.03); tuer(0.525, 0.04, 0.13);
+  // D: Haus mit Rundfenster im Giebel
+  haus(0.69, 0.88, 0.24, 0.40); S.push(_lbxKreis(CS, X(0.785), Y(0.305), 0.018 * s, b));
+  kreuzF(0.74, 0.14, 0.028); tuer(0.835, 0.045, 0.11);
+  const strich = CS.union(S), fuell = CS.union(F), umriss = CS.union(U); S.forEach(q => q.delete()); F.forEach(q => q.delete()); U.forEach(q => q.delete());
+  return { strich, fuell, umriss };
+}
+// Wimpelkette zwischen (xa, ya) und (xb, yb) mit Durchhang; n Wimpel (Dreiecke) hängen an der Schnur.
+// Liefert {cs, wimpel: [[cx, cy, breite, höhe], …]} — für Buchstaben auf den Wimpeln.
+function _lbxWimpel(CS, xa, ya, xb, yb, n, hang, b, hoch) {
+  const pt = t => [xa + (xb - xa) * t, ya + (yb - ya) * t - hang * 4 * t * (1 - t)], schnur = [];
+  for (let i = 0; i <= 24; i++) schnur.push(pt(i / 24));
+  const T = [_lbxStrich(CS, schnur, b)], W = [];
+  const br = Math.hypot(xb - xa, yb - ya) / n * 0.82, h = hoch || br * 1.1;
+  for (let i = 0; i < n; i++) {
+    const t0 = (i + 0.09) / n, t1 = (i + 0.91) / n, a = pt(t0), c = pt(t1), m = pt((t0 + t1) / 2);
+    T.push(new CS([[a, c, [m[0], m[1] - h]]], 'NonZero')); W.push([m[0], m[1] - h * 0.42, br, h]);
+  }
+  const cs = CS.union(T); T.forEach(q => q.delete()); return { cs, wimpel: W };
+}
 let _lbxLedOk = true;
 function _lbxBuild(w, p, textFn) {
   const M = w.Manifold, CS = w.CrossSection, tmp = [], k = x => { if (x) tmp.push(x); return x; };
@@ -71,7 +122,7 @@ function _lbxBuild(w, p, textFn) {
     let kasten = k(M.difference(k(U.extrude(D)), k(k(innen.extrude(D - fd + 1)).translate([0, 0, -1]))));
     // ── Motiv-Flächen (Frontansicht) ──
     const motiv = [], durch = [];
-    const schwein = p.form === 'schwein', ins = (schwein ? 3 : 4) + wd, hw = schwein ? 0.6 * W : p.form === 'haus' ? H * p.wandH / 100 : H;
+    const schwein = p.form === 'schwein', ins = (schwein ? 3 : 4) + wd, hw = schwein ? 0.6 * W : p.form === 'haus' ? H * p.wandH / 100 : p.form === 'stern' ? Math.min(W, H) * 0.95 : H;
     if (p.form === 'wichtel') {                                             // Krempe, Nase, Bart, Punkte, Streifen, Herz
       const yk = 0.56 * H, bk = 0.40 * W, nr = 0.085 * W;
       const krempe = []; for (let i = 0; i <= 12; i++) { const t = i / 12; krempe.push([(-bk + 2 * bk * t), yk + 0.012 * H * Math.sin(Math.PI * t)]); }
@@ -107,22 +158,68 @@ function _lbxBuild(w, p, textFn) {
       motiv.push(k(_lbxKrippe(CS, -sx * 0.45, feldY0, s, b, sx)));
       if (p.motiv === 'beides') yOben = yOben; 
     }
+    let textLinks = null;                                                   // Häuser-Motiv: Text wandert nach links oben
+    if (p.motiv === 'haeuser') {
+      const sx = Math.min(feldX, (yOben - feldY0) / 0.8 * 0.92);
+      const hs = _lbxHaeuser(CS, 0.06 * sx, feldY0 - 2, sx, b); motiv.push(k(hs.strich), k(hs.fuell)); k(hs.umriss);
+      textLinks = { x: -W / 2 + ins + 8, yTop: yOben, yBot: feldY0 + 0.5 * sx, maxW: W * 0.48 };
+    }
+    if (p.wimpel && !schwein && p.form !== 'wichtel') {
+      const xa = W * 0.08, xb = W / 2 - ins - 3, ya = (p.form === 'haus' ? hw : H) - ins - 3;
+      motiv.push(k(_lbxWimpel(CS, xa, ya, xb, ya + 2, 7, Math.min(W, H) * 0.05, b * 0.8).cs));
+    }
     // Stern: im Giebel (Haus) bzw. oben mittig
-    if (p.stern !== 'aus' && !schwein && p.form !== 'wichtel') {
+    if (p.stern !== 'aus' && !schwein && !['wichtel', 'tanne', 'stern'].includes(p.form)) {
       const sy = p.form === 'haus' ? hw + (H - hw) * 0.38 : H - ins - Math.min(W, H) * 0.12, sR = Math.min(W, H) * 0.075;
       const st = k(_lbxStern(CS, 0, sy, sR));
       if (p.stern === 'durch') durch.push(st); else motiv.push(st);
     }
-    if (p.sterne && !schwein && p.form !== 'wichtel') { const R = Math.min(W, H) * 0.028;
+    if (p.sterne && !schwein && !['wichtel', 'tanne', 'stern'].includes(p.form)) { const R = Math.min(W, H) * 0.028;
       for (const [fx, fy, f] of [[0.30, 0.78, 1], [0.38, 0.71, 0.6], [-0.36, 0.20, 0.8], [0.33, 0.12, 0.6]]) motiv.push(k(_lbxStern(CS, fx * W, fy * hw, R * f))); }
-    // Text: Zeilen von oben nach unten im Feld zentriert
-    if (textFn && p.motiv !== 'krippe') {
+    // Text: Zeilen von oben nach unten im Feld zentriert (beim Häuser-Motiv linksbündig darüber)
+    if (textFn && textLinks) {
+      const Z = [[p.text1, p.font1, p.h1], [p.text2, p.font2, p.h2], [p.text3, p.font3, p.h3]].filter(z => z[0] && z[2] > 0);
+      const ges = Z.reduce((s2, z) => s2 + z[2] * 1.25, 0); let yb = (textLinks.yTop + textLinks.yBot) / 2 + ges / 2;
+      for (const [t, f, h] of Z) { yb -= h * 1.25; const r = textFn(CS, k, t, f, h, 0, yb + h * 0.2, textLinks.maxW);
+        if (r && r.cs) { const bb = r.cs.bounds(); motiv.push(k(r.cs.translate([textLinks.x - bb.min[0], 0]))); } }
+    } else if (textFn && p.motiv !== 'krippe') {
       const Z = [[p.text1, p.font1, p.h1], [p.text2, p.font2, p.h2], [p.text3, p.font3, p.h3]].filter(z => z[0] && z[2] > 0);
       const yTop = p.motiv === 'beides' ? yOben : yOben, yBot = p.motiv === 'beides' ? feldY0 + (yOben - feldY0) * 0.55 : feldY0;
       const ges = Z.reduce((s, z) => s + z[2] * 1.35, 0); let yb = (yTop + yBot) / 2 + ges / 2;
       for (const [t, f, h] of Z) { yb -= h * 1.35; const r = textFn(CS, k, t, f, h, 0, yb + h * 0.2, feldX); if (r && r.cs) motiv.push(r.cs); }
     }
-    let dunkel = null;
+    if (p.deko === 'tanne' || p.deko === 'schleife') {                      // kleines Strichbild unter dem Text
+      const m0 = Math.min(W, H), cx = 0, cy = p.form === 'stern' ? m0 * 0.33 : H * 0.17, g = m0 * 0.13;
+      if (p.deko === 'tanne') {
+        motiv.push(k(_lbxStrich(CS, [[cx, cy - g * 0.7], [cx, cy + g * 0.9]], b)));
+        for (let i = 0; i < 4; i++) { const yy = cy + g * (0.75 - i * 0.38), br = g * (0.18 + i * 0.16);
+          motiv.push(k(_lbxStrich(CS, [[cx - br, yy - br * 0.6], [cx, yy], [cx + br, yy - br * 0.6]], b))); }
+      } else {
+        const L = [], Rr = [];
+        for (let i = 0; i <= 14; i++) { const t = i / 14 * 2 * Math.PI; L.push([cx - g * 0.45 - g * 0.42 * Math.cos(t), cy + g * 0.28 * Math.sin(t) * (1 - 0.4 * Math.cos(t))]); Rr.push([cx + g * 0.45 + g * 0.42 * Math.cos(t), cy + g * 0.28 * Math.sin(t) * (1 - 0.4 * Math.cos(t))]); }
+        motiv.push(k(_lbxStrich(CS, L, b, true)), k(_lbxStrich(CS, Rr, b, true)), k(CS.circle(g * 0.1, 24).translate([cx, cy])),
+          k(_lbxStrich(CS, [[cx, cy], [cx - g * 0.25, cy - g * 0.75], [cx - g * 0.4, cy - g * 0.9]], b)), k(_lbxStrich(CS, [[cx, cy], [cx + g * 0.25, cy - g * 0.75], [cx + g * 0.42, cy - g * 0.85]], b)));
+      }
+    }
+    let dunkel = null, muster = null;
+    if (p.muster === 'leo') {                                               // Leo-Rosetten: 3–4 Bogenstücke um einen leeren Kern + Tupfen
+      let a0 = (p.seed || 3) >>> 0; const rnd = () => { a0 = (a0 + 0x6D2B79F5) >>> 0; let t = a0; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+      const raum = k(U.offset(-ins - b - 1.5, 'Round')), rb2 = raum.bounds(), r0 = Math.min(W, H) * p.leo / 100, L = [], step = r0 * 2.7;
+      let zeile = 0;
+      for (let y = rb2.min[1] + r0; y < rb2.max[1]; y += step * 0.87, zeile++) for (let x = rb2.min[0] + (zeile % 2 ? step / 2 : 0); x < rb2.max[0]; x += step) {
+        const cx = x + (rnd() - 0.5) * r0 * 0.9, cy = y + (rnd() - 0.5) * r0 * 0.9, r = r0 * (0.75 + rnd() * 0.5), n = 3 + Math.floor(rnd() * 2), lw = r * 0.42;
+        let a = rnd() * 2 * Math.PI;
+        for (let j = 0; j < n; j++) { const span = (2 * Math.PI / n) * (0.55 + rnd() * 0.25), pts = [];
+          for (let q = 0; q <= 6; q++) { const t = a + span * q / 6, rr = r * (0.9 + 0.2 * Math.sin(t * 3 + j)); pts.push([cx + rr * Math.cos(t), cy + rr * Math.sin(t)]); }
+          L.push(_lbxStrich(CS, pts, lw)); a += 2 * Math.PI / n; }
+        if (rnd() < 0.6) L.push(CS.circle(r * 0.22, 16).translate([cx + step * 0.5 * (rnd() - 0.5) + step * 0.45, cy + step * 0.3 * (rnd() - 0.5)]));
+      }
+      const roh = k(CS.union(L)); L.forEach(q => q.delete());
+      let mu = k(roh.intersect(raum));
+      if (motiv.length) mu = k(mu.subtract(k(k(CS.union(motiv)).offset(1.2, 'Round'))));   // Text/Linien stehen frei
+      muster = k(mu.extrude(0.4).translate([0, 0, D - 0.4]));
+      kasten = k(M.difference(kasten, muster));
+    }
     if (motiv.length) {
       const mu = k(k(CS.union(motiv)).intersect(k(U.offset(-wd - 1, 'Round'))));
       if (p.stil === 'farbe') { dunkel = k(mu.extrude(0.4).translate([0, 0, D - 0.4])); kasten = k(M.difference(kasten, dunkel)); }
@@ -150,6 +247,6 @@ function _lbxBuild(w, p, textFn) {
       if (p.kabel) dk = k(M.difference(dk, k(M.cube([8, 6, 10]).translate([-4, wd - 1, -3]))));   // Kabelkerbe unten
       deckel = dk; _lbxLedOk = !(p.ledD > 0) || ly !== null;
     }
-    return { kasten: kasten.translate([0, 0, 0]), dunkel: dunkel ? dunkel.translate([0, 0, 0]) : null, deckel: deckel ? deckel.translate([0, 0, 0]) : null, hw, ledPasst: !(p.deckel && p.ledD > 0) || _lbxLedOk };
+    return { muster: muster ? muster.translate([0, 0, 0]) : null, kasten: kasten.translate([0, 0, 0]), dunkel: dunkel ? dunkel.translate([0, 0, 0]) : null, deckel: deckel ? deckel.translate([0, 0, 0]) : null, hw, ledPasst: !(p.deckel && p.ledD > 0) || _lbxLedOk };
   } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
 }
