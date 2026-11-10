@@ -188,6 +188,11 @@ function _lbxBuild(w, p, textFn) {
       const ges = Z.reduce((s, z) => s + z[2] * 1.35, 0); let yb = (yTop + yBot) / 2 + ges / 2;
       for (const [t, f, h] of Z) { yb -= h * 1.35; const r = textFn(CS, k, t, f, h, 0, yb + h * 0.2, feldX); if (r && r.cs) motiv.push(r.cs); }
     }
+    if (p.deko === 'herz') {                                                // kleines Herz (Umriss) unter dem Text
+      const m0 = Math.min(W, H), cx = 0, cy = p.form === 'stern' ? m0 * 0.33 : H * 0.2, g = m0 * 0.05, pts = [];
+      for (let i = 0; i <= 40; i++) { const t = i / 40 * 2 * Math.PI, s2 = Math.sin(t); pts.push([cx + g * 16 * s2 * s2 * s2 / 16, cy + g * (13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)) / 16]); }
+      motiv.push(k(_lbxStrich(CS, pts, b, true)));
+    }
     if (p.deko === 'tanne' || p.deko === 'schleife') {                      // kleines Strichbild unter dem Text
       const m0 = Math.min(W, H), cx = 0, cy = p.form === 'stern' ? m0 * 0.33 : H * 0.17, g = m0 * 0.13;
       if (p.deko === 'tanne') {
@@ -200,6 +205,18 @@ function _lbxBuild(w, p, textFn) {
         motiv.push(k(_lbxStrich(CS, L, b, true)), k(_lbxStrich(CS, Rr, b, true)), k(CS.circle(g * 0.1, 24).translate([cx, cy])),
           k(_lbxStrich(CS, [[cx, cy], [cx - g * 0.25, cy - g * 0.75], [cx - g * 0.4, cy - g * 0.9]], b)), k(_lbxStrich(CS, [[cx, cy], [cx + g * 0.25, cy - g * 0.75], [cx + g * 0.42, cy - g * 0.85]], b)));
       }
+    }
+    if (p.stil === 'lamellen') {                                            // Rahmen + Schrift (weiß), Rückwand + senkrechte Lamellen (Holz)
+      const rB = p.rahmenB || 8, tiefL = p.lamTiefe || 6, ab = p.lamAbst || 9, lb = p.lamB || 3;
+      const ring = k(U.subtract(k(U.offset(-rB, 'Round')))), feld = k(U.offset(-rB + 0.5, 'Round')), ub = U.bounds();
+      const L = []; for (let x = ub.min[0] + ab / 2; x < ub.max[0]; x += ab) L.push(CS.square([lb, ub.max[1] - ub.min[1] + 4]).translate([x - lb / 2, ub.min[1] - 2]));
+      const lam = k(k(CS.union(L)).intersect(feld)); L.forEach(q => q.delete());
+      let holz = k(M.union(k(U.offset(-rB + 0.5, 'Round').extrude(2)), k(lam.extrude(D - tiefL - 2).translate([0, 0, 1.99]))));
+      let weiss = k(ring.extrude(D));
+      if (motiv.length) { const mu = k(k(CS.union(motiv)).intersect(U)); weiss = k(M.union(weiss, k(mu.extrude(tiefL).translate([0, 0, D - tiefL])))); }   // Schrift nur innerhalb des Umrisses (sonst hängt sie beim Druck in der Luft)
+      holz = k(M.difference(holz, weiss));
+      if (p.kabel) holz = k(M.difference(holz, k(M.cylinder(4, 4, 4, 24).translate([0, ub.min[1] + rB + 8, -1]))));
+      return { kasten: weiss.translate([0, 0, 0]), dunkel: holz.translate([0, 0, 0]), deckel: null, muster: null, hw, ledPasst: true, lamellen: true };
     }
     let dunkel = null, muster = null;
     if (p.muster === 'leo') {                                               // Leo-Rosetten: 3–4 Bogenstücke um einen leeren Kern + Tupfen

@@ -19,14 +19,14 @@ try {
   await item.click();
   await p.waitForSelector('#lbx-modal.show');
   await p.waitForFunction(() => window._threeFont_greatvibes_local && window._threeFont_helvetiker_bold, null, { timeout: 30000 }).catch(() => {});
-  for (const v of ['krippe', 'glanz', 'zeit', 'schwein', 'punkte', 'wichtel', 'wichtel2', 'hier', 'leotanne', 'leostern']) {
+  for (const v of ['krippe', 'glanz', 'zeit', 'schwein', 'punkte', 'wichtel', 'wichtel2', 'hier', 'leotanne', 'leostern', 'lamtanne', 'lamstern']) {
     const r = await p.evaluate(async (v) => { _lbxVorlage(v); await new Promise(res => setTimeout(res, 300));
       const w = await _mfInit(), M = w.Manifold, t = _lbxBuild(w, _lbxP, _lbxText), teile = [t.kasten, t.dunkel, t.deckel, t.muster].filter(Boolean);
       let ov = 0; for (let i = 0; i < teile.length; i++) for (let j = i + 1; j < teile.length; j++) ov += M.intersection(teile[i], teile[j]).volume();
       const res = { n: teile.length, kasten: t.kasten.decompose().length, dunkel: t.dunkel ? t.dunkel.volume() : 0, deckel: t.deckel ? t.deckel.decompose().length : 0, ov, stat: teile.every(m => m.status() === 'NoError') };
       teile.forEach(m => m.delete()); return res; }, v);
-    ok(r.stat && r.kasten === 1 && r.deckel === 1 && r.ov < 0.01 && (v === 'krippe' || r.dunkel > 20), `Vorlage ${v}: ${r.n} Teile, Motiv ${r.dunkel.toFixed(0)} mm³, Überlappung ${r.ov.toFixed(3)}`);
-    if (v === 'glanz' || v === 'hier' || v === 'leostern') { await p.waitForTimeout(700); await p.screenshot({ path: `${SHOTS}/lbx-${v}.png`, clip: await p.locator('#lbx-modal .g3box').boundingBox() }); }
+    ok(r.stat && (r.kasten === 1 || /^lam/.test(v)) && (r.deckel === 1 || /^lam/.test(v)) && r.ov < 0.01 && (v === 'krippe' || r.dunkel > 20), `Vorlage ${v}: ${r.n} Teile, Motiv ${r.dunkel.toFixed(0)} mm³, Überlappung ${r.ov.toFixed(3)}`);
+    if (v === 'glanz' || v === 'hier' || v === 'leostern' || v === 'lamstern') { await p.waitForTimeout(700); await p.screenshot({ path: `${SHOTS}/lbx-${v}.png`, clip: await p.locator('#lbx-modal .g3box').boundingBox() }); }
   }
   await p.evaluate(() => _lbxVorlage('krippe'));
   const r1 = await p.evaluate(async () => {
