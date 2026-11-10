@@ -5601,6 +5601,38 @@ Patrick</textarea>
   </div>
 </div>
 
+<div id="elc-modal" class="g3dm" onclick="if(event.target===this)_elcClose()">
+  <div class="g3box">
+    <div class="g3hdr">🦌 Strick-Elch<span class="vx" onclick="_elcClose()">✕</span></div>
+    <div class="g3body">
+      <canvas id="elc-canvas" width="200" height="320"></canvas>
+      <div class="g3ctrl">
+        <div class="vrow"><label>Höhe</label> <input type="range" id="elc-hoehe" min="80" max="300" value="180" step="1" oninput="_elcSet('hoehe',this.value)"><span class="vv" id="elcv-hoehe">180</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Größe des Geweihs">Geweih</label> <input type="range" id="elc-geweih" min="50" max="150" value="100" step="5" oninput="_elcSet('geweih',this.value)"><span class="vv" id="elcv-geweih">100</span><span class="vu">%</span></div>
+        <div class="vrow"><label title="Länge der Beine">Beine</label> <input type="range" id="elc-bein" min="70" max="130" value="100" step="5" oninput="_elcSet('bein',this.value)"><span class="vv" id="elcv-bein">100</span><span class="vu">%</span></div>
+        <div class="vrow"><label title="Wie plastisch das Strickmuster ist (0 = glatt)">Strick</label> <input type="range" id="elc-strick" min="0" max="200" value="100" step="10" oninput="_elcSet('strick',this.value)"><span class="vv" id="elcv-strick">100</span><span class="vu">%</span></div>
+        <div class="vrow"><label title="Größe der Maschen">Maschen</label> <input type="range" id="elc-masche" min="60" max="160" value="100" step="5" oninput="_elcSet('masche',this.value)"><span class="vv" id="elcv-masche">100</span><span class="vu">%</span></div>
+        <div class="vtbrow" id="elc-teilen-bg" style="display:flex;gap:4px;margin-bottom:7px">
+          <button class="vtb on" data-v="0" title="Ein Teil, stehend gedruckt mit Baumstützen" onclick="_elcSet('teilen',0)">am Stück (Stützen)</button>
+          <button class="vtb" data-v="1" title="Zwei Hälften flach auf der Schnittfläche, ohne Stützen — mit Filament-Stiften verbinden" onclick="_elcSet('teilen',1)">längs halbiert</button>
+        </div>
+        <div class="vtbrow" id="elc-farbe-bg" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:7px">
+          <button class="vtb on" data-v="#7e8c78" onclick="_elcStr('farbe','#7e8c78')">Salbei</button>
+          <button class="vtb" data-v="#e3c4b6" onclick="_elcStr('farbe','#e3c4b6')">Rosé</button>
+          <button class="vtb" data-v="#c99273" onclick="_elcStr('farbe','#c99273')">Terrakotta</button>
+          <button class="vtb" data-v="#efe6dc" onclick="_elcStr('farbe','#efe6dc')">Creme</button>
+        </div>
+        <div class="g3info" id="elc-info"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_elcReset()">Zurücksetzen</button>
+      <button class="btn" onclick="_elcClose()">Abbrechen</button>
+      <button class="btn pri" onclick="_elcCreate()">✓ Erstellen</button>
+    </div>
+  </div>
+</div>
+
 <div id="krz-modal" class="g3dm" onclick="if(event.target===this)_krzClose()">
   <div class="g3box">
     <div class="g3hdr">🕯️ Geflochtener Kranz (Adventskranz)<span class="vx" onclick="_krzClose()">✕</span></div>
@@ -36073,6 +36105,155 @@ async function _gleCreate(){
   } catch (e) { console.error('Geld-Engel:', e); _progressHide(); notify('Geld-Engel fehlgeschlagen: ' + (e && e.message || e), 'w'); }
 }
 
+// ═══ STRICK-ELCH (🦌 _elc*, 1.18.360) ══════════════════════════════════════════
+// Nach Bild: stehender Elch/Rentier, rundum Zopfmuster (auch Geweih). Distanzfeld aus Kapseln
+// und Ellipsoiden, Maschen je Teil entlang der Teil-Achse (_dklKnit), Netz per _lgfLevel.
+// Längs halbiert: Hälften liegen flach (ohne Stützen), Filament-Stifte (1,75) als Passung.
+const _elcP = { hoehe: 180, geweih: 100, strick: 100, masche: 100, bein: 100, teilen: 0, farbe: '#7e8c78' };
+const _ELC_DEF = { ..._elcP };
+let _elcRT = null;
+function _elcTeile(p){                                                     // Teile in mm: [Typ, Daten, Strick-Achse]
+  const H = p.hoehe / 1.16, g = p.geweih / 100, lb = p.bein / 100, yB = 0.42 * H * lb;
+  const C = (a, b, r, ra) => ({ t: 'c', a, b, r, rb: ra ?? r });
+  const T = [];
+  // Rumpf, Hals, Kopf, Maul
+  T.push(['rumpf', C([-0.21 * H, yB, 0], [0.16 * H, yB + 0.02 * H, 0], 0.135 * H, 0.14 * H)]);
+  T.push(['hals', C([0.14 * H, yB + 0.05 * H, 0], [0.23 * H, yB + 0.3 * H, 0], 0.085 * H, 0.07 * H)]);
+  const kc = [0.26 * H, yB + 0.37 * H, 0];
+  T.push(['kopf', { t: 'e', c: kc, r: [0.085 * H, 0.1 * H, 0.08 * H] }]);
+  T.push(['maul', C([kc[0] + 0.02 * H, kc[1] - 0.04 * H, 0], [kc[0] + 0.1 * H, kc[1] - 0.085 * H, 0], 0.058 * H, 0.05 * H)]);
+  // Beine (z ≥ 0, gespiegelt)
+  T.push(['bv', C([0.11 * H, yB - 0.02 * H, 0.072 * H], [0.12 * H, 0.03 * H, 0.072 * H], 0.042 * H, 0.038 * H)]);
+  T.push(['bh', C([-0.15 * H, yB - 0.02 * H, 0.075 * H], [-0.16 * H, 0.03 * H, 0.075 * H], 0.05 * H, 0.04 * H)]);
+  T.push(['schwanz', C([-0.3 * H, yB + 0.08 * H, 0], [-0.34 * H, yB + 0.13 * H, 0], 0.035 * H, 0.03 * H)]);
+  // Ohren: Blätter seitlich, waagerecht
+  T.push(['ohr', { t: 'e', c: [kc[0] - 0.02 * H, kc[1] + 0.045 * H, 0.11 * H], r: [0.025 * H, 0.03 * H, 0.06 * H], glatt: true }]);
+  // Geweih (z ≥ 0): Hauptstange + 3 Enden, klobig mit runden Spitzen
+  const G = (pt) => [kc[0] + pt[0] * H * g, kc[1] + 0.06 * H + pt[1] * H * g, pt[2] * H * g + 0.035 * H];
+  const s0 = G([-0.01, 0, 0]), s1 = G([-0.02, 0.1, 0.05]), s2 = G([-0.05, 0.19, 0.08]);
+  T.push(['geweih', C(s0, s1, 0.032 * H * g, 0.03 * H * g)], ['geweih', C(s1, s2, 0.03 * H * g, 0.028 * H * g)]);
+  T.push(['geweih', C(s1, G([0.07, 0.17, 0.06]), 0.026 * H * g, 0.026 * H * g)]);
+  T.push(['geweih', C(G([-0.03, 0.15, 0.065]), G([-0.12, 0.2, 0.09]), 0.025 * H * g, 0.025 * H * g)]);
+  T.push(['geweih', C(s2, G([0.0, 0.27, 0.1]), 0.026 * H * g, 0.026 * H * g)]);
+  return { H, T, kc, yB };
+}
+function _elcSdf(p){
+  const { H, T, kc } = _elcTeile(p), A = 0.012 * H * p.strick / 100, wK = 0.06 * H * p.masche / 100, PK = 0.05 * H * p.masche / 100;
+  const m = 0.05 * H, symm = new Set(['bv', 'bh', 'ohr', 'geweih']);
+  // Hüllquader je Teil für den frühen Ausstieg
+  const box = T.map(([n, s]) => { if (s.t === 'c') { const r = Math.max(s.r, s.rb) + A; return [Math.min(s.a[0], s.b[0]) - r, Math.min(s.a[1], s.b[1]) - r, Math.min(s.a[2], s.b[2]) - r, Math.max(s.a[0], s.b[0]) + r, Math.max(s.a[1], s.b[1]) + r, Math.max(s.a[2], s.b[2]) + r]; }
+    const r = s.r; return [s.c[0] - r[0] - A, s.c[1] - r[1] - A, s.c[2] - r[2] - A, s.c[0] + r[0] + A, s.c[1] + r[1] + A, s.c[2] + r[2] + A]; });
+  const bd = (x, y, z, b) => _dklH(Math.max(b[0] - x, x - b[3], 0), Math.max(b[1] - y, y - b[4], 0), Math.max(b[2] - z, z - b[5], 0));
+  const knitC = (x, y, z, s, d0) => {                                      // Maschen um die Kapselachse
+    const bx = s.b[0] - s.a[0], by = s.b[1] - s.a[1], bz = s.b[2] - s.a[2], L = _dklH(bx, by, bz), ex = bx / L, ey = by / L, ez = bz / L;
+    const px = x - s.a[0], py = y - s.a[1], pz = z - s.a[2], v = px * ex + py * ey + pz * ez;
+    let ux = -ey, uy = ex, uz = 0; if (Math.abs(ez) > 0.9) { ux = 1; uy = 0; uz = 0; }
+    const ul = _dklH(ux, uy, uz); ux /= ul; uy /= ul; uz /= ul;
+    const wx = ey * uz - ez * uy, wy = ez * ux - ex * uz, wz = ex * uy - ey * ux;
+    const qx = px - v * ex, qy = py - v * ey, qz = pz - v * ez;
+    const phi = Math.atan2(qx * wx + qy * wy + qz * wz, qx * ux + qy * uy + qz * uz);
+    const r = Math.max(s.r, s.rb), aus = Math.max(0, Math.min(1, (v + 0.8 * r) / (0.35 * r), (L - v + 0.8 * r) / (0.35 * r)));   // nur an der Polspitze der Kappen ausblenden (sonst Maschen-Stern)
+    return 0.35 + (_dklKnit(phi, v, r, Math.min(wK, r * 1.6), PK) - 0.35) * aus;
+  };
+  const f = (x, y, z) => {
+    let best = Infinity;
+    const az = Math.abs(z);
+    for (let i = 0; i < T.length; i++) {
+      const [n, s] = T[i], zz = symm.has(n) ? az : z, bq = bd(x, y, zz, box[i]);
+      if (bq > m) { best = Math.min(best, bq); continue; }
+      let d = s.t === 'c' ? _dklCone(x, y, zz, s.a, s.b, s.r, s.rb) : _dklEll(x, y, zz, s.c, s.r);
+      if (A > 0 && !s.glatt && Math.abs(d) < 2 * A + 0.01 * H) {
+        const k = s.t === 'c' ? knitC(x, y, zz, s, d) : _dklKnit(Math.atan2(zz - s.c[2], x - s.c[0]), y - s.c[1], s.r[0], wK * 0.9, PK * 0.9);
+        d -= A * (k - 0.35);
+      }
+      const kSm = n === 'geweih' || n === 'ohr' ? 0.01 * H : 0.035 * H;
+      best = best === Infinity ? d : _lgfSmin(best, d, kSm);
+    }
+    // Hufe: flach auf der Platte, Augen + Nase als kleine Kugeln
+    const auge = _dklH(x - (kc[0] + 0.055 * H), y - (kc[1] + 0.02 * H), az - 0.06 * H) - 0.014 * H;
+    const nase = _dklH(x - (kc[0] + 0.125 * H), y - (kc[1] - 0.075 * H), z) - 0.025 * H;
+    best = Math.min(best, auge); best = _lgfSmin(best, nase, 0.01 * H);
+    return Math.max(best, -y);
+  };
+  f.H = H; f.kc = kc;
+  return f;
+}
+function _elcBuild(w, p, q){
+  const M = w.Manifold, fein = q === 'fein', tmp = [], keep = x => { tmp.push(x); return x; };
+  try {
+    const f = _elcSdf(p), H = f.H, g = p.geweih / 100;
+    const bb = [-0.42 * H, 0, -0.24 * H, 0.45 * H, (0.42 * p.bein / 100 + 0.37 + 0.06 + 0.3 * g) * H + 0.05 * H, 0.24 * H];
+    const V = (bb[3] - bb[0]) * (bb[4] - bb[1]) * (bb[5] - bb[2]), edge = Math.max(0.35, Math.cbrt(V / (fein ? 3e6 : 2.6e5)));
+    let elch = keep(_lgfLevel(w, f, bb, edge));
+    const out = { bb, H };
+    if (p.teilen) {                                                        // längs halbieren, Stiftlöcher Ø 1,9 für Filament (1,75)
+      const yb = 0.42 * p.bein / 100 * H, lochPt = [[0, yb], [-0.13 * H, yb], [0.12 * H, yb + 0.02 * H], [0.2 * H, yb + 0.2 * H], [f.kc[0], f.kc[1]]];
+      const L = lochPt.map(([x, y]) => keep(M.cylinder(14, 0.95, 0.95, 16).translate([x, y, -7])));
+      elch = keep(elch.subtract(keep(M.union(L))));
+      const a = elch.trimByPlane([0, 0, 1], 0), b = elch.trimByPlane([0, 0, -1], 0);
+      out.haelften = [a, b.rotate([0, 180, 0])];                          // beide liegen mit der Schnittfläche auf z = 0, Körper darüber
+      b.delete();
+    } else out.elch = elch.translate([0, 0, 0]);
+    return out;
+  } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
+}
+function _elcPreviewGeo(){
+  if (!_mfWasm) throw new Error('Manifold lädt noch');
+  const r = _elcBuild(_mfWasm, { ..._elcP, teilen: 0 }, 'vorschau');
+  const geo = _mfToGeo(r.elch).toNonIndexed(); r.elch.delete();
+  const n = geo.attributes.position.count, col = new Float32Array(n * 3), c = new THREE.Color(_elcP.farbe);
+  for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3)); geo.scale(0.1, 0.1, 0.1); geo.computeVertexNormals();
+  return geo;
+}
+function _elcOpen(){ document.getElementById('elc-modal').classList.add('show'); _elcSync(); _mfInit().then(_elcBoot).catch(() => notify('Rechenkern konnte nicht geladen werden', 'w')); }
+function _elcBoot(){ const m = document.getElementById('elc-modal'); if (!m || !m.classList.contains('show')) return;
+  if (!_gpv['elc']) _gpvInit('elc', () => _elcPreviewGeo()); else { _gpvUpdate('elc'); if (!_gpv['elc'].anim) _gpvLoop('elc'); } }
+function _elcClose(){ document.getElementById('elc-modal').classList.remove('show'); _gpvStop('elc'); }
+function _elcRepaint(){ if (_elcRT) clearTimeout(_elcRT); _elcRT = setTimeout(() => { _elcRT = null; if (!_mfWasm) return; if (_gpv['elc']) _gpvUpdate('elc'); else _elcBoot(); }, 300); }
+function _elcSet(k, v){ _elcP[k] = parseFloat(v); _elcSync(); if (k !== 'teilen') _elcRepaint(); }
+function _elcStr(k, v){ _elcP[k] = v; _elcSync(); _elcRepaint(); }
+function _elcReset(){ Object.assign(_elcP, _ELC_DEF); _elcSync(); _elcRepaint(); }
+function _elcSync(){
+  for (const k of ['hoehe', 'geweih', 'strick', 'masche', 'bein']) { const s = document.getElementById('elc-' + k), t = document.getElementById('elcv-' + k); if (s) s.value = _elcP[k]; if (t) t.textContent = _elcP[k]; }
+  document.querySelectorAll('#elc-farbe-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === _elcP.farbe));
+  document.querySelectorAll('#elc-teilen-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === String(_elcP.teilen)));
+  const el = document.getElementById('elc-info'); if (!el) return;
+  el.innerHTML = `Elch ca. ${_elcP.hoehe} mm hoch (mit Geweih). Rundum Zopfmuster, auch auf dem Geweih.` +
+    (_elcP.teilen ? '<br><b>Längs halbiert:</b> beide Hälften liegen flach auf der Schnittfläche, <b>ohne Stützen</b>. Zum Zusammenbauen 5 Stücke Filament (1,75 mm, je 13 mm) in die Löcher stecken und kleben.'
+                  : '<br><b>Druck stehend:</b> unter Bauch, Kinn und Geweih <b>Baumstützen</b>. Ohne Stützen: „Längs halbiert“ wählen.') +
+    '<br>Mattes PLA in Salbei, Rosé oder Creme wirkt wie auf dem Bild. Mit Band und Glöckchen schmücken.';
+}
+async function _elcCreate(){
+  const p = { ..._elcP };
+  _progressShow('Elch wird gestrickt…'); _progressSet(8); _progressCreep(90, 0.5);
+  try {
+    const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
+    const r = _elcBuild(w, p, 'fein');
+    let teile;
+    if (p.teilen) { const [a, b] = r.haelften, ba = a.boundingBox(), a2 = a.translate([0, 0, -ba.min[2]]), bb2 = b.boundingBox(), b2 = b.translate([0, ba.max[1] - ba.min[1] + 15, -bb2.min[2]]); a.delete(); b.delete();
+      // Hälften: Seitenansicht liegt in XY → Schnittfläche unten (z = 0) — in der App als Y-oben: z ist „oben“
+      teile = [[a2, 'Elch links'], [b2, 'Elch rechts']]; }
+    else teile = [[r.elch, 'Strick-Elch']];
+    saveUndo();
+    typeCounts['elch'] = (typeCounts['elch'] || 0) + 1;
+    const nr = typeCounts['elch'], meshes = [];
+    for (const [m, name] of teile) {
+      const geo = _mfToGeo(m).toNonIndexed(); m.delete();
+      if (p.teilen) geo.rotateX(-Math.PI / 2);                             // liegende Hälften: z (Dicke) → y (oben)
+      geo.scale(0.1, 0.1, 0.1); _creaseNormals(geo, 70);
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(p.farbe), roughness: 0.85, metalness: 0.02, side: THREE.DoubleSide }));
+      mesh.castShadow = mesh.receiveShadow = true;
+      mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: name + ' #' + nr, color: p.farbe, isHole: false, fillet: 0, chamfer: 0, displacementPattern: 'keine', elchParams: p, edgeAngle: 85 };
+      scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh); meshes.push(mesh);
+    }
+    selectObjs(meshes); updateTree(); fitToObjects(meshes);
+    _progressDone();
+    notify(p.teilen ? 'Strick-Elch erstellt ✓ zwei Hälften flach, ohne Stützen — mit Filament-Stiften zusammenstecken' : 'Strick-Elch erstellt ✓ stehend drucken mit Baumstützen', 'ok');
+    _elcClose();
+  } catch (e) { console.error('Elch:', e); _progressHide(); notify('Elch fehlgeschlagen: ' + (e && e.message || e), 'w'); }
+}
+
 // ═══ ALIGN / MIRROR ═══════════════════════════════════════════════════
 function alignTool() {
   if (!selectedObjs.length) { notify('Objekt wählen', 'w'); return; }
@@ -48190,6 +48371,7 @@ const _STARTERS = [
   {i:'🏘',t:'Häuser-Ring',d:'Ring zum Aufhängen: Häuserzeile auf einem Steg, Wimpelkette mit Buchstaben (HOME) und Herzen – ohne Stützen',run:()=>_rhsOpen()},
   {i:'🎄',t:'Wort-Tanne',d:'Namen oder Wörter als Tannenbaum mit Stern: Anhänger mit Öse oder Aufsteller mit graviertem Fuß',run:()=>_wtbOpen()},
   {i:'💶',t:'Geld-Engel',d:'Engel mit Flügel-Schlitzen für Geldscheine, Kugelkopf und Wortwolke vorn – ebene Front für den UV-Drucker',run:()=>_gleOpen()},
+  {i:'🦌',t:'Strick-Elch',d:'Stehender Elch rundum im Zopfmuster, auch das Geweih – am Stück oder längs halbiert ohne Stützen',run:()=>_elcOpen()},
   {i:'🏠',t:'Lichthaus',d:'Satteldach-Haus mit Lichtschlitzen oder Fenstern, Bodenplatte mit LED-Teelicht-Halter – ohne Stützen',run:()=>_lhsOpen()},
   {i:'🪢',t:'Kordel-Topf',d:'Übertopf, Vase oder Schale aus gedrehten Seilringen, loses Seilende über den Rand – ohne Stützen',run:()=>_kdlOpen()},
   {i:'🏮',t:'Motivlicht',d:'Viereckiges Windlicht mit Motiv-Schichten (Wald, Häuser, eigene SVGs) auf Holzsockel',run:()=>_mtlOpen()},
@@ -48373,7 +48555,7 @@ function _maybeShowStarter(){
 // 🎄 Rubrik Weihnachten (Volker 9.11.26: „solche Sachen in eine Rubrik Weihnachten schieben, da kommt
 // noch einiges hinterher“). Neue Weihnachts-Generatoren NUR hier eintragen — die Liste speist das
 // Thema auf der Generatoren-Seite und den Block oben im Generator-Menü.
-const _GEN_WEIHNACHTEN = ['Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
+const _GEN_WEIHNACHTEN = ['Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
   'Dackel-Kerzenhalter', 'Mops-Kerzenhalter', 'Schwein-Kerzenhalter', 'Spaniel-Kerzenhalter', 'Islandpferd-Kerzenhalter'];
 const _GEN_THEMEN = [
   ['🎄 Weihnachten', _GEN_WEIHNACHTEN],
@@ -82750,8 +82932,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.359';
+const VOLME3D_VERSION = '1.18.360';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.360', date:'2026-11-10', changes:[
+    ['🦌','<b>Neuer Weihnachts-Generator: Strick-Elch.</b> Ein stehender Elch, <b>rundum im Zopfmuster</b>: Rumpf, Hals, Kopf, Beine und sogar das klobige Geweih mit runden Enden. Dazu Blatt-Ohren, Augen und Nase. Höhe, Geweih, Beinlänge, Strickstärke und Maschengröße sind einstellbar, Farben Salbei, Rosé, Terrakotta und Creme. Er druckt <b>am Stück</b> (mit Baumstützen) oder <b>längs halbiert</b>: Zwei Hälften liegen flach ohne Stützen und werden mit Filament-Stiften zusammengesteckt.'],
+  ]},
   { version:'1.18.359', date:'2026-11-10', changes:[
     ['🐷','<b>Neu: Schwein-Kerzenhalter.</b> Das Schwein gesellt sich zu Dackel und Mops: glatt (ohne Pullover) mit Rüssel, Nasenlöchern, breiten Ohren und Ringelschwanz. Auf dem Rücken stehen 1 bis 4 LED-Stabkerzen, jede mit einem <b>Perlenkranz</b> wie aus Holzperlen. Eine Mütze ist optional, Länge, Kerzen-Ø und das Halbieren mit Steckern funktionieren wie beim Dackel. Zu finden unter Weihnachten bzw. im Dackel-Fenster per Umschalter „🐷 Schwein“.'],
   ]},
@@ -95356,6 +95541,7 @@ const CMDK = [
   {i:'🏘',g:'Generator',t:'Häuser-Ring',k:'häuser ring kranz aufhängen fenster home wimpel wimpelkette herz häuserzeile weihnachten deko',run:()=>_rhsOpen()},
   {i:'🎄',g:'Generator',t:'Wort-Tanne',k:'wort tanne namen anhänger tannenbaum weihnachtsbaum familie namen jahreszahl stern aufsteller fuß liebe glück freude gravur',run:()=>_wtbOpen()},
   {i:'💶',g:'Generator',t:'Geld-Engel',k:'geld engel geldgeschenk geldscheine schein wortwolke uv druck uv-drucker weihnachten geschenk',run:()=>_gleOpen()},
+  {i:'🦌',g:'Generator',t:'Strick-Elch',k:'elch rentier hirsch strick strickmuster zopfmuster geweih weihnachten deko figur',run:()=>_elcOpen()},
   {i:'🏠',g:'Generator',t:'Lichthaus',k:'haus lichthaus häuschen windlicht led teelicht lichterkette weihnachten advent winter deko schlitze fenster satteldach giebel',run:()=>_lhsOpen()},
   {i:'🎄',g:'Generator',t:'Faltenbaum (Weihnachten)',k:'faltenbaum tanne kleine tanne weihnachtsbaum christbaum weihnachten advent gefaltet papier falten vasenmodus deko',run:()=>_ftbOpen()},
   {i:'🪢',g:'Generator',t:'Kordel-Topf',k:'kordel seil schnur tau topf übertopf blumentopf vase schale pampas deko gedreht rope',run:()=>_kdlOpen()},
