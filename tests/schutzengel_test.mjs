@@ -1,0 +1,46 @@
+// Schutzengel: Menü (Weihnachten) → Fenster → Vorschau mit Text → Vorlagen → Erstellen (Körper/Flügel/Text,
+// dicht, ohne Überlappung, Text liegt oben drauf) → Streifen + beide Flügel → Undo
+import { chromium } from '/home/v3da/node_modules/playwright/index.mjs';
+import { spawn } from 'child_process';
+const PORT = 8987, SHOTS = process.env.SHOTS || '/tmp';
+const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { cwd: '/home/v3da', stdio: ['ignore','ignore','inherit'] });
+await new Promise(r => setTimeout(r, 1500));
+let fail = 0; const ok = (c, m) => { console.log((c ? 'OK   ' : 'FAIL ') + m); if (!c) fail++; };
+const b = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'] });
+try {
+  const p = await b.newPage({ viewport: { width: 1400, height: 900 } });
+  const errs = []; p.on('pageerror', e => errs.push(e.message));
+  await p.goto(`http://127.0.0.1:${PORT}/volme3d.html`);
+  await p.waitForFunction(() => typeof _sgeOpen === 'function' && typeof objects !== 'undefined');
+  await p.evaluate(() => { try { hideStarter(); } catch (e) {} _newCreate(false); });
+  await p.click('#gen-dd-btn');
+  const item = p.locator('#gen-dd >> text=Schutzengel').first();
+  ok(await item.count() > 0, 'Eintrag im Generator-Menü (Weihnachten)');
+  await item.click();
+  await p.waitForSelector('#sge-modal.show');
+  await p.waitForFunction(() => window._threeFont_greatvibes_local && window._threeFont_helvetiker_bold, null, { timeout: 30000 }).catch(() => {});
+  await p.waitForTimeout(1200);
+  ok(await p.evaluate(() => !!(_gpv['sge'] && _gpv['sge'].group)), 'Vorschau steht');
+  ok(await p.evaluate(() => document.getElementById('sge-font2').querySelectorAll('option').length >= 8 && document.getElementById('sge-text2').value === 'Schutzengel'), 'Schriftauswahl gefüllt, Text „Schutzengel“');
+  await p.screenshot({ path: SHOTS + '/sge-dialog.png', clip: await p.locator('#sge-modal .g3box').boundingBox() });
+  const bauen = () => p.evaluate(async () => {
+    await _sgeCreate();
+    const w = await _mfInit(), M = w.Manifold, mf = objects.map(o => _mfUnionObjs(w, [o])), res = { teile: [] };
+    objects.forEach((o, i) => { const bb = getMeshBox(o); res.teile.push({ name: o.userData.name, shells: mf[i].decompose().length, vol: mf[i].volume(), minY: bb.min.y * 10, maxY: bb.max.y * 10 }); });
+    let ov = 0; for (let i = 0; i < mf.length; i++) for (let j = i + 1; j < mf.length; j++) ov += M.intersection(mf[i], mf[j]).volume();
+    res.ov = ov; return res;
+  });
+  const r1 = await bauen();
+  const k = r1.teile.find(t => /^Schutzengel/.test(t.name)), f = r1.teile.find(t => /Flügel/.test(t.name)), d = r1.teile.find(t => /Text/.test(t.name));
+  ok(k && f && d && r1.teile.length === 3, 'Teile: ' + r1.teile.map(t => t.name).join(', '));
+  ok(k.shells === 1 && f.shells === 1 && d.vol > 20 && r1.ov < 0.01, `Körper/Flügel je 1 Schale, Text ${d.vol.toFixed(0)} mm³, Überlappung ${r1.ov.toFixed(3)}`);
+  ok(Math.abs(k.minY) < 1e-3 && Math.abs(d.minY - 4) < 0.05 && Math.abs(d.maxY - 4.6) < 0.05, `Text liegt oben auf (${d.minY.toFixed(2)}–${d.maxY.toFixed(2)} mm), Körper auf der Platte`);
+  await p.evaluate(() => { _newCreate(false); _sgeOpen(); _sgeVorlage('streifen'); _sgeStr('fluegel', 'beide'); });
+  const r2 = await bauen();
+  ok(r2.teile.length === 3 && r2.teile.find(t => /Flügel/.test(t.name)).shells === 2 && r2.ov < 0.01, 'Streifen + beide Flügel: ' + r2.teile.map(t => t.name + ' ' + t.shells + 'S').join(', '));
+  await p.evaluate(() => { selectObjs([]); fitToObjects(objects); }); await p.waitForTimeout(500);
+  await p.evaluate(() => undo());
+  ok(await p.evaluate(() => objects.length === 0), 'Rückgängig entfernt die Teile');
+  ok(errs.length === 0, 'keine Seitenfehler ' + errs.slice(0, 3).join(' | '));
+} finally { await b.close(); srv.kill(); }
+console.log(fail ? `${fail} Fehler` : 'alles grün'); process.exit(fail ? 1 : 0);
