@@ -34,7 +34,7 @@ function _sgeBuild(w, p, textFn) {
       if (p.herz) {                                                         // Herz aus zwei Kreisen + Dreieck
         const hx = xe + seite * fL * 0.45, hy = fY + fH * 0.5, s = fH * 0.27;
         const herz = k(CS.union([k(CS.circle(s * 0.62, 32).translate([hx - s * 0.5, hy + s * 0.25])), k(CS.circle(s * 0.62, 32).translate([hx + s * 0.5, hy + s * 0.25])),
-          k(new CS([[[hx - s * 1.08, hy + s * 0.05], [hx + s * 1.08, hy + s * 0.05], [hx, hy - s * 1.15]]]))]));
+          k(new CS([[[hx - s * 1.08, hy + s * 0.05], [hx + s * 1.08, hy + s * 0.05], [hx, hy - s * 1.15]]], 'NonZero'))]));   // Dreieck im Uhrzeigersinn → NonZero, sonst fehlt die Herzspitze
         f = k(f.subtract(herz));
       }
       return k(f.extrude(d));
