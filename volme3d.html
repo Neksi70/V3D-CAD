@@ -36386,7 +36386,10 @@ function _applyPat() {
     const dx    = parseFloat(document.getElementById('pat-lin-dx').value) || 0;
     const dy    = parseFloat(document.getElementById('pat-lin-dy').value) || 0;
     const dz    = parseFloat(document.getElementById('pat-lin-dz').value) || 0;
-    _applyLinearPattern(count, dx / 10, dy / 10, dz / 10);
+    // Felder wie überall in V3D CAD: Y = Tiefe (nach hinten), Z = Höhe. Die Szene hat
+    // y oben, und „hinten“ ist −z. Vorher gingen die Felder 1:1 auf die Szenen-Achsen —
+    // „Z“ legte die Kopien nach hinten statt nach oben, „Y“ nach oben (Oswald 10.11.).
+    _applyLinearPattern(count, dx / 10, dz / 10, -dy / 10);
   } else if (_patternType === 'fill') {
     const gap    = Math.max(0, parseFloat(document.getElementById('pat-fill-gap').value) || 0);
     const margin = Math.max(0, parseFloat(document.getElementById('pat-fill-margin').value) || 0);
@@ -39941,8 +39944,24 @@ function _pushAsideForNew(newMesh) {
   const others = objects.filter(o => o !== newMesh && o.visible !== false && !(o.userData && o.userData.isHole));
   if (!others.length) return;
   const rects = others.map(o => ({ obj: o, rect: _objFootprintXZ(o) }));
-  const toMove = rects.filter(r => _rectsOverlapXZ(r.rect, newRect, 0));
+  // Teile, die sich gegenseitig überlappen (Stapel, zusammengesetzte Bauteile), rücken
+  // als EINE Gruppe mit einem Versatz — Oswald 10.11.: 40 Ringe linear übereinander
+  // gestapelt, dann einen Balken in der Mitte angelegt → jeder Ring wurde einzeln
+  // irgendwo auf der Platte abgelegt, der Stapel war zerlegt.
+  const wurzel = rects.map((_, i) => i);
+  const finde = i => { while (wurzel[i] !== i) i = wurzel[i] = wurzel[wurzel[i]]; return i; };
+  for (let a = 0; a < rects.length; a++) for (let b = a + 1; b < rects.length; b++)
+    if (_rectsOverlapXZ(rects[a].rect, rects[b].rect, 0)) wurzel[finde(a)] = finde(b);
+  const gruppen = new Map();
+  rects.forEach((r, i) => { const k = finde(i); (gruppen.get(k) || gruppen.set(k, []).get(k)).push(r); });
+  const toMove = [...gruppen.values()].filter(g => g.some(r => _rectsOverlapXZ(r.rect, newRect, 0))).map(g => ({
+    teile: g,
+    rect: { minX: Math.min(...g.map(r => r.rect.minX)), maxX: Math.max(...g.map(r => r.rect.maxX)),
+            minZ: Math.min(...g.map(r => r.rect.minZ)), maxZ: Math.max(...g.map(r => r.rect.maxZ)) } }));
   if (!toMove.length) return;
+  const belegt = [...gruppen.values()].filter(g => !toMove.some(m => m.teile === g)).map(g => ({
+    rect: { minX: Math.min(...g.map(r => r.rect.minX)), maxX: Math.max(...g.map(r => r.rect.maxX)),
+            minZ: Math.min(...g.map(r => r.rect.minZ)), maxZ: Math.max(...g.map(r => r.rect.maxZ)) } }));
 
   const gap = 0.2;                       // 2 mm Abstand zwischen Objekten
   const halfPW = (buildplateW / 10) / 2; // Plattenrand in Szenen-Einheiten
@@ -39965,13 +39984,9 @@ function _pushAsideForNew(newMesh) {
             cz - d / 2 < -halfPH || cz + d / 2 > halfPH) continue;
         const cand = { minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 };
         if (_rectsOverlapXZ(cand, newRect, gap)) continue;
-        let bad = false;
-        for (const rr of rects) { if (rr === m) continue; if (_rectsOverlapXZ(cand, rr.rect, gap)) { bad = true; break; } }
-        if (bad) continue;
-        m.obj.position.x += (cx - cx0);
-        m.obj.position.z += (cz - cz0);
-        m.obj.updateMatrixWorld(true);
-        m.rect = cand;
+        if (belegt.some(b => _rectsOverlapXZ(cand, b.rect, gap))) continue;
+        for (const t of m.teile) { t.obj.position.x += (cx - cx0); t.obj.position.z += (cz - cz0); t.obj.updateMatrixWorld(true); }
+        belegt.push({ rect: cand });
         placed = true;
       }
     }
@@ -80768,8 +80783,12 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.347';
+const VOLME3D_VERSION = '1.18.348';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.348', date:'2026-11-10', changes:[
+    ['🧲','<b>Neue Körper zerlegen keine Stapel mehr.</b> Wer einen neuen Körper anlegt, während in der Mitte schon etwas steht, bekommt die vorhandenen Teile zur Seite gerückt. Bisher rückte dabei jedes Teil einzeln irgendwohin – ein Stapel aus 40 Ringen lag danach verstreut auf der ganzen Platte. Jetzt rücken Teile, die sich überlappen (Stapel, zusammengesetzte Bauteile), gemeinsam und bleiben genau so beieinander.'],
+    ['⋮','<b>Lineares Muster: Y und Z stimmen.</b> Im Muster-Fenster waren die Felder vertauscht: Ein Abstand bei „Z“ legte die Kopien nach hinten statt nach oben. Jetzt gilt wie überall in V3D CAD: X = Breite, Y = Tiefe, Z = Höhe.'],
+  ]},
   { version:'1.18.347', date:'2026-11-09', changes:[
     ['✂️','<b>Abziehen: mehrere Körper bleiben getrennte Teile.</b> Wer zwei Teile übereinanderlegt, um Löcher durch beide gleichzeitig zu setzen – etwa die Stiftlöcher in beiden Hälften einer Gussform –, bekam nach dem Abziehen bisher EIN verschmolzenes Teil, das sich auch mit „Trennen“ nicht mehr auseinandernehmen ließ. Jetzt wird jeder ausgewählte Körper einzeln geschnitten und bleibt ein eigenes Teil; jeder bekommt die Cutter ab, die ihn berühren. Wer die Teile verbinden will, nimmt dafür „Vereinen“. Rückgängig stellt alles wie vorher her.'],
   ]},
