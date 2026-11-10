@@ -36324,6 +36324,7 @@ async function _elcCreate(){
 }
 
 // ═══ ADVENTSKALENDER-GENERATOR (🎁 _adv*) ═════════════════════════════════════
+// ═══ ADVENTSKALENDER-GENERATOR (🎁 _adv*) ═════════════════════════════════════
 // Kern (Manifold, mm), 1:1 in volme3d.html eingebettet. Test in Node: tools/adventskalender/test_core.mjs
 //
 // Aufbau: Formen sind Module in _ADV_FORMEN. Eine neue Form (Haus, Rakete, Zug …) = ein neues
@@ -36739,6 +36740,262 @@ function _advBergBuild(w, p, textFn){
   } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
 }
 
+// ─── Form 3: Rakete ───────────────────────────────────────────────────────────
+// Ralf 10.11.: Rumpf mit Schubladen in Reihen (Fächer ca. 40 × 50), Spitze mit Fach 24 als
+// runde Kapsel, zwei Flossen als Standfuß, Düse unten. Rumpf in Segmenten nach Bettgröße,
+// Spitze und Flossen eigene Teile (rot), alles mit Steckstiften. Gedruckt auf dem Rücken.
+function _advRaketeBuild(w, p, textFn){
+  const M = w.Manifold, CS = w.CrossSection, tmp = [], keep = x => { tmp.push(x); return x; };
+  try {
+    const t = p.wand, sp = p.spiel, rw = 2, tp = 3, rb = 3, g = 0.6, k = Math.tan(p.konus * Math.PI / 180), warn = [], zeilen = [];
+    let reihen = String(p.reihen || '').split(/[^0-9]+/).map(Number).filter(n => n > 0);
+    if (reihen.reduce((a, b) => a + b, 0) !== 23) { warn.push(`Reihen „${p.reihen}“ ergeben nicht 23 Fächer (+ Kapsel) – Standard 4,4,4,4,4,3 verwendet.`); reihen = [4, 4, 4, 4, 4, 3]; }
+    const R = reihen.length, Bo = p.fachB + 2 * t, cw = Bo + 2 * sp, Do = p.fachT + t, Dr = Do + sp + rb;
+    const nMax = Math.max(...reihen), Wb = nMax * cw + (nMax + 1) * rw + 2 * p.rand, xe = Wb / 2;
+    const noseH = p.hoehe * p.spitze / 100, yb0 = p.duese ? Math.max(12, 0.05 * p.hoehe) : 0, base = 3;
+    // Reihenhöhen: Rest der Höhe gleichmäßig, Schnitte nach Bettgröße an Reihengrenzen
+    const bau = cutsAfter => {
+      const fest = yb0 + base + R * (t + 2 * sp + rw) + cutsAfter.length * (rw + 2) + noseH;
+      const h = Math.max(30, (p.hoehe - fest) / R), rows = []; let y = yb0 + base;
+      reihen.forEach((n, i) => { const ch = h + t + 2 * sp; rows.push({ n, i, y0: y, ch, h }); y += ch;
+        if (cutsAfter.includes(i)) { rows[i].cut = y + rw + 1; y += 2 * rw + 2; } else y += rw; });
+      return { rows, yTop: y, h };
+    };
+    let L = bau([]); const nSeg = Math.max(1, Math.ceil(L.yTop / (p.bett - 8)));
+    for (let it = 0; it < 3 && nSeg > 1; it++) { const cuts = [];
+      for (let s = 1; s < nSeg; s++) { const ziel = s * L.yTop / nSeg; let best = -1, bd = 1e9;
+        for (let i = 0; i < R - 1; i++) { const yb = L.rows[i].y0 + L.rows[i].ch; if (!cuts.includes(i) && Math.abs(yb - ziel) < bd) { bd = Math.abs(yb - ziel); best = i; } }
+        if (best >= 0) cuts.push(best); }
+      L = bau(cuts.sort((a, b) => a - b)); }
+    const { rows, yTop, h } = L;
+    if (h < 32) warn.push(`Fächer nur ${Math.round(h)} mm hoch – Höhe vergrößern oder weniger Reihen.`);
+    if (Wb > p.bett - 4) warn.push(`Rumpf ${Math.round(Wb)} mm breit – mehr als das Bett. Weniger Fächer je Reihe oder schmalere Fächer.`);
+    // ── Silhouetten ────────────────────────────────────────────────────────
+    const yApex = yTop + noseH, hw = y => xe * Math.pow(Math.max(0, 1 - Math.pow((y - yTop) / noseH, 1.7)), 0.62);   // Ogive
+    const noseP = []; const nN = 40;
+    for (let i = 0; i <= nN; i++) { const y = yTop + noseH * i / nN; noseP.push([hw(y), y]); }
+    for (let i = nN; i >= 0; i--) { const y = yTop + noseH * i / nN; noseP.push([-hw(y), y]); }
+    const noseCS = keep(new CS([noseP]));
+    const rumpfP = [[-xe, yb0], [xe, yb0], [xe, yTop], [-xe, yTop]];
+    if (p.duese) { const a = Wb * 0.24, b = Wb * 0.17; rumpfP.splice(1, 0, [-a, yb0], [-b, 0], [b, 0], [a, yb0]); }
+    const rumpfCS = keep(new CS([rumpfP]));
+    // ── Fächer: Reihen + Kapsel (24) in der Spitze ─────────────────────────
+    const zahlen = _advMischen(23, p); let zi = 0; const faecher = [];
+    for (const r of rows) for (let j = 0; j < r.n; j++) {
+      const xc = (j - (r.n - 1) / 2) * (cw + rw);
+      faecher.push({ r, xc, Bo, tag: zahlen[zi++], tile: [xc - cw / 2 - rw / 2 + g / 2, xc + cw / 2 + rw / 2 - g / 2, r.y0 - rw / 2 + g / 2, r.y0 + r.ch + rw / 2 - g / 2] });
+    }
+    // Kapsel: Fach so groß, dass die runde Klappe (umschreibt die Öffnung) in die Spitze passt
+    let kap = null;
+    for (let f = 1; f > 0.3 && !kap; f -= 0.04) {
+      const B = p.fachB * f, ch = Math.max(24, h * f) + t + 2 * sp, cwk = B + 2 * t + 2 * sp;
+      const Rc = Math.hypot(cwk / 2 + rw, ch / 2 + rw), yc = yTop + 3 + Rc, y0 = yc - ch / 2;   // Klappe liegt ganz über dem Schnitt
+      let passt = true;
+      for (let a = 0; a < 24 && passt; a++) { const x = Rc * Math.cos(a * Math.PI / 12) + Math.sign(Math.cos(a * Math.PI / 12)) * 3, y = yc + Rc * Math.sin(a * Math.PI / 12) + 3 * Math.sin(a * Math.PI / 12);
+        if (y > yTop && Math.abs(x) > hw(y)) passt = false; }
+      if (passt) kap = { B, ch, cwk, y0, Rc, yc, f };
+    }
+    if (!kap) { warn.push('Spitze zu klein für die Kapsel – „Spitze“ vergrößern.'); kap = { B: p.fachB * 0.5, ch: 30, cwk: p.fachB * 0.5 + 2 * t + 2 * sp, y0: yTop + 6, Rc: 25, yc: yTop + 21, f: 0.5 }; }
+    const kapR = { n: 1, i: R, y0: kap.y0, ch: kap.ch, h: kap.ch - t - 2 * sp, kapsel: true };
+    faecher.push({ r: kapR, xc: 0, Bo: kap.B + 2 * t, tag: 24, kreis: [0, kap.yc, kap.Rc] });
+    // ── Rahmen ─────────────────────────────────────────────────────────────
+    const hohl = faecher.map(({ r, xc, Bo: bo }) => { const c = bo + 2 * sp, d = Do + sp + 1, s = d * k;
+      return keep(M.hull([[xc - c / 2, r.y0, 1], [xc + c / 2, r.y0, 1], [xc - c / 2, r.y0 + r.ch, 1], [xc + c / 2, r.y0 + r.ch, 1],
+        [xc - c / 2 + s, r.y0, -(Do + sp)], [xc + c / 2 - s, r.y0, -(Do + sp)], [xc - c / 2 + s, r.y0 + r.ch - s, -(Do + sp)], [xc + c / 2 - s, r.y0 + r.ch - s, -(Do + sp)]])); });
+    const kachel = fa => fa.kreis ? keep(M.cylinder(tp + p.griff + 6, fa.kreis[2] + g, fa.kreis[2] + g, 72).translate([0, fa.kreis[1], -1]))
+      : keep(M.cube([fa.tile[1] - fa.tile[0] + 2 * g, fa.tile[3] - fa.tile[2] + 2 * g, tp + p.griff + 6]).translate([fa.tile[0] - g, fa.tile[2] - g, -1]));
+    const frei = keep(M.union(faecher.map(kachel)));
+    const vorn = cs => keep(keep(M.extrude(cs, tp)).subtract(frei));     // bündige Frontplatte um die Klappen
+    let rumpf = keep(keep(keep(M.extrude(rumpfCS, Dr).translate([0, 0, -Dr])).add(vorn(rumpfCS))).subtract(keep(M.union(hohl.slice(0, 23)))));
+    let spitze = keep(keep(keep(M.extrude(noseCS, Dr).translate([0, 0, -Dr])).add(vorn(noseCS))).subtract(hohl[23]));
+    // Steckstifte: senkrecht in den Seitenwänden (Schnitte, Spitze), waagerecht in die Flossen
+    const dh = _ADV_STIFT_D + 2 * p.steck, hd = 9, stifte = [], xs = xe - p.rand / 2 - rw / 2;
+    if (p.rand < dh + 5) warn.push(`Seitenwand nur ${p.rand} mm – für die Steckstifte mind. ${Math.ceil(dh + 5)} mm.`);
+    const senk = y => { for (const xx of [-xs, xs]) for (const zz of [-Dr * 0.3, -Dr * 0.72]) stifte.push(keep(M.cylinder(2 * hd, dh / 2, dh / 2, 24, true).rotate([90, 0, 0]).translate([xx, y, zz]))); };
+    for (const r of rows) if (r.cut) senk(r.cut);
+    senk(yTop);
+    const yF = yb0 + p.flosseH / 100 * (yTop - yb0), fw = p.flossen;
+    const yFb = yb0 + 0.12 * (yF - yb0), quer = [];
+    for (const yy of [yFb + 0.25 * (yF - yFb), yFb + 0.6 * (yF - yFb)]) for (const sd of [-1, 1])
+      quer.push(keep(M.cylinder(2 * hd, dh / 2, dh / 2, 24, true).rotate([0, 90, 0]).translate([sd * xe, yy, -Dr / 2])));
+    const alle = keep(M.union([...stifte, ...quer]));
+    rumpf = keep(rumpf.subtract(alle)); spitze = keep(spitze.subtract(alle));
+    const teile = [], segs = []; let ya = 0;
+    for (const r of rows) if (r.cut) { segs.push([ya, r.cut]); ya = r.cut; }
+    segs.push([ya, yTop]);
+    segs.forEach(([y0, y1], i) => {
+      let s = rumpf.translate([0, 0, 0]);
+      if (y0 > 0) { const s2 = s.trimByPlane([0, 1, 0], y0); s.delete(); s = s2; }
+      if (y1 < yTop) { const s2 = s.trimByPlane([0, -1, 0], -y1); s.delete(); s = s2; }
+      const nm = segs.length === 1 ? 'Raketen-Rumpf' : `Raketen-Rumpf ${['unten', 'Mitte', 'oben'][segs.length === 2 && i === 1 ? 2 : i] || i + 1}`;
+      teile.push({ name: nm, farbe: '#efe8dc', m: s.translate([0, 0, 0]), d: s.translate([0, -y0, Dr]), art: 'rahmen' }); s.delete();
+    });
+    teile.push({ name: 'Raketen-Spitze', farbe: '#d94040', m: spitze.translate([0, 0, 0]), d: spitze.translate([0, -yTop, Dr]), art: 'rahmen' });
+    // Flossen: schlanke Dreiecke, Spitze auf dem Boden = Standfuß
+    for (const sd of [-1, 1]) {
+      const P = [[0, yF], [fw, 0], [fw - Math.min(14, fw * 0.25), 0], [0, yFb]].map(([x, y]) => [sd * (xe + x), y]);
+      let A2 = 0; for (let i = 0; i < P.length; i++) { const [x1, y1] = P[i], [x2, y2] = P[(i + 1) % P.length]; A2 += x1 * y2 - x2 * y1; }
+      if (A2 < 0) P.reverse();                                             // Umlauf gegen den Uhrzeiger, sonst leer
+      // Flossen reichen hinten über den Rumpf hinaus: 400 mm hoch auf 58 mm Tiefe kippt sonst beim Ziehen eines Fachs
+      let fl = keep(M.extrude(keep(new CS([P])), Dr + p.stand).translate([0, 0, -Dr - p.stand]));
+      fl = keep(fl.subtract(alle));
+      teile.push({ name: `Flosse ${sd < 0 ? 'links' : 'rechts'}`, farbe: '#d94040', m: fl.translate([0, 0, 0]), d: fl.translate([-(sd < 0 ? -xe - fw : xe), 0, Dr + p.stand]), art: 'rahmen' });
+    }
+    // ── Schubladen ─────────────────────────────────────────────────────────
+    for (const fa of faecher) {
+      const { r, xc, tile, tag } = fa, bo = fa.Bo, Ho = r.h + t, yb = r.y0 + sp, s = Do * k, si = (Do - t) * k;
+      const box = keep(M.hull([[xc - bo / 2, yb, 0], [xc + bo / 2, yb, 0], [xc - bo / 2, yb + Ho, 0], [xc + bo / 2, yb + Ho, 0],
+        [xc - bo / 2 + s, yb, -Do], [xc + bo / 2 - s, yb, -Do], [xc - bo / 2 + s, yb + Ho - s, -Do], [xc + bo / 2 - s, yb + Ho - s, -Do]]));
+      const inn = keep(M.hull([[xc - bo / 2 + t, yb + t, 0.01], [xc + bo / 2 - t, yb + t, 0.01], [xc - bo / 2 + t, yb + Ho + 2, 0.01], [xc + bo / 2 - t, yb + Ho + 2, 0.01],
+        [xc - bo / 2 + t + si, yb + t, -(Do - t)], [xc + bo / 2 - t - si, yb + t, -(Do - t)], [xc - bo / 2 + t + si, yb + Ho + 2, -(Do - t)], [xc + bo / 2 - t - si, yb + Ho + 2, -(Do - t)]]));
+      let sch = keep(box.subtract(inn));
+      const front = fa.kreis ? keep(M.cylinder(tp, fa.kreis[2], fa.kreis[2], 72).translate([0, fa.kreis[1], 0]))
+        : keep(M.cube([tile[1] - tile[0], tile[3] - tile[2], tp]).translate([tile[0], tile[2], 0]));
+      sch = keep(sch.add(front));
+      const bw = fa.kreis ? fa.kreis[2] * 1.3 : tile[1] - tile[0], bh = fa.kreis ? fa.kreis[2] * 1.3 : tile[3] - tile[2];
+      const zs = _advZahl(w, textFn, keep, tag, Math.min(bh * 0.5, bw * 0.55, 30), bw * 0.8, xc, fa.kreis ? fa.kreis[1] : r.y0 + r.ch / 2);
+      if (zs) sch = keep(sch.add(keep(M.extrude(zs, tp + p.griff))));
+      teile.push({ name: `Fach ${String(tag).padStart(2, '0')}` + (fa.kreis ? ' (Kapsel)' : ''), farbe: fa.kreis ? '#f6c35a' : '#a9cdf0', m: sch.translate([0, 0, 0]), d: sch.translate([0, 0, Do]), art: 'fach', tag });
+    }
+    const nStift = stifte.length + quer.length;
+    teile.push({ name: `Steckstifte ${nStift}×`, farbe: '#bdbdbd', m: null, d: _advStifte(w, nStift, 2 * hd - 1), art: 'stift' });
+    if (p.stand < 0.15 * yApex - Dr) warn.push(`Steht nur ${Math.round(Dr + p.stand)} mm tief bei ${Math.round(yApex)} mm Höhe – „Standfuß hinten“ vergrößern, sonst kippt sie beim Ziehen eines Fachs.`);
+    zeilen.push(`Rakete ${Math.round(yApex)} mm hoch, Rumpf ${Math.round(Wb)} mm breit (mit Flossen ${Math.round(Wb + 2 * fw)}), ${Math.round(Dr + tp)} mm tief (Standfläche ${Math.round(Dr + p.stand)} mm); Rumpf in ${segs.length} Segment${segs.length > 1 ? 'en' : ''} + Spitze + 2 Flossen.`);
+    zeilen.push(`Fächer innen ${p.fachB} × ${Math.round(h)} × ${p.fachT} mm (B × H × T), Reihen ${reihen.join('-')} von unten. Kapsel (24): ${Math.round(kap.B)} × ${Math.round(kap.ch - t - 2 * sp)} × ${p.fachT} mm.`);
+    return { teile, info: { zeilen, warn, stifte: nStift, stiftL: 2 * hd - 1 } };
+  } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
+}
+
+// ─── Form 4: Piratenschiff ────────────────────────────────────────────────────
+// Ralf 10.11.: Rumpf mit zwei Reihen Kanonenluken (Fächer 1–23), Fach 24 im Ausguck am Mast.
+// Der Rumpf ist breiter als das Bett → SENKRECHT in Segmente geteilt (Schnitte zwischen den
+// Fächern, Steckstifte im Kiel- und Deckband). Kajüte am Heck, Bugspriet hinten am Rumpf
+// (liegt beim Druck auf dem Bett), Mastfuß auf dem Deck. Mast mit Rahen, Segel, Ausguck und
+// Flagge sind eigene Teile. Alles auf dem Rücken bzw. flach gedruckt, ohne Stützen.
+function _advSchiffBuild(w, p, textFn){
+  const M = w.Manifold, CS = w.CrossSection, tmp = [], keep = x => { tmp.push(x); return x; };
+  try {
+    const t = p.wand, sp = p.spiel, rw = 2, tp = 3, rb = 3, g = 0.6, k = Math.tan(p.konus * Math.PI / 180), warn = [], zeilen = [];
+    let reihen = String(p.reihen || '').split(/[^0-9]+/).map(Number).filter(n => n > 0);
+    if (reihen.reduce((a, b) => a + b, 0) !== 23) { warn.push(`Reihen „${p.reihen}“ ergeben nicht 23 Fächer (+ Ausguck) – Standard 11,12 verwendet.`); reihen = [11, 12]; }
+    const Bo = p.fachB + 2 * t, cw = Bo + 2 * sp, Do = p.fachT + t, Dr = Do + sp + rb, h = p.fachH, ch = h + t + 2 * sp;
+    const kiel = 18, deck = 14, flare = 0.3 * (kiel + reihen.length * (ch + rw) + deck), rand = p.rand;
+    // Spalten je Segment: so viele, dass das breiteste (Endsegment mit Rumpfende) aufs Bett passt
+    const nMax = Math.max(...reihen);
+    let kSeg = 1; while (kSeg < nMax && (kSeg + 1) * cw + (kSeg + 2) * rw + 2 + rand + flare + 14 <= p.bett - 8) kSeg++;
+    const nSeg = Math.ceil(nMax / kSeg);
+    // vom Heck her volle Segmente, der Rest am Bug — sonst klafft mitten in der Reihe eine Lücke
+    const teilen = n => { const a = []; let r = n; for (let s = 0; s < nSeg; s++) { const m = Math.min(kSeg, Math.max(0, r - (nSeg - 1 - s))); a.push(m); r -= m; } return a; };
+    const gruppen = reihen.map(teilen), sw = [...Array(nSeg)].map((_, s) => Math.max(...gruppen.map(gr => gr[s])) * cw + (Math.max(...gruppen.map(gr => gr[s])) + 1) * rw + 2);
+    const Wi = sw.reduce((a, b) => a + b, 0), xs0 = -Wi / 2, cutX = []; { let x = xs0; for (let s = 0; s < nSeg - 1; s++) { x += sw[s]; cutX.push(x); } }
+    const yDeck = kiel + reihen.length * (ch + rw) - rw + deck, xK = Wi / 2 + rand;   // Halbbreite unten an den Fächern
+    const hwR = y => y < kiel ? xK - 0.9 * (kiel - y) : xK + flare * (y - kiel) / (yDeck - kiel);
+    // ── Fächer ─────────────────────────────────────────────────────────────
+    const zahlen = _advMischen(23, p); let zi = 0; const faecher = [];
+    reihen.forEach((n, ri) => { const y0 = kiel + ri * (ch + rw); let xs = xs0;
+      for (let s = 0; s < nSeg; s++) { const m = gruppen[ri][s], inner = m * cw + (m + 1) * rw, x0 = xs + (sw[s] - inner) / 2;
+        for (let j = 0; j < m; j++) { const xc = x0 + rw + cw / 2 + j * (cw + rw);
+          faecher.push({ r: { y0, ch, h }, xc, Bo, tag: zahlen[zi++], tile: [xc - cw / 2 - rw / 2 + g / 2, xc + cw / 2 + rw / 2 - g / 2, y0 - rw / 2 + g / 2, y0 + ch + rw / 2 - g / 2] }); }
+        xs += sw[s]; } });
+    // ── Rumpf-Silhouette: Trapez, Kajüte am Heck (links) ───────────────────
+    const xD = hwR(yDeck), cabW = Math.min(0.75 * sw[0], 1.3 * cw), cabH = Math.max(28, 0.55 * h);
+    const rumpfP = [[-hwR(0), 0], [hwR(0), 0], [xD, yDeck], [-xD + cabW, yDeck], [-xD + cabW, yDeck + cabH], [-xD - 4, yDeck + cabH], [-xD, yDeck]];
+    const rumpfCS = keep(new CS([rumpfP]));
+    const hohl = faecher.map(({ r, xc }) => { const d = Do + sp + 1, s = d * k;
+      return keep(M.hull([[xc - cw / 2, r.y0, 1], [xc + cw / 2, r.y0, 1], [xc - cw / 2, r.y0 + r.ch, 1], [xc + cw / 2, r.y0 + r.ch, 1],
+        [xc - cw / 2 + s, r.y0, -(Do + sp)], [xc + cw / 2 - s, r.y0, -(Do + sp)], [xc - cw / 2 + s, r.y0 + r.ch - s, -(Do + sp)], [xc + cw / 2 - s, r.y0 + r.ch - s, -(Do + sp)]])); });
+    const frei = keep(M.union(faecher.map(fa => keep(M.cube([fa.tile[1] - fa.tile[0] + 2 * g, fa.tile[3] - fa.tile[2] + 2 * g, tp + p.griff + 6]).translate([fa.tile[0] - g, fa.tile[2] - g, -1])))));
+    let rumpf = keep(keep(M.extrude(rumpfCS, Dr).translate([0, 0, -Dr])).add(keep(keep(M.extrude(rumpfCS, tp)).subtract(frei))));
+    rumpf = keep(rumpf.subtract(keep(M.union(hohl))));
+    // Kajütenfenster (rund, leicht vertieft) und Bugspriet hinten am Bug
+    rumpf = keep(rumpf.subtract(keep(M.cylinder(3, cabH * 0.22, cabH * 0.22, 32).translate([-xD + cabW / 2 - 2, yDeck + cabH * 0.5, tp - 1.5]))));
+    const bsL = Math.min(90, p.bett - 8 - (sw[nSeg - 1] + rand + flare + 4)), bsA = 22 * Math.PI / 180;
+    if (bsL > 20) { const x1 = xD - 6, y1 = yDeck - 6, x2 = x1 + bsL * Math.cos(bsA), y2 = y1 + bsL * Math.sin(bsA), n = [-Math.sin(bsA) * 4, Math.cos(bsA) * 4];
+      rumpf = keep(rumpf.add(keep(M.extrude(keep(new CS([[[x1 - n[0], y1 - n[1]], [x2 - n[0], y2 - n[1]], [x2 + n[0], y2 + n[1]], [x1 + n[0], y1 + n[1]]]])), 10).translate([0, 0, -Dr])))); }
+    // Mastfuß auf dem Deck (Block mit Vierkantloch, Mast steht in der Rumpfmitte der Tiefe)
+    // Mast in die Mitte des Segments, das der Schiffsmitte am nächsten liegt (ein Schnitt bei x = 0
+    // ginge sonst mitten durch Mastfuß und Mastloch)
+    const mitten = []; { let x = xs0; for (let s = 0; s < nSeg; s++) { mitten.push(x + sw[s] / 2); x += sw[s]; } }
+    const mX = mitten.reduce((a, b) => Math.abs(b) < Math.abs(a) ? b : a);
+    const mq = 12, mqL = mq + 2 * p.steck, fussH = 26, zM = -Dr / 2;
+    rumpf = keep(rumpf.add(keep(M.cube([34, fussH + 2, Dr]).translate([mX - 17, yDeck - 2, -Dr]))));
+    rumpf = keep(rumpf.subtract(keep(M.cube([mqL, 23, mqL]).translate([mX - mqL / 2, yDeck + fussH - 22, zM - mqL / 2]))));
+    // Steckstifte an den Schnitten: waagerecht durchs Kiel- und Deckband
+    const dh = _ADV_STIFT_D + 2 * p.steck, hd = 9, stifte = [];
+    for (const xc of cutX) for (const yy of [kiel / 2, yDeck - deck / 2]) for (const zz of [-Dr * 0.3, -Dr * 0.72])
+      stifte.push(keep(M.cylinder(2 * hd, dh / 2, dh / 2, 24, true).rotate([0, 90, 0]).translate([xc, yy, zz])));
+    if (stifte.length) rumpf = keep(rumpf.subtract(keep(M.union(stifte))));
+    const teile = [], grenzen = [-1e4, ...cutX, 1e4];
+    for (let s = 0; s < nSeg; s++) {
+      let seg = rumpf.translate([0, 0, 0]);
+      if (s > 0) { const x = seg.trimByPlane([1, 0, 0], grenzen[s]); seg.delete(); seg = x; }
+      if (s < nSeg - 1) { const x = seg.trimByPlane([-1, 0, 0], -grenzen[s + 1]); seg.delete(); seg = x; }
+      seg = _advSauber(w, seg); const b = seg.boundingBox();
+      const nm = nSeg === 1 ? 'Schiffsrumpf' : `Schiffsrumpf ${s === 0 ? 'Heck' : s === nSeg - 1 ? 'Bug' : 'Mitte' + (nSeg > 3 ? ' ' + s : '')}`;
+      teile.push({ name: nm, farbe: '#b8761e', m: seg.translate([0, 0, 0]), d: seg.translate([-b.min[0], 0, Dr]), art: 'rahmen' }); seg.delete();
+    }
+    // ── Ausguck (Fach 24) auf dem Mast ─────────────────────────────────────
+    const flagH = 0.11 * p.hoehe, B24 = p.fachB, h24 = Math.max(30, 0.75 * h), cw24 = B24 + 2 * t + 2 * sp, ch24 = h24 + t + 2 * sp;
+    const nestB = 10, nestT = 8, nestH = nestB + ch24 + nestT, nestW = cw24 + 2 * 7, yNest = p.hoehe - flagH - nestH;
+    const mastL = yNest + (nestB - 2) - (yDeck + fussH - 22);              // unten 22 im Fuß, oben 8 im Ausguck (Loch 9)
+    if (yNest - (yDeck + fussH) < 1.4 * h) warn.push('Wenig Platz für das Segel – „Höhe“ vergrößern.');
+    if (mastL > p.bett - 8) warn.push(`Mast ${Math.round(mastL)} mm – länger als das Bett. „Höhe“ verkleinern.`);
+    const nestCS = keep(new CS([[[-nestW / 2 + 4, 0], [nestW / 2 - 4, 0], [nestW / 2 + 3, nestH], [-nestW / 2 - 3, nestH]]]));
+    const n24 = { r: { y0: nestB, ch: ch24, h: h24 }, xc: 0, Bo: B24 + 2 * t, tag: 24, tile: [-cw24 / 2 - rw / 2 + g / 2, cw24 / 2 + rw / 2 - g / 2, nestB - rw / 2 + g / 2, nestB + ch24 + rw / 2 - g / 2] };
+    let nest = keep(keep(M.extrude(nestCS, Dr).translate([0, 0, -Dr])).add(keep(keep(M.extrude(nestCS, tp)).subtract(keep(M.cube([n24.tile[1] - n24.tile[0] + 2 * g, n24.tile[3] - n24.tile[2] + 2 * g, tp + 6]).translate([n24.tile[0] - g, n24.tile[2] - g, -1]))))));
+    { const d = Do + sp + 1, s = d * k, c = cw24, y0 = nestB;
+      nest = keep(nest.subtract(keep(M.hull([[-c / 2, y0, 1], [c / 2, y0, 1], [-c / 2, y0 + ch24, 1], [c / 2, y0 + ch24, 1], [-c / 2 + s, y0, -(Do + sp)], [c / 2 - s, y0, -(Do + sp)], [-c / 2 + s, y0 + ch24 - s, -(Do + sp)], [c / 2 - s, y0 + ch24 - s, -(Do + sp)]])))); }
+    if (Dr < mqL + 6) warn.push('Fächer zu flach für den Mast.');
+    nest = keep(nest.subtract(keep(M.cube([mqL, nestB - 1, mqL]).translate([-mqL / 2, -0.01, zM - mqL / 2]))));          // Mast von unten
+    nest = keep(nest.subtract(keep(M.cube([8 + 2 * p.steck, nestT + 1, 8 + 2 * p.steck]).translate([-4 - p.steck, nestH - nestT + 0.5, zM - 4 - p.steck]))));   // Flaggenstock oben (0,5 tiefer als der Zapfen)
+    if (nestB < 14 || Dr - (Do + sp) < 3) { /* Mastloch reicht in die Wand unter dem Fach */ }
+    teile.push({ name: 'Ausguck', farbe: '#b8761e', m: nest.translate([mX, yNest, 0]), d: nest.translate([nestW / 2 + 3, 0, Dr]), art: 'rahmen', nurDeko: true });
+    // ── Mast mit Rahen (flach), Segel, Flagge ──────────────────────────────
+    const yM0 = yDeck + fussH - 22, segelO = yNest - 0.12 * (yNest - yDeck), segelU = yDeck + fussH + 0.12 * (yNest - yDeck), segW = Math.min(2.4 * p.fachB * 2, p.bett - 30, 0.5 * (2 * xD));
+    const rahe = y => keep(M.cube([segW + 24, 8, mq]).translate([-(segW + 24) / 2, y - 4, zM - mq / 2]));   // so tief wie der Mast: Segel liegt hinten plan an
+    const mast = keep(M.union([keep(M.cube([mq, mastL, mq]).translate([-mq / 2, yM0, zM - mq / 2])), rahe(segelO), rahe(segelU)]));
+    const mb = mast.boundingBox();
+    teile.push({ name: 'Mast mit Rahen', farbe: '#7a4a1c', m: mast.translate([mX, 0, 0]), d: mast.translate([-mb.min[0], -mb.min[1], -mb.min[2]]), art: 'deko' });
+    const bauch = 6, segN = 16, sP = [];                                    // Segel leicht gebaucht (Kontur), flach gedruckt
+    for (let i = 0; i <= segN; i++) { const q = i / segN; sP.push([-segW / 2 + segW * q, segelU + 4 + bauch * Math.sin(Math.PI * q)]); }
+    for (let i = segN; i >= 0; i--) { const q = i / segN; sP.push([-segW / 2 + segW * q, segelO - 4 + bauch * Math.sin(Math.PI * q) * 0.6]); }
+    const segel = keep(M.extrude(keep(new CS([sP])), 2.4).translate([0, 0, zM - mq / 2 - 2.4]));   // hinten an Mast und Rahen geklebt
+    const sb = segel.boundingBox();
+    teile.push({ name: 'Segel', farbe: '#f2ede4', m: segel.translate([mX, 0, 0]), d: segel.translate([-sb.min[0], -sb.min[1], -sb.min[2]]), art: 'deko' });
+    const fq = 8, fl = flagH, fW = Math.min(0.9 * fl * 1.5, 70), fH = fl * 0.55;
+    const stock = keep(M.cube([fq, fl + nestT - 1, fq]).translate([-fq / 2, -(nestT - 1), -fq / 2]));
+    const tuch = keep(M.cube([fW, fH, 2.4]).translate([fq / 2 - 0.5, fl - fH, -fq / 2]));
+    let flagge = keep(stock.add(tuch));
+    const kz = keep(M.cylinder(1.2, fH * 0.2, fH * 0.2, 32).translate([fq / 2 + fW * 0.5, fl - fH * 0.42, -fq / 2 + 2.4]));      // Totenkopf schlicht: Kreis + gekreuzte Knochen
+    const kn = a => keep(M.cube([fH * 0.75, fH * 0.09, 1.2]).translate([-fH * 0.375, -fH * 0.045, 0]).rotate([0, 0, a]).translate([fq / 2 + fW * 0.5, fl - fH * 0.6, -fq / 2 + 2.4]));   // unter dem Kopf, überlappend → ein Stück
+    const zeichen = keep(M.union([kz, kn(25), kn(-25)]));
+    teile.push({ name: 'Flagge', farbe: '#222222', m: flagge.translate([mX, yNest + nestH, zM]), d: flagge.translate([fq / 2, nestT - 1, fq / 2]), art: 'deko' });
+    teile.push({ name: 'Flaggen-Zeichen', farbe: '#f5f5f5', m: zeichen.translate([mX, yNest + nestH, zM]), d: zeichen.translate([fq / 2, nestT - 1, fq / 2 - 2.4]), art: 'deko' });
+    // ── Schubladen ─────────────────────────────────────────────────────────
+    const lade = (fa, yOff) => {
+      const { r, xc, tile, tag } = fa, bo = fa.Bo, Ho = r.h + t, yb = r.y0 + sp, s = Do * k, si = (Do - t) * k;
+      const box = keep(M.hull([[xc - bo / 2, yb, 0], [xc + bo / 2, yb, 0], [xc - bo / 2, yb + Ho, 0], [xc + bo / 2, yb + Ho, 0],
+        [xc - bo / 2 + s, yb, -Do], [xc + bo / 2 - s, yb, -Do], [xc - bo / 2 + s, yb + Ho - s, -Do], [xc + bo / 2 - s, yb + Ho - s, -Do]]));
+      const inn = keep(M.hull([[xc - bo / 2 + t, yb + t, 0.01], [xc + bo / 2 - t, yb + t, 0.01], [xc - bo / 2 + t, yb + Ho + 2, 0.01], [xc + bo / 2 - t, yb + Ho + 2, 0.01],
+        [xc - bo / 2 + t + si, yb + t, -(Do - t)], [xc + bo / 2 - t - si, yb + t, -(Do - t)], [xc - bo / 2 + t + si, yb + Ho + 2, -(Do - t)], [xc + bo / 2 - t - si, yb + Ho + 2, -(Do - t)]]));
+      let sch = keep(keep(box.subtract(inn)).add(keep(M.cube([tile[1] - tile[0], tile[3] - tile[2], tp]).translate([tile[0], tile[2], 0]))));
+      const bw = tile[1] - tile[0], bh = tile[3] - tile[2], zs = _advZahl(w, textFn, keep, tag, Math.min(bh * 0.5, bw * 0.55, 30), bw * 0.8, xc, r.y0 + r.ch / 2);
+      if (zs) sch = keep(sch.add(keep(M.extrude(zs, tp + p.griff))));
+      return sch.translate([0, yOff, 0]);
+    };
+    for (const fa of faecher) { const sch = keep(lade(fa, 0)); teile.push({ name: `Fach ${String(fa.tag).padStart(2, '0')}`, farbe: '#f3e6c8', m: sch.translate([0, 0, 0]), d: sch.translate([0, 0, Do]), art: 'fach', tag: fa.tag }); }
+    { const sch = keep(lade(n24, yNest)); teile.push({ name: 'Fach 24 (Ausguck)', farbe: '#f6c35a', m: sch.translate([mX, 0, 0]), d: sch.translate([0, -yNest, Do]), art: 'fach', tag: 24 }); }
+    // Ausguck-Fach gegen den Ausguck prüfen lassen wie die anderen: Ausguck zählt als Rahmen
+    teile.find(x => x.name === 'Ausguck').art = 'rahmen';
+    const nStift = stifte.length;
+    if (nStift) teile.push({ name: `Steckstifte ${nStift}×`, farbe: '#bdbdbd', m: null, d: _advStifte(w, nStift, 2 * hd - 1), art: 'stift' });
+    const breite = 2 * xD + Math.max(0, bsL * Math.cos(bsA) - 6) + 4;
+    zeilen.push(`Piratenschiff ${Math.round(p.hoehe)} mm hoch, ${Math.round(breite)} mm breit, ${Math.round(Dr + tp)} mm tief; Rumpf in ${nSeg} Segmenten (senkrecht geteilt, ${kSeg} Spalten je Segment).`);
+    zeilen.push(`Kanonenluken innen ${p.fachB} × ${p.fachH} × ${p.fachT} mm (B × H × T), Reihen ${reihen.join('-')} von unten. Ausguck (24): ${p.fachB} × ${Math.round(h24)} × ${p.fachT} mm. Segel hinten an Mast und Rahen kleben.`);
+    return { teile, info: { zeilen, warn, stifte: nStift, stiftL: 2 * hd - 1 } };
+  } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
+}
+
 // ─── Formen-Register ──────────────────────────────────────────────────────────
 // Neue Form: Objekt anhängen. params: Regler (k, l, min, max, step, def, u, t) oder
 // { k, l, typ: 'text'|'schalter', def }. build(w, p, textFn) → { teile, info } (siehe oben).
@@ -36767,6 +37024,30 @@ const _ADV_FORMEN = [
     ],
     build: (w, p, tf) => _advBergBuild(w, p, tf),
     druck: 'Alles auf dem Rücken liegend, Landschaft und Zahlen nach oben – ohne Stützen. Gipfelkreuz flach. Rahmen-Segmente und Flanken mit Steckstiften verbinden und kleben.' },
+  { id: 'rakete', icon: '🚀', name: 'Rakete', hint: 'Rumpf mit Schubladen, Kapsel in der Spitze = Fach 24, Flossen als Standfuß',
+    params: [
+      { k: 'fachB', l: 'Fachbreite', min: 30, max: 60, step: 1, def: 40, u: 'mm', t: 'Innenbreite der Schubladen' },
+      { k: 'fachT', l: 'Fachtiefe', min: 35, max: 70, step: 1, def: 50, u: 'mm', t: 'Innentiefe der Schubladen' },
+      { k: 'reihen', l: 'Fächer je Reihe', typ: 'text', def: '4,4,4,4,4,3', t: 'Von unten nach oben, zusammen 23 (das 24. ist die Kapsel in der Spitze)' },
+      { k: 'spitze', l: 'Spitze', min: 15, max: 32, step: 1, def: 22, u: '%', t: 'Höhe der Spitze im Verhältnis zur Gesamthöhe' },
+      { k: 'flossen', l: 'Flossen', min: 30, max: 90, step: 1, def: 55, u: 'mm', t: 'Wie weit die Flossen seitlich herausstehen' },
+      { k: 'flosseH', l: 'Flossenhöhe', min: 20, max: 50, step: 1, def: 32, u: '%', t: 'Wie weit die Flossen am Rumpf hinaufreichen' },
+      { k: 'stand', l: 'Standfuß hinten', min: 0, max: 120, step: 5, def: 60, u: 'mm', t: 'So weit reichen die Flossen hinten über den Rumpf hinaus – macht die Rakete standfest' },
+      { k: 'rand', l: 'Seitenwand', min: 10, max: 24, step: 1, def: 12, u: 'mm', t: 'Wand neben den Fächern (hier sitzen die Steckstifte)' },
+      { k: 'duese', l: 'Düse unten', typ: 'schalter', def: 1 },
+    ],
+    build: (w, p, tf) => _advRaketeBuild(w, p, tf),
+    druck: 'Rumpf, Spitze und Flossen auf dem Rücken liegend (Vorderseite oben), Fächer mit der Zahl nach oben – alles ohne Stützen. Segmente, Spitze und Flossen mit Steckstiften verbinden und kleben.' },
+  { id: 'schiff', icon: '🏴‍☠️', name: 'Piratenschiff', hint: 'Kanonenluken = Fächer 1–23, Ausguck am Mast = Fach 24, Segel und Flagge',
+    params: [
+      { k: 'fachB', l: 'Fachbreite', min: 30, max: 60, step: 1, def: 40, u: 'mm', t: 'Innenbreite der Kanonenluken-Fächer' },
+      { k: 'fachH', l: 'Fachhöhe', min: 30, max: 70, step: 1, def: 50, u: 'mm', t: 'Innenhöhe der Fächer' },
+      { k: 'fachT', l: 'Fachtiefe', min: 35, max: 70, step: 1, def: 50, u: 'mm', t: 'Innentiefe der Fächer' },
+      { k: 'reihen', l: 'Fächer je Reihe', typ: 'text', def: '11,12', t: 'Von unten nach oben, zusammen 23 (das 24. ist der Ausguck)' },
+      { k: 'rand', l: 'Bug/Heck', min: 10, max: 40, step: 1, def: 16, u: 'mm', t: 'Rumpf neben den äußeren Fächern' },
+    ],
+    build: (w, p, tf) => _advSchiffBuild(w, p, tf),
+    druck: 'Rumpf-Segmente und Ausguck auf dem Rücken liegend, Fächer mit der Zahl nach oben, Mast, Segel und Flagge flach – alles ohne Stützen. Segmente mit Steckstiften verbinden und kleben, Mast in den Mastfuß und den Ausguck stecken, Segel hinten an Mast und Rahen kleben.' },
 ];
 
 // ── Adventskalender: Fenster, Vorschau, Erstellen (formunabhängig) ──────────────
@@ -49135,7 +49416,7 @@ const _STARTERS = [
   {i:'🎄',t:'Wort-Tanne',d:'Namen oder Wörter als Tannenbaum mit Stern: Anhänger mit Öse oder Aufsteller mit graviertem Fuß',run:()=>_wtbOpen()},
   {i:'💶',t:'Geld-Engel',d:'Engel mit Flügel-Schlitzen für Geldscheine, Kugelkopf und Wortwolke vorn – ebene Front für den UV-Drucker',run:()=>_gleOpen()},
   {i:'🦌',t:'Strick-Elch',d:'Stehender Elch rundum im Zopfmuster, auch das Geweih – am Stück oder längs halbiert ohne Stützen',run:()=>_elcOpen()},
-  {i:'🎁',t:'Adventskalender',d:'24 herausziehbare Fächer in wählbarer Form (Fußball, Berg …), ca. 40 cm, automatisch in bettgroße Teile zerlegt',run:()=>_advOpen()},
+  {i:'🎁',t:'Adventskalender',d:'24 herausziehbare Fächer in wählbarer Form (Fußball, Berg, Rakete, Piratenschiff), ca. 40 cm, automatisch in bettgroße Teile zerlegt',run:()=>_advOpen()},
   {i:'🔠',t:'Schrift-Aufsteller',d:'Dicke Blockschrift (WEIH/NACH/TEN, FEST, XMAS) gleich breit gestapelt, Schreibschrift-Wort obendrauf in zweiter Farbe – ohne Stützen',run:()=>_swaOpen()},
   {i:'🏠',t:'Lichthaus',d:'Satteldach-Haus mit Lichtschlitzen oder Fenstern, Bodenplatte mit LED-Teelicht-Halter – ohne Stützen',run:()=>_lhsOpen()},
   {i:'🪢',t:'Kordel-Topf',d:'Übertopf, Vase oder Schale aus gedrehten Seilringen, loses Seilende über den Rand – ohne Stützen',run:()=>_kdlOpen()},
@@ -83697,8 +83978,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.362';
+const VOLME3D_VERSION = '1.18.363';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.363', date:'2026-11-10', changes:[
+    ['🚀','<b>Adventskalender: neue Formen Rakete und Piratenschiff.</b> Im Generator „Adventskalender“ gibt es zwei neue Formen mit Fächern von etwa 40 × 50 mm. <b>🚀 Rakete:</b> Rumpf mit Schubladen in Reihen, Fach 24 als runde Kapsel in der roten Spitze, zwei Flossen als Standfuß – sie reichen hinten über den Rumpf hinaus, damit die Rakete beim Herausziehen eines Fachs nicht kippt. <b>🏴‍☠️ Piratenschiff:</b> zwei Reihen Kanonenluken (Fächer 1–23), Kajüte am Heck, Bugspriet, Mast mit Rahen und Segel, Fach 24 im Ausguck, oben die Piratenflagge. Der lange Rumpf wird automatisch senkrecht in bettgroße Stücke geteilt. Alles druckt ohne Stützen und wird mit gedruckten Steckstiften verbunden.'],
+  ]},
   { version:'1.18.362', date:'2026-11-10', changes:[
     ['🔠','<b>Neuer Weihnachts-Generator: Schrift-Aufsteller.</b> Dicke Blockschrift zum Hinstellen: Die Zeilen (z. B. WEIH / NACH / TEN) werden gleich breit gezogen und greifen ineinander, sodass ein Teil entsteht. Obendrauf sitzt ein <b>Schreibschrift-Wort</b> in zweiter Farbe („frohe“, „frohes“, „merry“), vorn bündig und seitlich verschiebbar. Vorlagen: frohe WEIHNACHTEN, frohes FEST, merry XMAS. Er liegt mit der Vorderseite nach unten und druckt ohne Stützen.'],
   ]},
@@ -96313,7 +96597,7 @@ const CMDK = [
   {i:'🎄',g:'Generator',t:'Wort-Tanne',k:'wort tanne namen anhänger tannenbaum weihnachtsbaum familie namen jahreszahl stern aufsteller fuß liebe glück freude gravur',run:()=>_wtbOpen()},
   {i:'💶',g:'Generator',t:'Geld-Engel',k:'geld engel geldgeschenk geldscheine schein wortwolke uv druck uv-drucker weihnachten geschenk',run:()=>_gleOpen()},
   {i:'🦌',g:'Generator',t:'Strick-Elch',k:'elch rentier hirsch strick strickmuster zopfmuster geweih weihnachten deko figur',run:()=>_elcOpen()},
-  {i:'🎁',g:'Generator',t:'Adventskalender',k:'adventskalender advent kalender 24 fächer schubladen fußball ball berg gipfel weihnachten befüllen enkel',run:()=>_advOpen()},
+  {i:'🎁',g:'Generator',t:'Adventskalender',k:'adventskalender advent kalender 24 fächer schubladen fußball ball berg gipfel weihnachten befüllen enkel rakete piratenschiff schiff pirat ausguck kapsel',run:()=>_advOpen()},
   {i:'🔠',g:'Generator',t:'Schrift-Aufsteller',k:'schrift aufsteller schriftzug frohe weihnachten frohes fest merry xmas blockschrift schreibschrift text deko',run:()=>_swaOpen()},
   {i:'🏠',g:'Generator',t:'Lichthaus',k:'haus lichthaus häuschen windlicht led teelicht lichterkette weihnachten advent winter deko schlitze fenster satteldach giebel',run:()=>_lhsOpen()},
   {i:'🎄',g:'Generator',t:'Faltenbaum (Weihnachten)',k:'faltenbaum tanne kleine tanne weihnachtsbaum christbaum weihnachten advent gefaltet papier falten vasenmodus deko',run:()=>_ftbOpen()},
