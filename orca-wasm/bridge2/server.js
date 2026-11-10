@@ -45,7 +45,7 @@ app.use((req, res, next) => {
   if (o && OK_ORIGIN.test(o)) {
     res.setHeader('Access-Control-Allow-Origin', o);
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Fleet-Code');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
   }
   // Die App läuft unter COEP require-corp (WASM-Threads). Cross-Origin-
   // Ressourcen — vor allem das Kamera-<img> ohne Origin-Header — werden sonst
@@ -206,6 +206,122 @@ app.post('/api/lan-auth', async (req, res) => {
   lanAuth.set(serial, { ip: useIp, code: String(code) });
   persistLanAuth();
   res.json({ ok: true, ip: useIp });
+});
+
+// ---- Geräteverwaltung (App: „⚙ Geräte verwalten"): Flotte in printers.json + LAN-Bambus in
+// lan-auth.json anlegen/löschen. Gleiche Policy wie die Flotte: LAN/Tailnet frei, öffentlich nur
+// mit Druckcode. printers.json kann ein Symlink sein (bridge2 → bridge) → über den echten Pfad
+// atomar schreiben, vorher Sicherung (printers.backup/, die letzten 10).
+function writeFleetFile(mutate) {
+  const real = fs.realpathSync(FLEET_FILE);
+  let doc = { printers: [] };
+  try { doc = JSON.parse(fs.readFileSync(real, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw new Error('printers.json fehlerhaft: ' + e.message); }
+  if (!Array.isArray(doc.printers)) doc.printers = [];
+  const bdir = path.join(path.dirname(real), 'printers.backup');
+  try {
+    fs.mkdirSync(bdir, { recursive: true });
+    if (fs.existsSync(real)) fs.copyFileSync(real, path.join(bdir, `printers-${new Date().toISOString().replace(/[:.]/g, '-')}.json`));
+    const old = fs.readdirSync(bdir).filter(f => f.endsWith('.json')).sort();
+    for (const f of old.slice(0, Math.max(0, old.length - 10))) fs.unlinkSync(path.join(bdir, f));
+  } catch (e) { console.warn('[devices] Sicherung fehlgeschlagen:', e.message); }
+  mutate(doc);
+  const tmp = real + '.tmp-' + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(doc, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, real);
+  loadFleet();
+}
+const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+const slugId = (name) => (String(name).toLowerCase().normalize('NFKD').replace(/[^\w]+/g, '-').replace(/^-|-$/g, '') || 'drucker').slice(0, 32);
+async function probeJson(url, timeoutMs = 2500) {
+  const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+// Liste: Flotte, LAN-Bambus (ohne Codes!), im Netz gesehene, noch nicht eingetragene Bambus
+app.get('/api/devices', (req, res) => {
+  if (!fleetOk(req)) return needCode(res);
+  const discovered = [...ssdpSeen].filter(([serial]) => !lanAuth.has(serial) && ssdpFresh(serial))
+    .map(([serial, h]) => ({ serial, ip: h.ip, name: h.name, model: h.model }));
+  res.json({
+    fleet: fleet.map(p => ({ id: 'fleet:' + p.id, name: p.name || p.id, model: p.model || '', type: p.type, ip: p.ip, port: p.port || null })),
+    bambuLan: [...lanAuth].map(([serial, v]) => ({ id: 'bambu:' + serial, serial, ip: v.ip,
+      name: ssdpSeen.get(serial)?.name || serial, model: ssdpSeen.get(serial)?.model || 'Bambu Lab' })),
+    discovered,
+  });
+});
+
+// Typ an einer IP erkennen: Moonraker (Klipper), Anycubic-LAN oder per SSDP gesehener Bambu
+app.post('/api/devices/probe', async (req, res) => {
+  if (!fleetOk(req)) return needCode(res);
+  const ip = String(req.body?.ip || '').trim();
+  const port = Number(req.body?.port) || 7125;
+  if (!IPV4.test(ip)) return res.status(400).json({ error: 'Bitte eine IPv4-Adresse wie 192.168.178.50 angeben' });
+  const bambu = [...ssdpSeen].find(([, h]) => h.ip === ip);
+  if (bambu) return res.json({ type: 'bambu', serial: bambu[0], name: bambu[1].name, model: bambu[1].model });
+  const [mr, ac] = await Promise.allSettled([
+    probeJson(`http://${ip}:${port}/printer/info`),
+    probeJson(`http://${ip}:18910/info`),
+  ]);
+  if (mr.status === 'fulfilled') {
+    const host = mr.value?.result?.hostname || '';
+    return res.json({ type: 'moonraker', port, hostname: host,
+      model: host === 'lava' ? 'Snapmaker U1' : '', name: host === 'lava' ? 'Snapmaker U1' : (host || 'Klipper-Drucker') });
+  }
+  if (ac.status === 'fulfilled') {
+    const d = ac.value?.data || ac.value || {};
+    const model = d.modelName || d.model || d.printerName || 'Anycubic';
+    return res.json({ type: 'anycubic', model, name: model });
+  }
+  res.status(404).json({ error: `Unter ${ip} antwortet kein bekannter Drucker (Klipper/Moonraker :${port}, Anycubic-LAN :18910, Bambu im LAN). Ist er eingeschaltet und im selben Netz? Kobras: LAN-Modus am Display aktivieren.` });
+});
+
+// Anlegen: Flotte (moonraker/anycubic) → printers.json; Bambu → Zugangscode prüfen → lan-auth.json
+app.post('/api/devices', async (req, res) => {
+  if (!fleetOk(req)) return needCode(res);
+  const b = req.body || {};
+  const ip = String(b.ip || '').trim(), name = String(b.name || '').trim().slice(0, 60);
+  if (!IPV4.test(ip)) return res.status(400).json({ error: 'IP fehlt oder ungültig' });
+  try {
+    if (b.type === 'bambu') {
+      const serial = String(b.serial || '').trim(), code = String(b.code || '').trim();
+      if (!serial || !code) return res.status(400).json({ error: 'Bambu: Seriennummer und Zugangscode (Drucker-Display → LAN) nötig' });
+      const ok = await lan.reachable({ ip, access_code: code, serial }).catch(() => false);
+      if (!ok) return res.status(502).json({ error: 'Bambu antwortet nicht — IP/Zugangscode prüfen (LAN-Modus aktiv?)' });
+      lanAuth.set(serial, { ip, code });
+      persistLanAuth();
+      return res.json({ ok: true, id: 'bambu:' + serial });
+    }
+    if (!['moonraker', 'anycubic'].includes(b.type)) return res.status(400).json({ error: 'Typ muss moonraker, anycubic oder bambu sein' });
+    const entry = { name: name || ip, model: String(b.model || '').trim().slice(0, 60), type: b.type, ip };
+    if (b.type === 'moonraker' && Number(b.port) && Number(b.port) !== 7125) entry.port = Number(b.port);
+    if (!(await adapters[b.type].online(entry).catch(() => false)))
+      return res.status(502).json({ error: `${entry.name} unter ${ip} nicht erreichbar — nichts gespeichert` });
+    if (fleet.some(p => p.ip === ip && (p.port || 7125) === (entry.port || 7125)))
+      return res.status(409).json({ error: `Unter ${ip} ist schon ein Drucker eingetragen` });
+    let id = slugId(entry.name);
+    for (let n = 2; fleet.some(p => p.id === id); n++) id = `${slugId(entry.name)}-${n}`;
+    writeFleetFile(doc => doc.printers.push({ id, ...entry }));
+    res.json({ ok: true, id: 'fleet:' + id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Löschen: fleet:<id> aus printers.json, bambu:<serial> aus lan-auth.json
+app.delete('/api/devices/:id', (req, res) => {
+  if (!fleetOk(req)) return needCode(res);
+  const id = String(req.params.id);
+  try {
+    if (id.startsWith('bambu:')) {
+      if (!lanAuth.delete(id.slice(6))) return res.status(404).json({ error: 'nicht gefunden' });
+      persistLanAuth();
+      return res.json({ ok: true });
+    }
+    if (!id.startsWith('fleet:')) return res.status(400).json({ error: 'unbekannte ID' });
+    const fid = id.slice(6);
+    if (!fleet.some(p => p.id === fid)) return res.status(404).json({ error: 'nicht gefunden' });
+    writeFleetFile(doc => { doc.printers = doc.printers.filter(p => p.id !== fid); });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Drucker-Liste: lokale Flotte (immer) + Bambu-Cloud-Drucker des angemeldeten
