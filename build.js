@@ -45,8 +45,31 @@ if (fs.existsSync(path.join(__dirname, 'v3ddruckcheck/bauen.py'))) {
 
 const SCRIPT_RE = /<script\b([^>]*)>([\s\S]*?)<\/script>/g;
 
+// Changelog-Einträge müssen [Symbol, Text] sein. Ein reiner Text ergab in „Was ist neu“
+// nur zwei Buchstaben („N e“, „S c“ – Ralf 11.11.2026, neun Einträge aus Parallelsitzungen).
+function pruefeChangelog(html) {
+  const a = html.indexOf('const VOLME3D_CHANGELOG = [');
+  if (a < 0) return;
+  let i = html.indexOf('[', a), d = 0, j = i;
+  for (; j < html.length; j++) {
+    const c = html[j];
+    if (c === '[') d++;
+    else if (c === ']') { if (!--d) break; }
+    else if (c === "'" || c === '"' || c === '`') { const q = c; j++; while (html[j] !== q) { if (html[j] === '\\') j++; j++; } }
+  }
+  let liste; try { liste = new Function('return ' + html.slice(i, j + 1))(); } catch (e) { console.error('Changelog nicht lesbar:', e.message); process.exit(1); }
+  const falsch = [];
+  for (const v of liste) for (const c of v.changes || [])
+    if (!Array.isArray(c) || c.length < 2 || typeof c[1] !== 'string' || c[1].length < 4) falsch.push(v.version + ': ' + JSON.stringify(c).slice(0, 80));
+  if (falsch.length) {
+    console.error('FEHLER Changelog: Einträge müssen [\'Symbol\', \'Text\'] sein, nicht nur ein Text:\n  ' + falsch.join('\n  '));
+    process.exit(1);
+  }
+}
+
 async function build() {
   const html = fs.readFileSync(SRC, 'utf8');
+  pruefeChangelog(html);
 
   let blocks = 0, minified = 0, srcSkipped = 0, errors = 0;
   const parts = [];
