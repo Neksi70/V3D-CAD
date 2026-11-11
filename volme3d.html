@@ -1753,7 +1753,7 @@ const firebaseConfig = {
         <div id="stl-menu">
           <div class="stl-sec">Herunterladen</div>
           <div class="sli-item sli-erkl" onclick="exportSTL()"><span class="si-t">⬇ STL</span><span class="si-d">Für jeden Slicer. Eine Farbe; bei Auswahl nur die markierten Teile.</span></div>
-          <div class="sli-item sli-erkl" onclick="_3mfSpeichern()"><span class="si-t">⬇ 3MF (mit Farben)</span><span class="si-d">Behält Farben und Teile; auf Wunsch als Bambu-Studio-Projekt mit Drucker und Einstellungen.</span></div>
+          <div class="sli-item sli-erkl" onclick="_3mfSpeichern()"><span class="si-t">⬇ 3MF (mit Farben)</span><span class="si-d">Behält Farben und Teile; auf Wunsch als Projekt für Bambu Studio, OrcaSlicer, Anycubic, Snapmaker oder Elegoo – mit Drucker und Einstellungen.</span></div>
           <div class="sli-item sli-erkl" onclick="exportPartsSTL()"><span class="si-t">⬇ STL pro Körper</span><span class="si-d">Jeder Körper als eigene Datei, z. B. zum Drucken in mehreren Farben nacheinander.</span></div>
           <div class="sli-item sli-erkl" onclick="exportOBJ()"><span class="si-t">⬇ OBJ</span><span class="si-d">Für Grafik- und Animationsprogramme wie Blender.</span></div>
           <div class="sli-item sli-erkl" onclick="exportSTEP()"><span class="si-t">⬇ STEP</span><span class="si-d">Mit echten Flächen für andere CAD-Programme (Fusion, FreeCAD …).</span></div>
@@ -44158,7 +44158,7 @@ ${partXml.join('\n')}
     const blob3mf = new Blob([zipped], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
     const legend = [...colorIndex.entries()].sort((a, b) => a[1] - b[1]).map(([h, ix]) => (ix + 1) + '=#' + h);
     return { blob: blob3mf, parts: meshes.length, colors: colorIndex.size, legend, chroma: chrHinweis, schicht: schichtHinweis,
-      projekt: PJ ? `🧩 Bambu-Studio-Projekt: ${PJ.settings.printer_settings_id.replace(/ nozzle$/, '')} · ${PJ.filName.replace(/ @.*$/, '')} · ${PJ.procName.replace(/ @.*$/, '')}${PJ.geaendert.length ? ' · geändert: ' + PJ.geaendert.length : ''} — öffnet als Projekt mit diesen Einstellungen` : null,
+      projekt: PJ ? `🧩 ${PJ.slicerName || 'Bambu Studio'}-Projekt: ${PJ.settings.printer_settings_id.replace(/\s*\(?([0-9.]+) nozzle\)?$/i, ' $1')} · ${PJ.filName.replace(/ @.*$/, '')} · ${PJ.procName.replace(/ @.*$/, '')}${PJ.geaendert.length ? ' · geändert: ' + PJ.geaendert.length : ''} — öffnet als Projekt mit diesen Einstellungen` : null,
       litho: litho ? `🖼️ Lithophane: ${_LITHO_WAENDE} Wandschleifen + 100 % Füllung als Objekt-Einstellung eingetragen` : null,
       passung: pfMeta ? _pfHinweis(pf) : null };
 }
@@ -84264,8 +84264,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.365';
+const VOLME3D_VERSION = '1.18.366';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.366', date:'2026-11-11', changes:[
+    ['🧩','<b>3MF als Projekt auch für OrcaSlicer, Anycubic Slicer Next, Snapmaker Orca und ElegooSlicer.</b> Beim Speichern als 3MF gab es bisher nur „Als Bambu-Studio-Projekt speichern“ mit Bambu-Druckern. Jetzt wählst du zuerst den <b>Slicer</b>, bei den Orca-Slicern dazu den <b>Hersteller</b> (Anycubic, Snapmaker, Elegoo, Prusa, Creality, Qidi, Flashforge, Sovol, Voron, Artillery, Anker, Bambu Lab), dann Drucker, Filament und Schichthöhe. Die Datei enthält die passenden Profile des Herstellers und öffnet im Slicer als Projekt mit genau diesen Einstellungen statt „nur Geometriedaten“. Mit OrcaSlicer 2.4.2 nachgeprüft.'],
+  ]},
   { version:'1.18.365', date:'2026-11-11', changes:[
     ['🩺','<b>Druck prüfen &amp; verbessern: alle Drucker wählbar.</b> Unter „Womit druckst du?“ standen bisher nur Bambu-Drucker und ein Sammeleintrag „Prusa MK4 / Ender 3“. Jetzt wählst du zuerst den Hersteller (Bambu Lab, Snapmaker, Anycubic, Elegoo, Prusa, Creality, Flashforge, Qidi, Sovol, Voron, Artillery, Anker) und dann das Modell mit seinem Bauraum, insgesamt 174 Modelle aus derselben Liste wie die Druck-Vorschau. Die Wahl bleibt gespeichert.'],
   ]},
@@ -95951,8 +95954,26 @@ function _bbsLaden() {
     .then(r => { if (!r.ok) throw new Error('Bambu-Profile nicht geladen (HTTP ' + r.status + ')'); return r.json(); })
     .then(j => (_bbsProf = j));
 }
-function _bbsAus(art, name) {
-  const A = _bbsProf && _bbsProf[art], e = A && A.je[name];
+// Orca-Ableger (OrcaSlicer, Anycubic Slicer Next, Snapmaker Orca, ElegooSlicer) lesen dasselbe
+// Projektformat; ihre Profile kommen aus den Orca-Systemprofilen des V3D Slicers, je Hersteller
+// eine Datei (slicer-projekt/<Hersteller>.json, tools/bau_slicer_projekt.py). Als Herkunft steht
+// „BambuStudio-02.03…" drin: Orca lädt Projekte bis 2.3.2 ohne „von Bambu Studio"-Hinweis (Plater.cpp).
+const _B3_SLICER = { bambu: 'Bambu Studio', orca: 'OrcaSlicer', anycubic: 'Anycubic Slicer Next', snapmaker: 'Snapmaker Orca', elegoo: 'ElegooSlicer' };
+const _B3_HERSTELLER = { anycubic: 'Anycubic', snapmaker: 'Snapmaker', elegoo: 'Elegoo', orca: 'BBL' };
+const _B3_ORCA_VERSION = '02.03.00.00';
+const _spProf = {};
+const _b3IstBambu = w => !w.slicer || w.slicer === 'bambu';
+function _b3Prof(w) { return _b3IstBambu(w) ? _bbsProf : _spProf[w.vendor]; }
+function _b3ProfLaden(w) {
+  if (_b3IstBambu(w)) return _bbsLaden();
+  const v = w.vendor;
+  if (_spProf[v]) return Promise.resolve(_spProf[v]);
+  return fetch('slicer-projekt/' + encodeURIComponent(v) + '.json', { cache: 'force-cache' })
+    .then(r => { if (!r.ok) throw new Error('Profile für ' + v + ' nicht geladen (HTTP ' + r.status + ')'); return r.json(); })
+    .then(j => (_spProf[v] = j));
+}
+function _bbsAus(art, name, prof = _bbsProf) {
+  const A = prof && prof[art], e = A && A.je[name];
   if (!e) return null;
   const r = Object.assign({}, A.basis);
   (e._ohne || []).forEach(k => delete r[k]);
@@ -95963,21 +95984,29 @@ function _bbsAus(art, name) {
 function _b3Wahl() {
   let w = {}; try { w = JSON.parse(localStorage.getItem('v3d_3mf_bambu') || '{}'); } catch (e) {}
   const p = (typeof _dv !== 'undefined' && _dv.p) || {};
-  if (!w.machine && p.vendor === 'BBL' && p.machine) w.machine = p.machine;
+  if (!_B3_SLICER[w.slicer]) w.slicer = 'bambu';
+  if (_b3IstBambu(w)) w.vendor = 'BBL';
+  else if (!w.vendor) w.vendor = p.vendor && w.slicer === 'orca' ? p.vendor : _B3_HERSTELLER[w.slicer];
+  if (!w.machine && p.vendor === w.vendor && p.machine) w.machine = p.machine;
   if (!w.ftype) w.ftype = p.ftype || 'PLA';
   if (!w.lh) w.lh = String(p.lh || '0.2');
-  const D = _bbsProf && _bbsProf.drucker;
-  if (D && !D[w.machine]) w.machine = D['Bambu Lab X1 Carbon 0.4 nozzle'] ? 'Bambu Lab X1 Carbon 0.4 nozzle' : Object.keys(D)[0];
+  const pr = _b3Prof(w), D = pr && pr.drucker;
+  if (D && !D[w.machine]) {
+    const namen = Object.keys(D).sort();
+    w.machine = D['Bambu Lab X1 Carbon 0.4 nozzle'] ? 'Bambu Lab X1 Carbon 0.4 nozzle' : (namen.find(n => /\b0\.4\b/.test(n)) || namen[0]);
+  }
   if (D && w.machine) {
     const d = D[w.machine];
     if (!d.filament[w.ftype]) w.ftype = d.filament.PLA ? 'PLA' : Object.keys(d.filament)[0];
-    const lhs = Object.keys(d.prozess);
-    if (!d.prozess[w.lh]) w.lh = lhs.reduce((a, b) => Math.abs(b - 0.2) < Math.abs(a - 0.2) ? b : a, lhs[0]);
+    const lhs = Object.keys(d.prozess), ziel = parseFloat(w.lh) || 0.2;
+    if (!d.prozess[w.lh]) w.lh = lhs.reduce((a, b) => Math.abs(b - ziel) < Math.abs(a - ziel) ? b : a, lhs[0]);
   }
   return w;
 }
 function _b3Set(k, v) {
   const w = _b3Wahl(); w[k] = v;
+  if (k === 'slicer') { delete w.vendor; delete w.machine; }   // neuer Slicer → sein Hersteller
+  if (k === 'vendor') delete w.machine;
   try { localStorage.setItem('v3d_3mf_bambu', JSON.stringify(w)); } catch (e) {}
   _b3Abschnitt();
 }
@@ -95990,10 +96019,11 @@ function _b3Farben(src) {
 }
 // Vollständige project_settings für Drucker/Filament/Schicht (+ Druck-Vorschau-Werte)
 function _bbsProjekt(w, farben, fixes) {
-  const D = _bbsProf && _bbsProf.drucker[w.machine]; if (!D) return null;
+  const prof = _b3Prof(w), bambu = _b3IstBambu(w);
+  const D = prof && prof.drucker[w.machine]; if (!D) return null;
   const procName = D.prozess[w.lh] || D.prozess['0.2'] || Object.values(D.prozess)[0];
   const filName = D.filament[w.ftype] || D.filament.PLA || Object.values(D.filament)[0];
-  const M = _bbsAus('maschine', w.machine), P = _bbsAus('prozess', procName), Fi = _bbsAus('filament', filName);
+  const M = _bbsAus('maschine', w.machine, prof), P = _bbsAus('prozess', procName, prof), Fi = _bbsAus('filament', filName, prof);
   if (!M || !P || !Fi) return null;
   const n = Math.max(1, farben.length);
   const out = Object.assign({}, M, P);
@@ -96015,7 +96045,7 @@ function _bbsProjekt(w, farben, fixes) {
   const temp = b => parseFloat((Fi[platte[b]] || [])[0]) || 0;
   let bed = temp('Textured PEI Plate') > 0 ? 'Textured PEI Plate' : (Object.keys(platte).find(b => temp(b) > 0) || 'Textured PEI Plate');
   Object.assign(out, {
-    from: 'project', name: 'project_settings', version: _BBS_VERSION,
+    from: 'project', name: 'project_settings', version: bambu ? _BBS_VERSION : _B3_ORCA_VERSION,
     printer_settings_id: w.machine, print_settings_id: procName, filament_settings_id: Array(n).fill(filName),
     filament_colour: farben.length ? farben.slice() : ['#FFFFFF'], curr_bed_type: bed,
   });
@@ -96024,8 +96054,10 @@ function _bbsProjekt(w, farben, fixes) {
   // Düsenvariante + Selbst-Index, sonst „Invalid configuration file" und es kommt nur
   // „keine Geometriedaten" an (Volker 2.11., A1). Das CLI prüft das nicht.
   const fev = Fi.filament_extruder_variant;
-  out.filament_extruder_variant = Array(n).fill(String((Array.isArray(fev) ? fev[0] : fev) || 'Direct Drive Standard'));
-  out.filament_self_index = Array.from({ length: n }, (x, i) => String(i + 1));
+  if (bambu || fev !== undefined) {
+    out.filament_extruder_variant = Array(n).fill(String((Array.isArray(fev) ? fev[0] : fev) || 'Direct Drive Standard'));
+    out.filament_self_index = Array.from({ length: n }, (x, i) => String(i + 1));
+  }
   // V3D Druckcheck-Fixes (Werte als Bambu-Schlüssel) – Platte als eigene Wahl
   const DC = window.V3D_DRUCKCHECK;
   for (const x of (fixes || [])) {
@@ -96041,7 +96073,7 @@ function _bbsProjekt(w, farben, fixes) {
   const pts = (out.printable_area || []).map(s => String(s).split('x').map(parseFloat)).filter(q => q.length === 2 && q.every(Number.isFinite));
   const xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
   const bett = pts.length ? [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2] : [128, 128];
-  return { settings: out, bett, procName, filName, bed, geaendert: diff.flat() };
+  return { settings: out, bett, procName, filName, bed, geaendert: diff.flat(), slicerName: _B3_SLICER[w.slicer] || 'Bambu Studio' };
 }
 // Netze für den V3D Druckcheck (Druck-Koordinaten mm, Z oben, je Objekt)
 function _b3Modelle(src) {
@@ -96063,20 +96095,24 @@ async function _b3Abschnitt() {
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   box.innerHTML = `<div class="pc-row lvl-info" style="display:block;font-size:12.5px">
       <label style="display:flex;gap:7px;align-items:flex-start;cursor:pointer"><input type="checkbox" id="b3-proj" ${an ? 'checked' : ''} onchange="localStorage.setItem('v3d_3mf_projekt',this.checked?'1':'0');_b3Abschnitt()" style="margin-top:2px">
-      <span><b style="font-size:13.5px">🧩 Als Bambu-Studio-Projekt speichern</b><br><span style="color:var(--mid);font-size:12px">mit Drucker, Filament und Einstellungen — Bambu Studio öffnet die Datei als Projekt statt „nur Geometriedaten“ (OrcaSlicer ebenso)</span></span></label>
-      <div id="b3-wahl" style="margin-top:6px">${an ? '<span style="color:var(--dim)">Bambu-Profile laden …</span>' : ''}</div></div>
+      <span><b style="font-size:13.5px">🧩 Als Slicer-Projekt speichern</b><br><span style="color:var(--mid);font-size:12px">mit Drucker, Filament und Einstellungen — Bambu Studio, OrcaSlicer, Anycubic Slicer Next, Snapmaker Orca oder ElegooSlicer öffnen die Datei als Projekt statt „nur Geometriedaten“</span></span></label>
+      <div id="b3-wahl" style="margin-top:6px">${an ? '<span style="color:var(--dim)">Slicer-Profile laden …</span>' : ''}</div></div>
     <div id="b3-check"></div>`;
   if (!an) { _b3 = null; return; }
-  try { await _bbsLaden(); } catch (e) { document.getElementById('b3-wahl').innerHTML = '<span style="color:#dc2626">' + esc(e.message || e) + ' — die 3MF wird ohne Projekt-Einstellungen gespeichert.</span>'; _b3 = null; return; }
+  try { if (!_b3IstBambu(_b3Wahl())) await _dvLoad().catch(() => {}); await _b3ProfLaden(_b3Wahl()); } catch (e) { document.getElementById('b3-wahl').innerHTML = '<span style="color:#dc2626">' + esc(e.message || e) + ' — die 3MF wird ohne Projekt-Einstellungen gespeichert.</span>'; _b3 = null; return; }
   if (!document.getElementById('b3-wahl')) return;
-  const w = _b3Wahl(), D = _bbsProf.drucker[w.machine];
+  const w = _b3Wahl(), prof = _b3Prof(w), D = prof.drucker[w.machine];
   const sel = (k, opts, cur) => `<select style="flex:1;min-width:0" onchange="_b3Set('${k}',this.value)">${opts.map(([v, t]) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
   const p = (typeof _dv !== 'undefined' && _dv.p) || {};
   const stz = { aus: 'aus', normal: 'normal', baum: 'Baum (auto)' }[p.support || 'aus'];
   document.getElementById('b3-wahl').innerHTML = `
-    <div class="vrow"><label>Drucker</label>${sel('machine', Object.keys(_bbsProf.drucker).map(n => [n, n.replace(/^Bambu Lab /, '').replace(/ nozzle$/, ' mm Düse')]), w.machine)}</div>
+    <div class="vrow"><label>Slicer</label>${sel('slicer', Object.entries(_B3_SLICER), w.slicer)}</div>
+    ${_b3IstBambu(w) ? '' : `<div class="vrow"><label>Hersteller</label>${sel('vendor', (_dvListe || [{ v: w.vendor }]).map(v => [v.v, v.v === 'BBL' ? 'Bambu Lab' : v.v]), w.vendor)}</div>`}
+    <div class="vrow"><label>Drucker</label>${sel('machine', Object.keys(prof.drucker).sort((a, b) => a.localeCompare(b, 'de', { numeric: true }))
+      .map(n => [n, n.replace(/^(Bambu Lab|[A-Za-z]+) /, (m, h) => (w.vendor === 'BBL' ? 'Bambu Lab' : w.vendor).toLowerCase() === h.toLowerCase() ? '' : m)
+        .replace(/\s*\(?([0-9.]+) nozzle\)?$/i, (m, d) => ' ' + d.replace('.', ',') + ' mm Düse')]), w.machine)}</div>
     <div class="vrow"><label>Filament</label>${sel('ftype', Object.keys(D.filament).map(t => [t, D.filament[t].replace(/ @.*$/, '')]), w.ftype)}</div>
-    <div class="vrow"><label>Schichthöhe</label>${sel('lh', Object.keys(D.prozess).sort((a, b) => a - b).map(l => [l, D.prozess[l].replace(/ @.*$/, '').replace(/^([\d.]+)mm/, (m, x) => String(+x).replace('.', ',') + ' mm')]), w.lh)}</div>
+    <div class="vrow"><label>Schichthöhe</label>${sel('lh', Object.keys(D.prozess).sort((a, b) => a - b).map(l => [l, String(+l).replace('.', ',') + ' mm ' + D.prozess[l].replace(/ @.*$/, '').replace(/^[\d.]+\s*(mm)?\s*/, '')]), w.lh)}</div>
     <div style="color:var(--dim);font-size:11px">Wände ${p.walls || 2} · Füllung ${p.infill != null ? p.infill : 15} % · Stützen ${stz} — aus der 🖨 Druck-Vorschau</div>`;
   // V3D Druckcheck: Modell + Einstellungen
   const chk = document.getElementById('b3-check');
@@ -96093,7 +96129,7 @@ async function _b3Abschnitt() {
   befunde = befunde.filter(f => f.level > DC.LEVEL.OK && f.cat !== 'Abgleich');
   befunde.sort((a, b) => b.level - a.level);
   _b3 = { w, befunde };
-  const titel = '<div style="font-weight:800;font-size:13.5px;margin:12px 2px 4px">🖨 V3D Druckcheck — Einstellungen für ' + esc(w.machine.replace(/ nozzle$/, '')) + '</div>';
+  const titel = '<div style="font-weight:800;font-size:13.5px;margin:12px 2px 4px">🖨 V3D Druckcheck — Einstellungen für ' + esc(w.machine.replace(/\s*\(?([0-9.]+) nozzle\)?$/i, ' $1')) + '</div>';
   if (!befunde.length) { chk.innerHTML = titel + '<div class="pc-row lvl-ok"><div class="pc-ic">🎉</div><div class="pc-tx"><div class="pc-tt">Einstellungen passen</div><div class="pc-ms">Nichts zu ändern.</div></div></div>'; return; }
   chk.innerHTML = titel + befunde.map((f, i) => {
     const lvl = f.level >= DC.LEVEL.ERROR ? 'err' : f.level === DC.LEVEL.WARN ? 'warn' : 'info';
@@ -96417,18 +96453,18 @@ function _3mfSpeichern() {
   document.getElementById('stl-menu')?.classList.remove('show');
   if (!_exportSrc().length) { notify('Keine Objekte', 'w'); return; }
   if (localStorage.getItem('v3d_3mf_pruefen') === '0') { _3mfJetzt(true); return; }
-  _bbsLaden().catch(() => {});
+  _b3ProfLaden(_b3Wahl()).catch(() => {});
   _printCheckOpen('3mf');
 }
 async function _3mfJetzt(ohneDialog) {
   let projekt = null;
   if (localStorage.getItem('v3d_3mf_projekt') !== '0') {
     try {
-      await _bbsLaden();
+      await _b3ProfLaden(_b3Wahl());
       const fixes = ohneDialog ? [] : _b3Fixes();
       const w = (_b3 && _b3.w) || _b3Wahl();
       projekt = _bbsProjekt(w, _b3Farben(_exportSrc()), fixes);
-    } catch (e) { notify('Bambu-Profile fehlen — 3MF ohne Projekt-Einstellungen: ' + (e.message || e), 'w'); }
+    } catch (e) { notify('Slicer-Profile fehlen — 3MF ohne Projekt-Einstellungen: ' + (e.message || e), 'w'); }
   }
   _printCheckClose();
   export3MF(projekt ? { projekt } : undefined);
@@ -96960,7 +96996,7 @@ const CMDK = [
   {i:'🎯',g:'Druck',t:'Passung einmessen (Lochplatte + Zapfen)',k:'passung toleranz spiel loch zapfen kalibrieren testkarte passprobe fit maßhaltig klemmt wackelt xy kompensation',run:()=>_pfOpen()},
   {i:'📐',g:'Druck',t:'Überhänge live anzeigen (an/aus)',k:'überhang live anzeigen färben stütze support overhang karte streifen winkel',run:()=>_ohlSchalten()},
   {i:'📐',g:'Druck',t:'Ohne Stützen (45°-Schräge unter Überhänge)',k:'überhang stützen support 45 schräge fase overhang',run:()=>_ohfOpen()},
-  {i:'💾',g:'Druck',t:'3MF speichern (mit Druck-Check / Bambu-Projekt)',k:'3mf bambu projekt speichern export',run:()=>_3mfSpeichern()},
+  {i:'💾',g:'Druck',t:'3MF speichern (mit Druck-Check / Slicer-Projekt)',k:'3mf bambu orca anycubic snapmaker elegoo projekt slicer speichern export',run:()=>_3mfSpeichern()},
   {i:'↻',g:'Druck',t:'Für Druck ausrichten',k:'orient',run:()=>autoOrientForPrint()},
   {i:'📐',g:'Bearbeiten',t:'Messen (Abstand / Durchmesser)',k:'measure distance diameter durchmesser bemaszung',run:()=>measureTool()},
   {i:'↕',g:'Bearbeiten',t:'Fläche ziehen / versetzen (Push/Pull)',k:'push pull fläche offset versetzen extrudieren bis nächste bis fläche durch alles',run:()=>enterPushPull()},

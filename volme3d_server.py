@@ -360,6 +360,11 @@ ALLOW = {
     # Serveradresse. Neu bauen nur noch bei Server-/Gruppenwechsel.
     '/V3D-Fernwartung-Setup.exe':         ('V3D-Fernwartung-Setup.exe', 'application/octet-stream'),
 }
+# Projektprofile der Orca-Ableger je Hersteller (tools/bau_slicer_projekt.py) – 3MF speichern als Slicer-Projekt
+_sp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'slicer-projekt')
+for _f in sorted(os.listdir(_sp)) if os.path.isdir(_sp) else []:
+    if _f.endswith('.json'):
+        ALLOW['/slicer-projekt/' + _f] = ('slicer-projekt/' + _f, 'application/json; charset=utf-8')
 
 
 def _nutzung_html(b, monate):
