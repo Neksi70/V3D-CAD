@@ -40,6 +40,36 @@ function _sgeBuild(w, p, textFn) {
       }
       return k(f.extrude(d));
     };
+    // Engelsflügel (p.engel): Schwinge oben am Rücken = Band (Hülle Wurzel→Spitze) + Federn als Ellipsen,
+    // innen senkrecht hängend, zur Spitze hin nach außen gedreht und länger; Rillen zwischen den Federn (Volker 11.11.)
+    const engel = seite => {
+      const yS = yHals - 0.1 * H, xS = seite * (halbB(yS) - 1.5);
+      const R = [xS + seite * 0.04 * H, yS + 0.03 * H], T = [xS + seite * 0.3 * H, yS + 0.17 * H], rR = 0.08 * H, rT = 0.035 * H;
+      const teile = [k(CS.hull([k(CS.circle(rR, 48).translate(R)), k(CS.circle(rT, 32).translate(T))]))], spitzen = [], wurzeln = [], n = 7;
+      for (let i = 0; i < n; i++) {
+        const t = i / (n - 1), P = [R[0] + (T[0] - R[0]) * t, R[1] + (T[1] - R[1]) * t - (rR + (rT - rR) * t) * 0.55];
+        const L = H * (0.13 + 0.09 * t), wB = H * (0.09 - 0.025 * t), a = (-100 + 75 * t) * Math.PI / 180, dx = seite * Math.cos(a), dy = Math.sin(a);
+        const c = [P[0] + dx * L * 0.42, P[1] + dy * L * 0.42];
+        teile.push(k(k(k(CS.circle(1, 40).scale([L / 2, wB / 2])).rotate(Math.atan2(dy, dx) * 180 / Math.PI)).translate(c)));
+        spitzen.push([P[0] + dx * L * 0.85, P[1] + dy * L * 0.85]); wurzeln.push(P);
+      }
+      let f = k(CS.union(teile));
+      f = k(k(f.offset(-0.6, 'Round')).offset(0.6, 'Round'));
+      let fl3 = k(f.extrude(d));
+      const rille = (a, b) => k(CS.hull([k(CS.circle(0.35, 12).translate(a)), k(CS.circle(0.35, 12).translate(b))]));
+      const rl = [];
+      for (let i = 0; i + 1 < n; i++) {                                     // Linie zwischen zwei Federn: von der Wurzel bis kurz vor die Spitzen-Mitte
+        const w0 = [(wurzeln[i][0] + wurzeln[i + 1][0]) / 2, (wurzeln[i][1] + wurzeln[i + 1][1]) / 2], s0 = [(spitzen[i][0] + spitzen[i + 1][0]) / 2, (spitzen[i][1] + spitzen[i + 1][1]) / 2];
+        rl.push(rille(w0, [w0[0] + (s0[0] - w0[0]) * 0.8, w0[1] + (s0[1] - w0[1]) * 0.8]));
+      }
+      const tR = Math.min(0.6, d * 0.25);
+      if (rl.length) {
+        const rz = k(k(CS.union(rl)).intersect(k(f.offset(-0.8, 'Round'))));
+        fl3 = k(M.difference(fl3, k(k(rz.extrude(tR + 0.01)).translate([0, 0, d - tR]))));
+      }
+      return fl3;
+    };
+    if (p.engel) { fluegel.push(k(engel(1))); fluegel.push(k(engel(-1))); }
     if (p.fluegel === 'rechts' || p.fluegel === 'beide') fluegel.push(k(fahne(1)));
     if (p.fluegel === 'links' || p.fluegel === 'beide') fluegel.push(k(fahne(-1)));
     let fl = fluegel.length ? k(M.difference(k(M.union(fluegel)), koerper)) : null;   // im Körper steckender Teil gehört zum Körper

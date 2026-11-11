@@ -5305,6 +5305,7 @@ Patrick</textarea>
           <button class="vtb" data-v="keine" onclick="_sgeStr('fluegel','keine')">ohne</button>
         </div>
         <div class="vtbrow" style="display:flex;gap:4px;margin-bottom:7px"><button class="vtb on" id="sge-herz" onclick="_sgeSet('herz',_sgeP.herz?0:1)">♡ Herz im Flügel</button><button class="vtb" id="sge-stern" onclick="_sgeSet('stern',_sgeP.stern?0:1)">⭐ Stern</button></div>
+        <div class="vtbrow" style="display:flex;gap:4px;margin-bottom:7px"><button class="vtb" id="sge-engel" style="flex:1" onclick="_sgeSet('engel',_sgeP.engel?0:1)" title="Echte Engelsflügel mit Federn oben links und rechts am Rücken – zusätzlich zu den Fähnchen oder statt ihnen (Fähnchen: „ohne“). Druckt im Flügel-Teil mit.">😇 Engelsflügel dazu</button></div>
         <span class="vsec">Oberfläche</span>
         <div class="vtbrow" id="sge-druck-bg" style="display:flex;gap:4px;margin-bottom:7px" title="Erhaben: Schrift und Pünktchen stehen oben raus (tastbar). Glatt: alles bündig eingelegt, Schauseite liegt auf der Druckplatte – keine Schichtlinien, Schrift gestochen scharf.">
           <button class="vtb on" data-v="oben" onclick="_sgeStr('druck','oben')">Erhaben (tastbar)</button>
@@ -35152,6 +35153,36 @@ function _sgeBuild(w, p, textFn) {
       }
       return k(f.extrude(d));
     };
+    // Engelsflügel (p.engel): Schwinge oben am Rücken = Band (Hülle Wurzel→Spitze) + Federn als Ellipsen,
+    // innen senkrecht hängend, zur Spitze hin nach außen gedreht und länger; Rillen zwischen den Federn (Volker 11.11.)
+    const engel = seite => {
+      const yS = yHals - 0.1 * H, xS = seite * (halbB(yS) - 1.5);
+      const R = [xS + seite * 0.04 * H, yS + 0.03 * H], T = [xS + seite * 0.3 * H, yS + 0.17 * H], rR = 0.08 * H, rT = 0.035 * H;
+      const teile = [k(CS.hull([k(CS.circle(rR, 48).translate(R)), k(CS.circle(rT, 32).translate(T))]))], spitzen = [], wurzeln = [], n = 7;
+      for (let i = 0; i < n; i++) {
+        const t = i / (n - 1), P = [R[0] + (T[0] - R[0]) * t, R[1] + (T[1] - R[1]) * t - (rR + (rT - rR) * t) * 0.55];
+        const L = H * (0.13 + 0.09 * t), wB = H * (0.09 - 0.025 * t), a = (-100 + 75 * t) * Math.PI / 180, dx = seite * Math.cos(a), dy = Math.sin(a);
+        const c = [P[0] + dx * L * 0.42, P[1] + dy * L * 0.42];
+        teile.push(k(k(k(CS.circle(1, 40).scale([L / 2, wB / 2])).rotate(Math.atan2(dy, dx) * 180 / Math.PI)).translate(c)));
+        spitzen.push([P[0] + dx * L * 0.85, P[1] + dy * L * 0.85]); wurzeln.push(P);
+      }
+      let f = k(CS.union(teile));
+      f = k(k(f.offset(-0.6, 'Round')).offset(0.6, 'Round'));
+      let fl3 = k(f.extrude(d));
+      const rille = (a, b) => k(CS.hull([k(CS.circle(0.35, 12).translate(a)), k(CS.circle(0.35, 12).translate(b))]));
+      const rl = [];
+      for (let i = 0; i + 1 < n; i++) {                                     // Linie zwischen zwei Federn: von der Wurzel bis kurz vor die Spitzen-Mitte
+        const w0 = [(wurzeln[i][0] + wurzeln[i + 1][0]) / 2, (wurzeln[i][1] + wurzeln[i + 1][1]) / 2], s0 = [(spitzen[i][0] + spitzen[i + 1][0]) / 2, (spitzen[i][1] + spitzen[i + 1][1]) / 2];
+        rl.push(rille(w0, [w0[0] + (s0[0] - w0[0]) * 0.8, w0[1] + (s0[1] - w0[1]) * 0.8]));
+      }
+      const tR = Math.min(0.6, d * 0.25);
+      if (rl.length) {
+        const rz = k(k(CS.union(rl)).intersect(k(f.offset(-0.8, 'Round'))));
+        fl3 = k(M.difference(fl3, k(k(rz.extrude(tR + 0.01)).translate([0, 0, d - tR]))));
+      }
+      return fl3;
+    };
+    if (p.engel) { fluegel.push(k(engel(1))); fluegel.push(k(engel(-1))); }
     if (p.fluegel === 'rechts' || p.fluegel === 'beide') fluegel.push(k(fahne(1)));
     if (p.fluegel === 'links' || p.fluegel === 'beide') fluegel.push(k(fahne(-1)));
     let fl = fluegel.length ? k(M.difference(k(M.union(fluegel)), koerper)) : null;   // im Körper steckender Teil gehört zum Körper
@@ -35215,7 +35246,7 @@ function _sgeBuild(w, p, textFn) {
     return res;
   } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
 }
-const _sgeP = { hoehe: 110, breite: 62, dicke: 4, relief: 0.6, oese: 3.5, fluegel: 'rechts', herz: 1, muster: 'punkte', punkte: 25, streifen: 9, stern: 0, seed: 7, druck: 'oben', tiefe: 0.6,
+const _sgeP = { hoehe: 110, breite: 62, dicke: 4, relief: 0.6, oese: 3.5, fluegel: 'rechts', herz: 1, muster: 'punkte', punkte: 25, streifen: 9, stern: 0, engel: 0, seed: 7, druck: 'oben', tiefe: 0.6,
   text1: 'KLEINER', font1: 'helvetiker_bold', h1: 7, text2: 'Schutzengel', font2: 'greatvibes_local', h2: 11, vorlage: 'text' };
 const _SGE_DEF = { ..._sgeP };
 const _SGE_VORLAGEN = {
@@ -35269,7 +35300,7 @@ function _sgeSync(tippen){
   const mark = (sel, val) => document.querySelectorAll(sel + ' .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === String(val)));
   mark('#sge-vorlage-bg', _sgeP.vorlage); mark('#sge-fluegel-bg', _sgeP.fluegel); mark('#sge-muster-bg', _sgeP.muster); mark('#sge-druck-bg', _sgeP.druck);
   const on = (id, v) => { const e = document.getElementById(id); if (e) e.classList.toggle('on', !!v); };
-  on('sge-herz', _sgeP.herz); on('sge-stern', _sgeP.stern);
+  on('sge-herz', _sgeP.herz); on('sge-stern', _sgeP.stern); on('sge-engel', _sgeP.engel);
   const show = (id, v) => { const e = document.getElementById(id); if (e) e.style.display = v ? '' : 'none'; };
   show('sge-row-punkte', _sgeP.muster === 'punkte'); show('sge-row-streifen', _sgeP.muster === 'streifen');
   const el = document.getElementById('sge-info'); if (!el) return;
@@ -35279,6 +35310,7 @@ function _sgeSync(tippen){
     (glatt ? `<br><b>Glatt:</b> Schrift${_sgeP.muster === 'punkte' || _sgeP.stern ? ', Pünktchen (Gold)' : ''} und Streifen liegen ${z(_sgeP.tiefe)} mm tief bündig eingelegt. Der Engel liegt mit der <b>Schauseite auf der Platte</b> (im CAD spiegelverkehrt von oben) – im Slicer <b>nicht umdrehen</b>. Glatte PEI-Platte = glänzend, strukturierte = matt. Farbwechsel nur in den ersten Schichten (bis ${z(_sgeP.tiefe)} mm).`
            : (dunkel ? `<br><b>Schwarz</b> (Text/Streifen) liegt ${z(_sgeP.relief)} mm erhaben oben drauf. Ohne AMS bei <b>${z(_sgeP.dicke)} mm</b> pausieren und auf Schwarz wechseln.` : '') +
              (_sgeP.muster === 'punkte' ? '<br>Slicer-Tipp: <b>Glätten</b> (Ironing) an, <b>Z-Hop beim Rückzug</b> an – dann wird die Fläche zwischen den Pünktchen glatt und es zieht keine Fäden.' : '')) +
+    (_sgeP.engel ? '<br><b>Engelsflügel</b> sitzen oben am Rücken, mit Feder-Rillen. Sie gehören zum Flügel-Teil (eigene Farbe, z. B. Weiß, Gold oder Holz).' : '') +
     (_sgeP.fluegel !== 'keine' ? '<br><b>Flügel</b> ist ein eigenes Teil in Holz-Beige. Mit AMS zusammen drucken. Ohne AMS in Weiß lassen oder separat in Beige drucken und hinten ankleben.' : '') +
     '<br>Tipp: Mattes PLA wirkt wie Ton bzw. Porzellan. Mit Holzperlen auffädeln.';
 }
@@ -84677,8 +84709,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.379';
+const VOLME3D_VERSION = '1.18.380';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.380', date:'2026-11-11', changes:[
+    'Schutzengel: neuer Schalter „😇 Engelsflügel dazu“ – echte Flügel mit Federn und Feder-Rillen oben am Rücken, zusätzlich zu den Fähnchen oder statt ihnen; druckt im Flügel-Teil mit',
+  ]},
   { version:'1.18.379', date:'2026-11-11', changes:[
     'Eigenschaften-Feld links überdeckt die Schnellleiste unten links (🧦 ✥ 🗑 …) nicht mehr – es endet darüber und scrollt',
   ]},
