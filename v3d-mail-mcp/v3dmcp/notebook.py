@@ -130,7 +130,9 @@ def befehl(powershell, timeout, ordner):
 
 
 def starten(pfad, argumente):
-    return rufe('starten', {'pfad': pfad, 'argumente': argumente}, 75)
+    r = rufe('starten', {'pfad': pfad, 'argumente': argumente}, 75)
+    # PowerShell 5.1 macht aus $null in ConvertTo-Json ein {} → leere Felder weglassen
+    return {k: v for k, v in r.items() if v not in ({}, [], None, '')}
 
 
 def dateien(pfad, anzahl):
