@@ -39,11 +39,13 @@ try {
   const r2 = await bauen();
   ok(r2.teile.length === 3 && r2.teile.find(t => /Flügel/.test(t.name)).shells === 2 && r2.ov < 0.01, 'Streifen + beide Flügel: ' + r2.teile.map(t => t.name + ' ' + t.shells + 'S').join(', '));
   // Engelsflügel dazu (ohne Fähnchen): Flügel-Teil = 2 Schwingen, berühren den Körper, keine Überlappung
-  await p.evaluate(() => { _newCreate(false); _sgeOpen(); _sgeVorlage('text'); _sgeStr('fluegel', 'keine'); _sgeSet('engel', 1); });
+  await p.evaluate(() => { _newCreate(false); _sgeOpen(); _sgeVorlage('text'); _sgeFluegel('engel'); });
+  ok(await p.evaluate(() => _sgeP.fluegel === 'keine' && _sgeP.engel === 1 && document.querySelector('#sge-fluegel-bg .vtb.on').dataset.v === 'engel' && document.getElementById('sge-herz').style.display === 'none'), 'Flügel-Wahl: Engelsflügel statt Fähnchen, Herz-Knopf ausgeblendet');
   const rE = await bauen(), fE = rE.teile.find(t => /Flügel/.test(t.name)), kE = rE.teile.find(t => /^Schutzengel/.test(t.name));
   ok(fE && fE.shells === 2 && kE.shells === 1 && rE.ov < 0.01 && fE.vol > 1500, `Engelsflügel: ${fE ? fE.shells + ' Schwingen, ' + fE.vol.toFixed(0) + ' mm³' : 'fehlen'}, Überlappung ${rE.ov.toFixed(3)}`);
   ok(await p.evaluate(async () => { const w = await _mfInit(), r = _sgeBuild(w, { ..._sgeP, engel: 1, fluegel: 'keine' }, null), g = w.Manifold.union(r.koerper, r.fluegel), n = g.decompose().length; return n === 1; }), 'Engelsflügel sitzen am Körper an (zusammen 1 Stück)');
-  await p.evaluate(() => { _sgeSet('engel', 0); _sgeStr('fluegel', 'rechts'); });
+  await p.evaluate(() => { _sgeFluegel('fahne'); });
+  ok(await p.evaluate(() => _sgeP.fluegel === 'rechts' && _sgeP.engel === 0), 'Flügel-Wahl: zurück zum Fähnchen rechts');
   // Glatt: Schrift nach unten, alles bündig eingelegt, Pünktchen eigenes Teil
   await p.evaluate(() => { _newCreate(false); _sgeOpen(); _sgeVorlage('text'); _sgeStr('fluegel', 'rechts'); _sgeStr('druck', 'glatt'); _sgeSet('stern', 1); });
   const r3 = await bauen();
