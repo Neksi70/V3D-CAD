@@ -83,6 +83,7 @@ try {
   await p.evaluate(() => undo());
   ok(await p.evaluate(() => objects.length === 2), 'Rückgängig entfernt die letzte Hülle');
   ok(r2.senk.length === 2 && Math.abs(r2.senk[1] - r2.senk[0] - 1.4) < 0.15, `Lauf 2 (Boden = Wand 1,4, Passung +0,2): Boden ${r2.senk.length === 2 ? (r2.senk[1] - r2.senk[0]).toFixed(2) : '?'} mm (Soll 1,4)`);
+  ok(await p.evaluate(() => { const o = objects[0]; o.userData.type = o.userData.shapeType = 'custom'; o.userData.name = 'Teil A'; selectObjs([o]); updateCtxPopup(); return document.getElementById('ctx-fhl').style.display !== 'none' && _fhlPasst(o); }), '🧦 auch für geschnittenen Scan („Teil A“, kein Import)');
   ok(errs.length === 0, 'keine Seitenfehler ' + errs.slice(0, 3).join(' | '));
 } finally { await b.close(); srv.kill(); }
 console.log(fail ? `${fail} Fehler` : 'alles grün'); process.exit(fail ? 1 : 0);
