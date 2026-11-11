@@ -35,9 +35,18 @@ function _wchBuild(w, p) {
     koerper = k(M.difference(koerper, k(M.intersection(aussen, prisma))));   // Mulde: alles vor der Innenfläche weg
     koerper = k(M.union(koerper, k(M.intersection(innen, prisma))));
     // Nase + Augen
-    const zn = zc + fh * 0.18, rn = R * 0.075, yS = z => -(_wchRadius(p, z, true) + fe);
-    gesicht = k(M.union(gesicht, k(M.sphere(rn, 24).scale([1, 0.8, 1]).translate([0, yS(zn) + Math.min(rn * 0.35, fe + tief - 0.8 * rn - 0.1), zn]))));   // Nase darf nicht durch die Schale in den Körper
-    for (const sx of [-1, 1]) gesicht = k(M.difference(gesicht, k(M.sphere(R * 0.03, 12).translate([sx * fw * 0.3, yS(zn + fh * 0.22) - 0.15, zn + fh * 0.22]))));
+    // p.nase = Größe in % (100 = bisher), p.augen = Tiefe der Augenhöhlen in mm (Volker 11.11.)
+    const zn = zc + fh * 0.18, rn = R * 0.075 * (p.nase ?? 100) / 100, yS = z => -(_wchRadius(p, z, true) + fe);
+    const nC = [0, yS(zn) + Math.min(rn * 0.35, fe + tief - 0.8 * rn - 0.1), zn];   // große Nase: Mitte wandert nach außen, nie durch die Schale in den Körper
+    let nase = k(M.sphere(rn, 32).scale([1, 0.8, 1]).translate(nC));
+    if (0.8 * rn - (nC[1] - yS(zn)) > 1.5) nase = k(M.hull([nase, k(M.sphere(0.3, 8).translate([nC[0], nC[1], nC[2] - rn * 1.42]))]));   // steht weit vor: unten 45°-Spitze, druckt stehend ohne Stützen
+    gesicht = k(M.union(gesicht, nase));
+    const licht = !!(p.hohl && (p.gesLicht ?? 1)), dL = 1.2;               // Gesicht leuchtet durch: Fenster im Körper, Gesicht dort nur dL dick
+    const tA = Math.max(0, Math.min(p.augen ?? 0.75, licht ? dL - 0.4 : fe + tief - 0.3)), rA = Math.max(R * 0.03, 0.8 * tA + 0.6), zA = zn + fh * 0.22;
+    if (tA > 0) for (const sx of [-1, 1]) {                                // auf der echten Oberfläche an der Augenstelle (seitlich liegt sie weiter hinten), entlang der Radialrichtung
+      const ra = _wchRadius(p, zA, true) + fe, xa = sx * fw * 0.3, ya = -Math.sqrt(Math.max(1, ra * ra - xa * xa)), f = (ra - (tA - rA)) / ra;
+      gesicht = k(M.difference(gesicht, k(M.sphere(rA, 24).translate([xa * f, ya * f, zA]))));
+    }
     // Bart: senkrechte, leicht gewellte Rillen unterhalb der Nase
     if (p.bart) {
       const L = [], zTop = zn - rn * 1.3, zBot = zc - fh * 0.92, n = Math.max(3, Math.round(2 * fw / p.bartAbstand));
@@ -106,10 +115,20 @@ function _wchBuild(w, p) {
       pl = k(M.difference(pl, k(M.cylinder(plT + 2, 6, 6, 48).translate([0, 0, -1]))));   // Schaltloch
       if (p.beinL > 0) for (const sx of [-1, 1]) pl = k(M.union(pl, k(M.cylinder(p.beinL + 0.5, bd / 2, bd / 2, 32).translate([sx * bx, 0, -p.beinL]))));
       boden = pl.translate([0, 0, 0]);
+      // Gesicht durchleuchten (Volker 11.11.): Fenster hinter dem Gesicht bis in den Innenraum, Rand bleibt als Auflage;
+      // Gesicht im Fenster auf dL ausgedünnt (3 Bahnen). Stifte wandern dann an den Rand.
+      const fwW = Math.max(4, fw - 6.5), fhW = Math.max(4, fh - 4);
+      if (licht) {
+        const prW = k(k(k(k(CS.circle(1, 96).scale([fwW, fhW])).translate([0, zc])).extrude(R + 20)).rotate([90, 0, 0]));
+        const ueberRing = k(k(M.cube([4 * R, 4 * R, H])).translate([-2 * R, -2 * R, hB + 2]));
+        koerper = k(M.difference(koerper, k(M.intersection(k(M.intersection(k(_wchRevolve(w, p, -tief + 0.05, true, 144)), prW)), ueberRing))));
+        gesicht = k(M.difference(gesicht, k(M.intersection(k(_wchRevolve(w, p, fe - dL, true, 144)), prW))));
+        info.fenster = [fwW * 2, fhW * 2];
+      }
       // Gesicht: zwei Stifte hinten, Löcher durch die Wand
-      const pinZ = zc - fh * 0.15;
+      const pinZ = licht ? zc : zc - fh * 0.15;
       for (const sx of [-1, 1]) {
-        const x = sx * fw * 0.32, ri = _wchRadius(p, pinZ, true) - tief, yi = -Math.sqrt(Math.max(1, ri * ri - x * x));
+        const x = licht ? sx * (fw - 3.2) : sx * fw * 0.32, ri = _wchRadius(p, pinZ, true) - tief, yi = -Math.sqrt(Math.max(1, ri * ri - x * x));
         gesicht = k(M.union(gesicht, k(M.cylinder(4.2, 1.5, 1.5, 24).rotate([-90, 0, 0]).translate([x, yi - 0.2, pinZ]))));
         koerper = k(M.difference(koerper, k(M.cylinder(wd + tief + 6, 1.7, 1.7, 24).rotate([-90, 0, 0]).translate([x, yi - 1, pinZ]))));
       }
@@ -120,6 +139,13 @@ function _wchBuild(w, p) {
           M.cylinder(zapfen, bd / 2 - 0.1, bd / 2 - 0.1, 32).translate([sx * bx, 0, 0])).translate([0, 0, -0.03]);   // ganzes Bein 0,03 mm tiefer: Fuge zum Boden
         beine.push(bein);
       }
+    }
+    // Naht-Kerbe hinten (+Y, Gesicht schaut nach −Y): schmale senkrechte Nut — Slicer legen die Naht bevorzugt in
+    // solche Innenecken, sonst lag sie vorn im Gesicht (Volker 11.11.)
+    {
+      const nd = Math.min(0.6, (p.hohl ? p.wand : 3) * 0.35), nb = 0.6;
+      const nut = k(M.intersection(k(M.difference(k(_wchRevolve(w, p, 1, false, 144)), k(_wchRevolve(w, p, -nd, false, 144)))), k(k(M.cube([nb, R + 10, H - 4])).translate([-nb / 2, 0, 0.4]))));
+      koerper = k(M.difference(koerper, nut));
     }
     // ── Aufhängung ──
     if (p.aufhaenger === 'quer') {
