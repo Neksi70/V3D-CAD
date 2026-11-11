@@ -1762,6 +1762,7 @@ const firebaseConfig = {
             <div class="outdir-status" id="outdir-status"></div>
             <div class="sli-item" onclick="_pickOutputFolder()"><span id="outdir-btn-lbl">📁 Ausgabeordner wählen</span></div>
             <div class="sli-item outdir-clear" id="outdir-clear" style="display:none" onclick="_clearOutputFolder()">↺ Wieder herunterladen</div>
+            <div class="sli-item" id="frageort-btn" onclick="event.stopPropagation();_frageOrtToggle()" title="Vor jedem Export fragen, wo die Datei hin soll (Speichern unter). Gilt, solange kein fester Ausgabeordner gewählt ist."></div>
           </div>
           <div class="stl-sec">Drucken</div>
           <div class="sli-item sli-erkl" onclick="document.getElementById('stl-menu')?.classList.remove('show');_dvOpen()"><span class="si-t">🖨 Druck-Vorschau &amp; Slicer-Einstellungen…</span><span class="si-d">Drucker, Filament, Wände, Stützen wählen – und mit genau diesen Werten an den Slicer geben.</span></div>
@@ -9349,7 +9350,7 @@ function plateExportAll() {
     if (r) files.push({ blob: r.blob, name: `${base}_platte${k + 1}.stl` });
   }
   if (!files.length) { notify('Alle Platten sind leer', 'w'); return; }
-  _saveExportMany(files).then(res =>
+  _saveExportMany(files).then(res => res.abgebrochen ||
     notify(`${res.ok} STL-Dateien (je Platte) ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓`, 'ok'));
 }
 let buildplateW = parseFloat(localStorage.getItem('buildplateW') ?? '800') || 800;
@@ -15163,8 +15164,8 @@ function _skExportDXF(){
   }
   g(0,'ENDSEC'); g(0,'EOF');
   const blob=new Blob([L.join('\r\n')+'\r\n'],{type:'application/dxf'});
-  _downloadBlob(blob, _designFilename('dxf').replace(/^volme3d\./, 'Skizze.'));
-  notify('⬇ DXF gespeichert ('+_sk.ents.length+' Elemente)','ok');
+  _saveExport(blob, _designFilename('dxf').replace(/^volme3d\./, 'Skizze.')).then(res => res.abgebrochen ||
+    notify('⬇ DXF gespeichert ('+_sk.ents.length+' Elemente)','ok'));
 }
 function _skDxfFileSelected(e){
   const f=e.target.files[0]; if(!f) return;
@@ -43706,12 +43707,52 @@ async function _saveExportMany(files) {
       notify('Ordner-Zugriff nicht erteilt — wird heruntergeladen', 'w');
     }
   }
+  // Kein fester Ausgabeordner: vorher fragen, wohin (Volker 11.11. „bevor ich speichere, wählen wohin“)
+  if (!_outDirHandle && _frageOrt()) {
+    const r = await _saveFrageOrt(files);
+    if (r) return r;
+  }
   // Fallback: Standard-Download (kein Ordner gewählt oder Schreibfehler)
   files.forEach((f, i) => (i === 0 ? _downloadBlob(f.blob, f.name)
                                    : setTimeout(() => _downloadBlob(f.blob, f.name), i * 250)));
   return { wrote: false, ok: files.length, err: 0 };
 }
 async function _saveExport(blob, filename) { return _saveExportMany([{ blob, name: filename }]); }
+// „Speichern unter“ als Standard: eine Datei → Datei-Dialog (Ort + Name), mehrere → Ordner-Dialog.
+// Abschaltbar im Export-Menü (localStorage v3dFrageOrt = '0'). Rückgabe null = Dialog ging nicht → Download.
+function _frageOrt() { return localStorage.getItem('v3dFrageOrt') !== '0'; }
+function _frageOrtToggle() {
+  localStorage.setItem('v3dFrageOrt', _frageOrt() ? '0' : '1');
+  _updateOutDirBtn();
+  notify(_frageOrt() ? '💾 Vor dem Speichern wird gefragt, wohin' : 'Exporte landen ohne Nachfrage im Download-Ordner', 'ok');
+}
+async function _saveFrageOrt(files) {
+  try {
+    if (files.length === 1 && window.showSaveFilePicker) {
+      const f = files[0], ext = (f.name.match(/\.[a-z0-9]{1,8}$/i) || [''])[0].toLowerCase();
+      const opt = { suggestedName: f.name, id: 'v3d-export', startIn: 'downloads' };
+      if (ext) opt.types = [{ description: ext.slice(1).toUpperCase() + '-Datei', accept: { [f.blob.type || 'application/octet-stream']: [ext] } }];
+      const h = await window.showSaveFilePicker(opt);
+      const w = await h.createWritable(); await w.write(f.blob); await w.close();
+      _nutzungExport(h.name);
+      return { wrote: true, ok: 1, err: 0, dir: h.name === f.name ? 'gewählten Ort' : '„' + h.name + '“' };
+    }
+    const d = await window.showDirectoryPicker({ id: 'v3d-export', mode: 'readwrite', startIn: 'downloads' });
+    let ok = 0, err = 0;
+    for (const f of files) {
+      try {
+        const fh = await d.getFileHandle(f.name, { create: true });
+        const w = await fh.createWritable(); await w.write(f.blob); await w.close();
+        _nutzungExport(f.name); ok++;
+      } catch (e) { console.warn('Speichern ' + f.name + ' fehlgeschlagen:', e); err++; }
+    }
+    if (ok) return { wrote: true, ok, err, dir: d.name };
+  } catch (e) {
+    if (e && e.name === 'AbortError') { notify('Speichern abgebrochen', 'w'); return { wrote: false, ok: 0, err: 0, abgebrochen: true }; }
+    console.warn('[speichern unter] Dialog ging nicht, lade herunter:', e);   // z. B. Nutzer-Geste abgelaufen (langer STEP-Export)
+  }
+  return null;
+}
 function _updateOutDirBtn() {
   const status = document.getElementById('outdir-status');
   if (status) status.textContent = _outDirHandle ? ('Speichert in: ' + _outDirHandle.name) : '';
@@ -43719,6 +43760,8 @@ function _updateOutDirBtn() {
   if (lbl) lbl.textContent = _outDirHandle ? '📁 Ordner ändern' : '📁 Ausgabeordner wählen';
   const clr = document.getElementById('outdir-clear');
   if (clr) clr.style.display = _outDirHandle ? '' : 'none';
+  const fo = document.getElementById('frageort-btn');
+  if (fo) { fo.textContent = (_frageOrt() ? '☑' : '☐') + ' Vorher fragen, wohin speichern'; fo.style.display = (_outDirHandle || !window.showSaveFilePicker || _isSafari) ? 'none' : ''; }
 }
 // Menü-Bereich beim Öffnen aktualisieren (Firefox: Hinweis statt Button)
 async function _refreshOutDirMenu() {
@@ -43737,7 +43780,7 @@ function _exportSTL() {
   if (typeof _tutorExported !== 'undefined') _tutorExported = true;   // Kurs-Modus: STL-Export erkannt
   const sel = _exportIsSel() ? ' [nur Auswahl]' : '';
   const fname = _designFilename('stl');
-  _saveExport(r.blob, fname).then(res =>
+  _saveExport(r.blob, fname).then(res => res.abgebrochen ||
     notify(`„${fname}“ ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓ (${r.count.toLocaleString('de')} Dreiecke)${sel}`, 'ok'));
 }
 
@@ -43911,7 +43954,7 @@ function _lzSave() {
   const blob = svg ? new Blob([_lzSvg(_lzPolys)], { type: 'image/svg+xml' })
                    : new Blob([_lzDxf(_lzPolys)], { type: 'application/dxf' });
   const fname = _designFilename(svg ? 'svg' : 'dxf').replace(/(\.[a-z]+)$/, '_laser$1');
-  _saveExport(blob, fname).then(res =>
+  _saveExport(blob, fname).then(res => res.abgebrochen ||
     notify(`„${fname}“ ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓`, 'ok'));
   _lzClose();
 }
@@ -43991,7 +44034,7 @@ function _exportOBJ() {
   }
   const objBlob = new Blob([lines.join('\n')], { type: 'text/plain' });
   const mtlBlob = new Blob([mtl.join('\n')], { type: 'text/plain' });
-  _saveExportMany([{ blob: objBlob, name: base + '.obj' }, { blob: mtlBlob, name: mtlName }]).then(res =>
+  _saveExportMany([{ blob: objBlob, name: base + '.obj' }, { blob: mtlBlob, name: mtlName }]).then(res => res.abgebrochen ||
     notify(`„${base}.obj“ + MTL ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} (${mats.size} Material/Farbe) ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok'));
 }
 
@@ -44018,7 +44061,7 @@ function _exportPartsSTL() {
     used[nm] = (used[nm] || 0) + 1; if (used[nm] > 1) nm += '_' + used[nm];
     return { blob: new Blob([buf], { type: 'application/octet-stream' }), name: `${base}_${nm}.stl` };
   });
-  _saveExportMany(files).then(res =>
+  _saveExportMany(files).then(res => res.abgebrochen ||
     notify(`${res.ok} STL-Dateien „${base}_…“ ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok'));
 }
 
@@ -44065,6 +44108,7 @@ function _export3MF(opt) {
     if (!r) { notify('Keine Flächen', 'w'); return; }
     const fname = _designFilename('3mf');
     _saveExport(r.blob, fname).then(res => {
+      if (res.abgebrochen) return;
       notify(`3MF „${fname}" ${res.wrote ? '→ ' + res.dir : ''} — ${r.parts} Teile, ${r.colors} Farbe/n ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok');
       if (r.colors > 1) notify('Filament-Zuordnung im Slicer: ' + r.legend.join('  '), 'ok');
       if (r.chroma) notify(r.chroma, /NICHT/.test(r.chroma) ? 'w' : 'ok');
@@ -44458,6 +44502,7 @@ async function _exportSTEP() {
     }
     const blob = new Blob([u8], { type: 'application/octet-stream' });
     const res = await _saveExport(blob, _designFilename('step'));
+    if (res.abgebrochen) return;
     notify(`STEP ${res.wrote ? '→ ' + res.dir : 'exportiert'} ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok');
   } catch (err) {
     notify('STEP-Export fehlgeschlagen: ' + err.message, 'e');
@@ -84018,6 +84063,7 @@ async function _cncLauf(exportieren){
     if(exportieren){
       const blob = new Blob([_cncGcode(erg, P)], { type:'text/plain' });
       const res = await _saveExport(blob, _designFilename('nc'));
+      if (!res.abgebrochen)
       notify('G-Code ' + (res.wrote ? '→ ' + res.dir : 'gespeichert') + ' ✓ — ' +
              Math.round(s.schnitt) + ' mm Schnittweg, geschätzt ' + dauer, 'ok', 8000);
     } else {
@@ -84393,8 +84439,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.370';
+const VOLME3D_VERSION = '1.18.371';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.371', date:'2026-11-11', changes:[
+    'Exportieren: Vor dem Speichern wird jetzt gefragt, wohin – STL, 3MF, OBJ, STEP, DXF und Co. öffnen den „Speichern unter“-Dialog (mehrere Dateien: Ordner wählen). Abschaltbar im Export-Menü („Vorher fragen, wohin speichern“); ein fester Ausgabeordner gilt weiter ohne Nachfrage',
+  ]},
   { version:'1.18.370', date:'2026-11-11', changes:[
     ['🧙','<b>Wichtel leuchtet durch.</b> Die Wand geht jetzt bis <b>0,8 mm</b> hinunter (Knopf „Wand 0,8“). Die Wickel-Rillen werden dabei automatisch so flach, dass sie die dünne Wand nicht durchbrechen. Neu sind <b>Lichtlöcher</b>: Punkte oder Sternchen rundum durch die Mütze, das Gesicht und der Bajonett-Ring bleiben frei. Tipp: Weiß, Natur oder transluzentes PLA/PETG mit 2 Wandlinien leuchtet am schönsten.'],
   ]},
