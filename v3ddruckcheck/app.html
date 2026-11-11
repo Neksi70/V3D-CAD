@@ -286,6 +286,7 @@
       <label>Düse <select id="bNoz"><option value="0.2">0,2 mm</option><option value="0.4" selected>0,4 mm</option><option value="0.6">0,6 mm</option><option value="0.8">0,8 mm</option></select></label>
       <label>Druckplatte <select id="bBed"><option>Textured PEI Plate</option><option value="High Temp Plate">Smooth PEI Plate / High Temp Plate</option>
         <option>Cool Plate</option><option>Engineering Plate</option></select></label>
+      <label>Hersteller <select id="bHer"><option>Bambu Lab</option></select></label>
       <label>Drucker <select id="bPrn"><option value="256,256,256">Bambu A1 / P1 / X1</option><option value="180,180,180">Bambu A1 mini</option>
         <option value="330,320,325">Bambu H2D / H2C</option><option value="220,220,250">Prusa MK4 / Ender 3</option><option value="350,350,350">Groß (350³)</option></select></label>
       <label>Stützen (Support) <select id="bSup"><option value="0">aus</option><option value="1">an</option></select></label>
@@ -413,7 +414,26 @@ $('demo').onclick = async () => {
 };
 
 // STL / 3MF ohne Einstellungen → Grundwerte aus dem Formular
-for (const id of ['bMat', 'bNoz', 'bBed', 'bPrn', 'bSup', 'bBrim']) $(id).onchange = () => cur && evaluate();
+const ls = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+// Drucker: alle Hersteller/Modelle aus der V3D-Druckerliste (wie Druck-Vorschau in V3D CAD);
+// bauen.py bettet sie ein → [[Hersteller, [[Modell, B, T, H], …]], …]. Fehlt sie, bleibt die kurze Liste im HTML.
+const DRUCKER = /*DRUCKERLISTE*/[];
+function prnFuellen(her, mod) {
+  const h = DRUCKER.find(x => x[0] === her) || DRUCKER[0];
+  const kurz = m => m.startsWith(h[0] + ' ') ? m.slice(h[0].length + 1) : m;   // „Anycubic Kobra 3“ → „Kobra 3“, Hersteller steht schon darüber
+  $('bPrn').innerHTML = h[1].map(m => `<option value="${m[1]},${m[2]},${m[3]}" data-m="${esc(m[0])}">${esc(kurz(m[0]))} (${m[1]}×${m[2]}×${m[3]})</option>`).join('');
+  const i = h[1].findIndex(m => m[0] === mod);
+  $('bPrn').selectedIndex = i >= 0 ? i : 0;
+}
+if (DRUCKER.length) {
+  $('bHer').innerHTML = DRUCKER.map(h => `<option>${esc(h[0])}</option>`).join('');
+  const [her, mod] = (ls.get('dc_drucker') || 'Bambu Lab|Bambu Lab A1').split('|');
+  $('bHer').value = DRUCKER.some(h => h[0] === her) ? her : DRUCKER[0][0];
+  prnFuellen($('bHer').value, mod);
+  $('bHer').onchange = () => { prnFuellen($('bHer').value); prnMerken(); cur && evaluate(); };
+} else $('bHer').closest('label').hidden = true;
+function prnMerken() { const o = $('bPrn').selectedOptions[0]; if (o && DRUCKER.length) ls.set('dc_drucker', $('bHer').value + '|' + o.dataset.m); }
+for (const id of ['bMat', 'bNoz', 'bBed', 'bPrn', 'bSup', 'bBrim']) $(id).onchange = () => { if (id === 'bPrn') prnMerken(); cur && evaluate(); };
 function baseCfg() {
   return PC.baselineConfig({ material: $('bMat').value, nozzle: parseFloat($('bNoz').value), bedType: $('bBed').value,
     support: $('bSup').value === '1', brim: $('bBrim').value, printable: $('bPrn').value.split(',').map(Number) });
@@ -421,7 +441,6 @@ function baseCfg() {
 function check(cfg) { return PC.checkSettings(cfg, { models: cur.models, gcode: cur.r.gcode, usedFilaments: cur.r.gcode?.usedFilaments, purpose: $('purpose').value || undefined }); }
 
 // ---------- 🎯 Wofür ist das Teil? (Start-Leiste und Ergebnis zeigen dieselbe Wahl) ----------
-const ls = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 $('purpose').value = $('slPurpose').value = ls.get('dc_purpose') || '';
 const setPurpose = v => { $('purpose').value = $('slPurpose').value = v; ls.set('dc_purpose', v); };
 $('purpose').onchange = () => { setPurpose($('purpose').value); if (cur) evaluate(); };

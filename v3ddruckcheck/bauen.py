@@ -36,6 +36,18 @@ labels = {'pages': [{'groups': [{'name': g['name'], 'options': g['options']} for
           'options': {k: {'label': v['label']} for k, v in P['options'].items() if v.get('label')}}
 block = ('// ---- Prüfkern (aus ~/orca-wasm/web/print-check.js) ----\nconst PC = (() => {\n' + kern
          + '\nreturn { ' + ', '.join(namen) + ' };\n})();\nPC.setKeyLabels(PC.labelsFromParams(' + json.dumps(labels, ensure_ascii=False, separators=(',', ':')) + '));\n// ---- Ende Prüfkern ----\n')
+# Druckerliste (wie Druck-Vorschau in V3D CAD) einbetten: je Hersteller die Modelle mit Bauraum, Düsen-Varianten zusammengefasst
+NAMEN = {'BBL': 'Bambu Lab'}
+dl = []
+for v in json.load(open(os.path.expanduser('~/druckerliste.json'), encoding='utf-8')):
+    mod = {}
+    for m in v['drucker']:
+        mod.setdefault(m['m'], [m['m'], round(m['w']), round(m['d']), round(m['h'])])
+    dl.append([NAMEN.get(v['v'], v['v']), sorted(mod.values(), key=lambda x: x[0].lower())])
+pl = '/*DRUCKERLISTE*/[]'
+if app.count(pl) != 1:
+    sys.exit('Platzhalter DRUCKERLISTE in app.html nicht gefunden')
+app = app.replace(pl, json.dumps(dl, ensure_ascii=False, separators=(',', ':')))
 out = app.replace(tag, inline(three)).replace(imp, block)
 with open(os.path.join(BASE, 'index.html'), 'w', encoding='utf-8') as f:
     f.write(out)
