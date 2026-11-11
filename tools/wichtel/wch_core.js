@@ -6,9 +6,10 @@ function _wchRadius(p, z, glatt) {                                          // P
   let r;
   if (t < tb) r = R * (0.84 + 0.16 * Math.sin(t / tb * Math.PI / 2));     // gerundeter Fuß (Schräge < 45°)
   else { const u = (t - tb) / (1 - tb); r = R * Math.pow(Math.max(0, 1 - Math.pow(u, p.spitz)), 0.62); }
-  if (!glatt && p.rillen > 0) {                                             // Wickel-Kordel: runde Wülste, schmale Rillen
+  const rillen = p.hohl ? Math.min(p.rillen, (p.wand || 2.4) * 0.35) : p.rillen;   // dünne Wand: Rillen dürfen sie nicht durchbrechen
+  if (!glatt && rillen > 0) {                                               // Wickel-Kordel: runde Wülste, schmale Rillen
     const s = Math.abs(Math.sin(Math.PI * z / p.rillenAbstand)), aus = Math.min(1, z / 3, (H - z) / (0.12 * H));
-    r -= p.rillen * (1 - Math.sqrt(s)) * Math.max(0, aus);
+    r -= rillen * (1 - Math.sqrt(s)) * Math.max(0, aus);
   }
   return Math.max(0, r);
 }
@@ -73,6 +74,28 @@ function _wchBuild(w, p) {
         ring = k(M.difference(ring, sektor(rB - 0.5, rS, a + 45 - nubW / 2 - 1, a + 45 + nubW / 2 + 1, zC0 - 0.8, zC0 + 0.1)));   // Rastmulde am Ende
       }
       koerper = k(M.union(koerper, ring));
+      // Lichtlöcher: Punkte oder Sternchen radial durch die Wand — nicht im Gesicht, nicht im Bajonett-Ring, nicht in der Spitze
+      if (p.licht && p.licht !== 'keine') {
+        const L = [], gr = p.licht === 'sterne' ? 2.8 : 1.3, ab = gr * 4.2;
+        let reihe = 0;
+        for (let z = hB + 5; z < H * 0.86; z += ab * 0.8, reihe++) {
+          const rz = _wchRadius(p, z, true); if (rz < 8) break;
+          const n = Math.max(4, Math.floor(2 * Math.PI * rz / ab));
+          for (let j = 0; j < n; j++) {
+            const t = (j + (reihe % 2) * 0.5) / n * 2 * Math.PI, x = rz * Math.cos(t), y = rz * Math.sin(t);
+            if (y < 0 && Math.abs(x) < fw + 4 && Math.abs(z - zc) < fh + 4) continue;    // Gesicht frei lassen
+            if (p.aufhaenger === 'quer' && z > H - Math.max(5, H * 0.075) - 6) continue;
+            let form;
+            if (p.licht === 'sterne') { const pts = []; for (let q = 0; q < 10; q++) { const a2 = Math.PI + q * Math.PI / 5,   /* Spitze zeigt nach −x → nach dem Drehen um y nach oben */ rr = q % 2 ? gr * 0.42 : gr; pts.push([rr * Math.cos(a2), rr * Math.sin(a2)]); } form = k(new CS([pts])); }
+            else form = k(CS.circle(gr, 20));
+            // Prisma entlang +z gebaut → auf die Radialrichtung drehen, an die Wand setzen
+            const pr = k(k(form.extrude(wd + 6)).translate([0, 0, -3]));
+            L.push(k(k(k(pr.rotate([0, 90, 0])).rotate([0, 0, t * 180 / Math.PI])).translate([(rz - wd / 2) * Math.cos(t), (rz - wd / 2) * Math.sin(t), z])));
+          }
+        }
+        if (L.length) koerper = k(M.difference(koerper, k(M.union(L))));
+        info.lichtLoecher = L.length;
+      }
       // Bodenplatte (Gebrauchslage: z 0 … plT, sitzt bündig in der Öffnung) mit Nasen, Teelicht-Mulde, Schaltloch, Beinen
       const rP = rB - sp;
       let pl = k(M.cylinder(plT, rP, rP, 96));

@@ -31,6 +31,11 @@ try {
   ok(pass.hohl && pass.teile.every(n => n === 1), `hohl (Standard): Körper/Gesicht/Boden je ein Teil, Körper ${Math.round(pass.vol / 1000)} cm³`);
   ok(pass.ein < 0.01 && pass.dreh < 0.01 && pass.haelt > 1, `Bajonett: einstecken + 45° drehen frei, gedreht hält die Platte (${pass.haelt.toFixed(1)} mm³ Anschlag)`);
   ok(pass.ledPasst && pass.led < 0.01 && pass.ges < 0.01, `LED-Teelicht Ø${38} passt in Mulde + Innenraum, Gesicht-Stifte ohne Überschneidung`);
+  const lt = await p.evaluate(async () => { const w = await _mfInit(), M = w.Manifold, r = _wchBuild(w, { ..._wchP, wand: 0.8, licht: 'sterne' });
+    const res = { teile: r.koerper.decompose().length, loecher: r.info.lichtLoecher, haelt: M.intersection(r.boden.rotate([0, 0, 45]).translate([0, 0, -3]), r.koerper).volume(),
+      gesichtFrei: M.intersection(r.gesicht, r.koerper).volume() };
+    [r.koerper, r.gesicht, r.boden].forEach(m => m.delete()); return res; });
+  ok(lt.teile === 1 && lt.loecher > 20 && lt.haelt > 1 && lt.gesichtFrei < 0.01, `Wand 0,8 + Sterne: ${lt.loecher} Lichtlöcher, Körper 1 Teil, Bajonett hält`);
   const r1 = await p.evaluate(async () => {
     await _wchCreate();
     return objects.map(o => ({ name: o.userData.name, minY: getMeshBox(o).min.y, linien: o.children.some(c => c.userData && c.userData.isEdgeLines) }));
