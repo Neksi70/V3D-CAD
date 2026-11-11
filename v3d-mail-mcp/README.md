@@ -111,3 +111,25 @@ Während eines Makros (z. B. Heat Soak) stellt Klipper G-Code hinten an → `fer
   Druckstart, Mail senden, code_auftrag selbst gegen Rekursion …).
 - Kurzbericht je Job ins Gedächtnis: `code-auftraege-protokoll.md` (eine Datei, neueste oben, max. 30).
 - Läufer lädt den Mail-Kern (Kontodaten) bewusst nicht (`python -m v3dmcp.code laeufer <id>`).
+
+## Notebook-Agent: notebook_* (11.11.2026)
+Volkers Windows-Notebook (DESKTOP-T4DI2AS, Tailscale 100.79.71.92) direkt, ohne Browser:
+`notebook_download` (direkt laden, SHA-256, optional ZIP entpacken), `notebook_befehl` (PowerShell,
+Admin, max. 150 s, Ausgabe ~20 KB), `notebook_starten` (sichtbar auf dem Desktop), `notebook_dateien`,
+`notebook_winget`. Modul `v3dmcp/notebook.py`, Gegenstück `notebook-agent/agent.js` (Node, nur
+Standardbibliothek) auf Port **8933**, nur Tailscale-IP, Firewall + Agent nur für 100.125.34.44.
+
+- Einrichten: `notebook-agent/bauen.sh` erzeugt `~/Ablage/v3d-notebook-agent-einrichten.ps1`
+  (Vorlage + agent.js eingebettet). Auf dem Notebook im Admin-PowerShell:
+  `irm "https://v3da.tailf05fe9.ts.net/ablage/api/datei?pfad=v3d-notebook-agent-einrichten.ps1" -OutFile $env:TEMP\v3d-agent.ps1`
+  dann `powershell -ExecutionPolicy Bypass -File $env:TEMP\v3d-agent.ps1`.
+- Notebook-Seite: `%ProgramData%\V3D\` (agent.js, agent-config.json mit Token, start.vbs, agent.log),
+  ACL nur Admins/SYSTEM/V3D; Aufgabenplanung `\V3D\V3D Notebook-Agent` bei Anmeldung, höchste Rechte,
+  interaktiv (Programme erscheinen auf dem Desktop, keine UAC-Abfrage).
+- Token: entsteht beim Einrichten auf dem Notebook (Skript ist öffentlich → kein Token darin).
+  Der Connector holt ihn beim ersten Aufruf per `POST /kopplung` (einmalig, ≤ 24 h nach Einrichten)
+  und schreibt `NOTEBOOK_AGENT_TOKEN` in die `.env`. Skript erneut ausführen = neuer Token, neue Kopplung.
+- netcup kappt nach 180 s: download/winget antworten nach 150 s mit `status: laeuft`; derselbe Aufruf
+  holt später das Ergebnis.
+- Lokal testen: Agent mit `V3D_AGENT_DIR=<testordner>` (Config ip 127.0.0.1, eigener Port,
+  erlaubt 127.0.0.1) + `NOTEBOOK_AGENT_URL=… V3DMCP_ENV=<test.env>` (echte .env bleibt unberührt).
