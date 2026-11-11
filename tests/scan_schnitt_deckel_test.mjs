@@ -75,6 +75,28 @@ const r3 = await pg.evaluate(async (ref) => {
 console.log('  Reparieren:', JSON.stringify(r3));
 ok('offen abgeschnitten: vorher offen, ohne Deckel', r3.vor.offen > 10 && r3.vor.deckel < 1e-6, r3.vor);
 ok('🩹 Reparieren: Loch eben verschlossen, Fläche ≈ Querschnitt, wasserdicht', r3.nach.offen === 0 && Math.abs(r3.nach.deckel - ref) / ref < 0.03, r3.nach);
+// 3b. wie bei Volker: alter Schnitt ohne Deckel an einem Scan MIT Lücken am Schnittrand → Reparieren.
+//     Die Lücken hängen am Schnittloch (Kerben aus der Ebene); die Füllung muss trotzdem eben sein
+//     (nicht als Fächer vom Mittelpunkt mit Knick).
+const r3b = await pg.evaluate(async (ref) => {
+  const yE = __schnitt(true); await _cutExecute();
+  const t = objects.filter(o => /^Teil/.test(o.userData.name))[0];
+  const g = t.geometry.index ? t.geometry.toNonIndexed() : t.geometry, P = g.attributes.position, out = [];
+  for (let i = 0; i < P.count; i += 3) { if ([0, 1, 2].every(j => Math.abs(P.getY(i + j) - yE) < 1e-3)) continue; for (let j = 0; j < 9; j++) out.push(P.array[i * 3 + j]); }
+  const ng = new THREE.BufferGeometry(); ng.setAttribute('position', new THREE.Float32BufferAttribute(out, 3)); ng.computeVertexNormals(); t.geometry = ng;
+  const n0 = t.geometry.attributes.position.count;
+  selectObjs([t]); await repairSelected();
+  // neue Dreiecke: wie viel ihrer Fläche liegt in der Schnittebene?
+  const Q = t.geometry.attributes.position; let inEbene = 0, gesamt = 0; const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  for (let i = n0; i < Q.count; i += 3) { a.fromBufferAttribute(Q, i); b.fromBufferAttribute(Q, i + 1); c.fromBufferAttribute(Q, i + 2);
+    const A = b.clone().sub(a).cross(c.clone().sub(a)).length() / 2; gesamt += A; if ([a, b, c].every(v => Math.abs(v.y - yE) < 1e-3)) inEbene += A; }
+  return { offen: __offen(t), deckel: +__deckel(t, yE).toFixed(3), neuFlaeche: +gesamt.toFixed(3), ref };
+}, ref);
+console.log('  Reparieren nach Lücken-Schnitt:', JSON.stringify(r3b));
+// Wo die Wand im Scan fehlt, zieht der Deckel eine Sehne über die Lücke → etwas weniger als der volle Querschnitt;
+// die Kerben bekommen kleine eigene Flicken. Vorher: 0 in der Ebene, 11,3 cm² schräger Fächer (= Knick).
+ok('Lücken am Schnittrand: Reparieren füllt eben (≥ 85 % des Querschnitts in der Ebene, schräge Flicken < 25 %), wasserdicht',
+  r3b.offen === 0 && r3b.deckel > ref * 0.85 && r3b.neuFlaeche - r3b.deckel < ref * 0.25, r3b);
 // 4. L-förmiger Querschnitt (z. B. Schnitt durch Sitz + Bein): Fächer vom Mittelpunkt ragte über den Rand
 const r4 = await pg.evaluate(async () => {
   _newCreate(false);

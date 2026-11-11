@@ -84653,6 +84653,10 @@ async function _druckSenden(){
 // ===== CHANGELOG / VERSIONIERUNG =====
 const VOLME3D_VERSION = '1.18.376';
 const VOLME3D_CHANGELOG = [
+  { version:'
+1.18.377', date:'2026-11-11', changes:[
+    ['🩹','<b>Reparieren: Schnittfläche bleibt eben, auch mit Scan-Lücken am Rand.</b> Hatte der Scan direkt am Schnittrand Lücken, füllte Reparieren die Öffnung vom Mittelpunkt aus, mit einem sichtbaren Knick quer durch die Fläche. Jetzt wird der ebene Teil flach geschlossen, und nur die Lücken am Rand bekommen kleine eigene Flicken. Schon reparierte Teile: Rückgängig, dann noch einmal 🩹 Reparieren.'],
+  ]},
   { version:'1.18.376', date:'2026-11-11', changes:[
     ['✂️','<b>Scans abschneiden: Schnittfläche wird zu.</b> Wer von einem Scan etwas abgeschnitten hat (z. B. ein Stuhlbein), bekam oft ein innen hohles Teil: Scans haben kleine Lücken, dann schloss sich der Schnittumriss nicht und ✂ Schneiden ließ den Deckel ganz weg. Jetzt werden die Lücken überbrückt und der Deckel entsteht trotzdem. Bleibt er doch einmal offen, sagt V3D CAD es und verweist auf Reparieren.'],
     ['🩹','<b>Reparieren schließt ebene Öffnungen passgenau.</b> Ein Klick auf 🩹 Reparieren füllt eine offene Schnittfläche flach und genau in ihrer Form. Vorher wurde vom Mittelpunkt aus gefüllt, und bei L- oder U-förmigen Querschnitten ragte die Füllung über den Rand hinaus.'],
@@ -98754,9 +98758,12 @@ function _eraserCloseHoles() {
   notify(loops ? `${loops} Loch/Löcher geschlossen ✓` : 'Keine offenen Ränder gefunden', loops ? 'ok' : 'w');
 }
 
-// Ebenes Loch: Normale nach Newell (umgekehrte Randrichtung), alle Punkte nah an der Ebene
-// (< 2 % der Ausdehnung) → Earcut im Ebenen-Koordinatensystem. false = nicht eben / nicht
-// sauber triangulierbar → Aufrufer füllt als Fächer.
+// Ebenes Loch: Normale nach Newell (umgekehrte Randrichtung). Liegt der Rand (bis auf
+// Kerben) in einer Ebene → Earcut im Ebenen-Koordinatensystem. Kerben = Läufe von Punkten
+// außerhalb der Ebene, z. B. Scan-Lücken direkt am Schnittrand (Volker 11.11.: sonst Fächer
+// vom Mittelpunkt mit Knick): der Deckel läuft über die Punkte IN der Ebene, jede Kerbe
+// bekommt einen eigenen kleinen Fächer, der an die Deckelkante anschließt.
+// false = nicht eben / nicht sauber triangulierbar → Aufrufer füllt als Fächer.
 function _fillHoleEben(pts, c, add) {
   const n = new THREE.Vector3();
   for (let i = 0; i < pts.length; i++) {          // Newell über die umgekehrte Reihenfolge
@@ -98765,27 +98772,44 @@ function _fillHoleEben(pts, c, add) {
   }
   if (n.lengthSq() < 1e-20) return false;
   n.normalize();
-  let ext = 0, abw = 0;
-  for (const p of pts) {
-    const dx = p.x - c.x, dy = p.y - c.y, dz = p.z - c.z;
-    ext = Math.max(ext, Math.hypot(dx, dy, dz)); abw = Math.max(abw, Math.abs(dx * n.x + dy * n.y + dz * n.z));
-  }
-  if (!(ext > 0) || abw > 0.02 * ext) return false;
+  let ext = 0;
+  for (const p of pts) ext = Math.max(ext, Math.hypot(p.x - c.x, p.y - c.y, p.z - c.z));
+  if (!(ext > 0)) return false;
+  // Ebenenlage = Median der Abstände (die Mehrheit der Randpunkte liegt im Schnitt)
+  const h = pts.map(p => p.x * n.x + p.y * n.y + p.z * n.z), hs = h.slice().sort((x, y) => x - y), h0 = hs[hs.length >> 1];
+  const tolE = 0.002 * ext, drin = h.map(x => Math.abs(x - h0) <= tolE);
+  const idx = []; drin.forEach((d, i) => { if (d) idx.push(i); });
+  if (idx.length < 3 || idx.length < 0.6 * pts.length) return false;   // kein überwiegend ebener Rand
   const U = (Math.abs(n.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)).cross(n).normalize(), V = n.clone().cross(U);
-  const p2 = pts.map(p => new THREE.Vector2((p.x - c.x) * U.x + (p.y - c.y) * U.y + (p.z - c.z) * U.z, (p.x - c.x) * V.x + (p.y - c.y) * V.y + (p.z - c.z) * V.z));
+  const q = idx.map(i => pts[i]);
+  const p2 = q.map(p => new THREE.Vector2((p.x - c.x) * U.x + (p.y - c.y) * U.y + (p.z - c.z) * U.z, (p.x - c.x) * V.x + (p.y - c.y) * V.y + (p.z - c.z) * V.z));
   let faces;
   try { faces = THREE.ShapeUtils.triangulateShape(p2.slice(), []); } catch (e) { return false; }
-  if (!faces || faces.length < pts.length - 2) return false;
+  if (!faces || faces.length < q.length - 2) return false;
   // Fläche muss zur Umrissfläche passen (sich selbst schneidender Umriss → Earcut lückenhaft)
   let fl = 0; faces.forEach(([i, j, k]) => { fl += Math.abs((p2[j].x - p2[i].x) * (p2[k].y - p2[i].y) - (p2[k].x - p2[i].x) * (p2[j].y - p2[i].y)) / 2; });
   if (Math.abs(fl - Math.abs(THREE.ShapeUtils.area(p2))) > 0.01 * fl + 1e-12) return false;
-  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), tri = [];
   for (const [i, j, k] of faces) {
-    const a = pts[i], b = pts[j], d = pts[k];
+    const a = q[i], b = q[j], d = q[k];
     e1.set(b.x - a.x, b.y - a.y, b.z - a.z); e2.set(d.x - a.x, d.y - a.y, d.z - a.z);
-    if (e1.cross(e2).dot(n) >= 0) add.push(a.x, a.y, a.z, b.x, b.y, b.z, d.x, d.y, d.z);
-    else add.push(a.x, a.y, a.z, d.x, d.y, d.z, b.x, b.y, b.z);
+    if (e1.cross(e2).dot(n) >= 0) tri.push(a.x, a.y, a.z, b.x, b.y, b.z, d.x, d.y, d.z);
+    else tri.push(a.x, a.y, a.z, d.x, d.y, d.z, b.x, b.y, b.z);
   }
+  // Kerben: von einem Ebenenpunkt über die Punkte außerhalb zum nächsten Ebenenpunkt. Der
+  // Fächer läuft (wie die Füllung) gegen die Randrichtung; seine Schlusskante liegt
+  // gegenläufig auf der Deckelkante → dicht.
+  for (let t = 0; t < idx.length; t++) {
+    const i0 = idx[t], i1 = idx[(t + 1) % idx.length], lauf = [];
+    for (let i = i0; ; i = (i + 1) % pts.length) { lauf.push(pts[i]); if (i === i1) break; }
+    if (lauf.length < 3) continue;
+    const m = { x: 0, y: 0, z: 0 }; lauf.forEach(p => { m.x += p.x; m.y += p.y; m.z += p.z; }); m.x /= lauf.length; m.y /= lauf.length; m.z /= lauf.length;
+    for (let i = 0; i < lauf.length; i++) {
+      const a = lauf[i], b = lauf[(i + 1) % lauf.length];
+      tri.push(b.x, b.y, b.z, a.x, a.y, a.z, m.x, m.y, m.z);
+    }
+  }
+  for (const v of tri) add.push(v);
   return true;
 }
 // Füllt offene Randschleifen einer Mesh-Geometrie (eben: Earcut, sonst Fächer vom Mittelpunkt)
