@@ -56342,6 +56342,21 @@ function _fhlPreview(){
   t += '<br>Druck: mit der Öffnung nach oben, ohne Stützen. TPU 85A–95A, langsam (≈ 30 mm/s), Wand = 2–3 Linien.';
   info.innerHTML = t;
 }
+// Eingeschlossene Hohlräume scheibenweise füllen (Löcher im Querschnitt), wie _ksuFuellen beim KI-Schuh
+function _fhlFuellen(w, m, dz, keep){
+  const CS = w.CrossSection, bb = m.boundingBox(), parts = [];
+  const flaeche = q => { let a = 0; for (let i = 0; i < q.length; i++) { const u = q[i], v = q[(i + 1) % q.length]; a += u[0] * v[1] - v[0] * u[1]; } return a / 2; };
+  for (let z = bb.min[2] + dz * 0.5; z < bb.max[2]; z += dz) {
+    const cs = m.slice(z), polys = cs.toPolygons(), aussen = polys.filter(q => flaeche(q) > 0);
+    if (aussen.length && aussen.length < polys.length) {
+      const voll = new CS(aussen), loch = voll.subtract(cs), st = loch.decompose();
+      for (const q of st) { if (q.area() > 0.05) parts.push(keep(q.offset(0.15, 'Round').extrude(dz * 1.1).translate([0, 0, z - dz * 0.55]))); q.delete(); }
+      voll.delete(); loch.delete();
+    }
+    cs.delete();
+  }
+  return parts.length ? keep(w.Manifold.union([m, ...parts])) : m;
+}
 // Rechenkern — { mf, info } in Welt-mm Z-up, Hülle steht neben dem Scan auf z = 0
 async function _fhlCompute(w, o, p, keep, prog){
   const M = w.Manifold;
@@ -56375,8 +56390,13 @@ async function _fhlCompute(w, o, p, keep, prog){
   if (extra > 0.01) aussenQ = keep(M.union(fuss, keep(M.intersection(keep(fuss.translate([0, 0, -extra])), unter(z0)))));   // Boden dicker: nur die Kopie UNTER dem Fuß, sonst wird eine schräge Wand mit dick
   const vox = Math.min(0.3, wand / 3);
   const aussen = keep(await _moldDilate3D(w, _mfToSoup(aussenQ), wand, f => prog(28 + f * 40), { voxTarget: vox, maxCells: 20e6 }));
-  let innen = fuss;
-  if (Math.abs(pass) > 0.01) { prog(70, 'Passung wird eingerechnet…'); innen = keep(await _moldDilate3D(w, _mfToSoup(fuss), pass, f => prog(70 + f * 15), { voxTarget: Math.min(0.2, vox), maxCells: 20e6 })); }
+  // Innenraum „zuspachteln“ (Schließen = aufdicken + zurücknehmen): Scans bestehen oft aus mehreren dicht
+  // aneinanderliegenden Schalen oder haben Doppelflächen — jeder Spalt wurde sonst eine Rippe/Zwischenwand
+  // in der Hülle (Volker 11.11.). Spalten bis 2·rZu schließen sich, die Außenform bleibt; Passung im selben Schritt.
+  prog(70, 'Innenraum wird geschlossen…');
+  const rZu = 1.5, voll = _fhlFuellen(w, fuss, 0.3, keep);
+  const zu = keep(await _moldDilate3D(w, _mfToSoup(voll), rZu, f => prog(70 + f * 8), { voxTarget: Math.min(0.25, vox), maxCells: 20e6 }));
+  const innen = keep(await _moldDilate3D(w, _mfToSoup(zu), -(rZu - pass), f => prog(78 + f * 8), { voxTarget: Math.min(0.2, vox), maxCells: 20e6 }));
   prog(88, 'Hülle wird ausgeschnitten…');
   let res = keep(M.intersection(keep(M.difference(aussen, innen)), unter(z0 + h)));
   res = _ksnBiggest(w, res, 1, keep);
@@ -84631,8 +84651,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.374';
+const VOLME3D_VERSION = '1.18.375';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.375', date:'2026-11-11', changes:[
+    '🧦 Fußhülle: innen jetzt komplett hohl – Scans aus mehreren dicht aneinanderliegenden Schalen oder mit Doppelflächen hinterließen Rippen und Zwischenwände in der Hülle; der Innenraum wird jetzt vorher geschlossen (Spalten bis 3 mm) und eingeschlossene Hohlräume gefüllt',
+  ]},
   { version:'1.18.374', date:'2026-11-11', changes:[
     '🧦 Fußhülle: geht jetzt mit jedem Körper, auch mit einem Scan, der vorher mit Schneiden gekürzt wurde (vorher erschien der Knopf nur bei unveränderten Importen)',
   ]},

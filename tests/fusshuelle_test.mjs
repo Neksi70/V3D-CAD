@@ -84,6 +84,22 @@ try {
   ok(await p.evaluate(() => objects.length === 2), 'Rückgängig entfernt die letzte Hülle');
   ok(r2.senk.length === 2 && Math.abs(r2.senk[1] - r2.senk[0] - 1.4) < 0.15, `Lauf 2 (Boden = Wand 1,4, Passung +0,2): Boden ${r2.senk.length === 2 ? (r2.senk[1] - r2.senk[0]).toFixed(2) : '?'} mm (Soll 1,4)`);
   ok(await p.evaluate(() => { const o = objects[0]; o.userData.type = o.userData.shapeType = 'custom'; o.userData.name = 'Teil A'; selectObjs([o]); updateCtxPopup(); return document.getElementById('ctx-fhl').style.display !== 'none' && _fhlPasst(o); }), '🧦 auch für geschnittenen Scan („Teil A“, kein Import)');
+  // Scan aus zwei dicht aneinanderliegenden Schalen (Spalt 0,4 mm): früher stand im Spalt eine Zwischenwand in der Hülle
+  const zw = await p.evaluate(async () => {
+    _newCreate(false); const tris = [];
+    const box = (x0, y0, z0, x1, y1, z1) => { const q = (a, b, c, d) => tris.push(...a, ...b, ...c, ...a, ...c, ...d), P = (x, y, z) => [x, y, z];
+      q(P(x0,y0,z0),P(x0,y1,z0),P(x1,y1,z0),P(x1,y0,z0)); q(P(x0,y0,z1),P(x1,y0,z1),P(x1,y1,z1),P(x0,y1,z1));
+      q(P(x0,y0,z0),P(x1,y0,z0),P(x1,y0,z1),P(x0,y0,z1)); q(P(x0,y1,z0),P(x0,y1,z1),P(x1,y1,z1),P(x1,y1,z0));
+      q(P(x0,y0,z0),P(x0,y0,z1),P(x0,y1,z1),P(x0,y1,z0)); q(P(x1,y0,z0),P(x1,y1,z0),P(x1,y1,z1),P(x1,y0,z1)); };
+    box(0, 0, 0, 19.8, 25, 35); box(20.2, 0, 0, 40, 25, 35); box(0, 0, 0, 40, 25, 0.5);
+    const n = tris.length / 9, buf = new ArrayBuffer(84 + n * 50), dv = new DataView(buf); dv.setUint32(80, n, true);
+    for (let t = 0; t < n; t++) { const o = 84 + t * 50; for (let k = 0; k < 9; k++) dv.setFloat32(o + 12 + k * 4, tris[t * 9 + k], true); }
+    _addImportedStl(buf, 'zwei-schalen.stl', false); await new Promise(r => setTimeout(r, 300));
+    selectObjs([objects[0]]); _fhlOpen(); _fhlSet('hoehe', 15); _fhlSet('wand', 1); _fhlSet('boden', 1.6); _fhlSet('passung', -0.2); await _fhlApply();
+    const w = await _mfInit(), mf = _mfUnionObjs(w, [objects[objects.length - 1]]), bb = mf.boundingBox(), cs = mf.slice((bb.min[2] + bb.max[2]) / 2);
+    const r = { konturen: cs.toPolygons().length, innenX: 0 }; cs.delete(); mf.delete(); return r;
+  });
+  ok(zw.konturen === 2, `Zwei Scan-Schalen mit Spalt: Hülle innen frei (${zw.konturen} Konturen, Soll 2 — keine Zwischenwand)`);
   ok(errs.length === 0, 'keine Seitenfehler ' + errs.slice(0, 3).join(' | '));
 } finally { await b.close(); srv.kill(); }
 console.log(fail ? `${fail} Fehler` : 'alles grün'); process.exit(fail ? 1 : 0);
