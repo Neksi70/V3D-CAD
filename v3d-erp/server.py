@@ -836,10 +836,22 @@ def r_kundenmaterial_erfassen(body, benutzer, **_):
                                             body.get("menge"), body.get("kunden_ls"), body.get("datum") or None, benutzer)
 
 
+class Server(ThreadingHTTPServer):
+    """Bindet auch an eine Adresse, die es noch nicht gibt (IP_FREEBIND): nach einem Neustart des Rechners startet
+    der Dienst oft, bevor Tailscale seine 100.x-Adresse hat – ohne FREEBIND bricht er mit Errno 99 ab (9.11.2026)."""
+    def server_bind(self):
+        import socket
+        try:
+            self.socket.setsockopt(socket.SOL_IP, getattr(socket, "IP_FREEBIND", 15), 1)
+        except OSError:
+            pass
+        super().server_bind()
+
+
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8820
     host = os.environ.get("V3D_ERP_HOST", "127.0.0.1")
-    srv = ThreadingHTTPServer((host, port), H)
+    srv = Server((host, port), H)
     print(f"V3D ERP läuft auf http://{host}:{port}  (Daten: {DB_PFAD})", flush=True)
     srv.serve_forever()
 
