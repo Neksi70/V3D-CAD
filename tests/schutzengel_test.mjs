@@ -40,10 +40,17 @@ try {
   ok(r2.teile.length === 3 && r2.teile.find(t => /Flügel/.test(t.name)).shells === 2 && r2.ov < 0.01, 'Streifen + beide Flügel: ' + r2.teile.map(t => t.name + ' ' + t.shells + 'S').join(', '));
   // Engelsflügel dazu (ohne Fähnchen): Flügel-Teil = 2 Schwingen, berühren den Körper, keine Überlappung
   await p.evaluate(() => { _newCreate(false); _sgeOpen(); _sgeVorlage('text'); _sgeFluegel('engel'); });
-  ok(await p.evaluate(() => _sgeP.fluegel === 'keine' && _sgeP.engel === 1 && document.querySelector('#sge-fluegel-bg .vtb.on').dataset.v === 'engel' && document.getElementById('sge-herz').style.display === 'none'), 'Flügel-Wahl: Engelsflügel statt Fähnchen, Herz-Knopf ausgeblendet');
+  ok(await p.evaluate(() => _sgeP.fluegel === 'keine' && _sgeP.engel === 'federn' && document.querySelector('#sge-fluegel-bg .vtb.on').dataset.v === 'federn' && document.getElementById('sge-herz').style.display === 'none'), 'Flügel-Wahl: Engelsflügel statt Fähnchen, Herz-Knopf ausgeblendet');
   const rE = await bauen(), fE = rE.teile.find(t => /Flügel/.test(t.name)), kE = rE.teile.find(t => /^Schutzengel/.test(t.name));
   ok(fE && fE.shells === 2 && kE.shells === 1 && rE.ov < 0.01 && fE.vol > 1500, `Engelsflügel: ${fE ? fE.shells + ' Schwingen, ' + fE.vol.toFixed(0) + ' mm³' : 'fehlen'}, Überlappung ${rE.ov.toFixed(3)}`);
   ok(await p.evaluate(async () => { const w = await _mfInit(), r = _sgeBuild(w, { ..._sgeP, engel: 1, fluegel: 'keine' }, null), g = w.Manifold.union(r.koerper, r.fluegel), n = g.decompose().length; return n === 1; }), 'Engelsflügel sitzen am Körper an (zusammen 1 Stück)');
+  // Flügelstile nach Vorlagen: je Stück am Körper anliegend, keine Überlappung
+  const stile = await p.evaluate(async () => { const w = await _mfInit(), out = {};
+    for (const st of ['rund', 'lang', 'schwung']) { const r = _sgeBuild(w, { ..._sgeP, engel: st, fluegel: 'keine' }, null), st2 = r.fluegel.decompose();
+      out[st] = { n: st2.length, gap: Math.max(...st2.map(q => q.minGap(r.koerper, 2))), ov: w.Manifold.intersection(r.koerper, r.fluegel).volume(), vol: r.fluegel.volume() }; }
+    return out; });
+  for (const [st, v] of Object.entries(stile)) ok(v.n >= 2 && v.gap < 0.01 && v.ov < 0.01 && v.vol > 1000, `Flügel „${st}“: ${v.n} Stücke, alle am Körper (Abstand ${v.gap.toFixed(3)}), ${v.vol.toFixed(0)} mm³`);
+  ok(await p.evaluate(() => { _sgeFluegel('schwung'); return _sgeP.engel === 'schwung' && document.querySelector('#sge-fluegel-bg .vtb.on').dataset.v === 'schwung'; }), 'Auswahl „Schwung“ markiert');
   await p.evaluate(() => { _sgeFluegel('fahne'); });
   ok(await p.evaluate(() => _sgeP.fluegel === 'rechts' && _sgeP.engel === 0), 'Flügel-Wahl: zurück zum Fähnchen rechts');
   // Glatt: Schrift nach unten, alles bündig eingelegt, Pünktchen eigenes Teil
