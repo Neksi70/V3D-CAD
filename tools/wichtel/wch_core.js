@@ -49,9 +49,48 @@ function _wchBuild(w, p) {
       const haut = k(M.difference(k(_wchRevolve(w, p, fe + 1, true, 144)), k(_wchRevolve(w, p, fe - 0.6, true, 144))));
       gesicht = k(M.difference(gesicht, k(M.intersection(linien, haut))));
     }
-    // ── Beinlöcher + Beine ──
+    // ── Hohl + Bodenplatte mit Beinen (Bajonett in der Plattenebene) ──
     const bd = p.beinD, bx = R * p.beinAbstand / 100 / 2, zapfen = 8, beine = [];
-    for (const sx of [-1, 1]) {
+    let boden = null, info = {};
+    if (p.hohl) {
+      const wd = p.wand, sp = p.spiel, plT = 4, nubH = 2, nubD = 1.4, band = 3, hB = plT + 4;
+      // Hohlraum: Innenkontur im Abstand wd; hinter dem Gesicht um die Muldentiefe verstärkt
+      let hohl = k(_wchRevolve(w, p, -wd, true, 144));
+      hohl = k(M.difference(hohl, k(M.intersection(k(M.difference(k(_wchRevolve(w, p, -wd + 0.01, true, 144)), k(_wchRevolve(w, p, -(wd + tief), true, 144)))), prisma))));
+      const ri0 = _wchRadius(p, 0, true) - wd;
+      hohl = k(M.union(hohl, k(M.cylinder(1.5, ri0, ri0, 96).translate([0, 0, -1]))));   // unten offen
+      koerper = k(M.difference(koerper, hohl));
+      // Bajonett-Ring innen unten: Öffnung rB, drei L-Schlitze (senkrecht hinein, 45° drehen, Rastmulde)
+      const rB = ri0 - band, nubW = 14, schW = nubW + 6, zC0 = plT - nubH - 0.3, zC1 = plT + 0.3;
+      info.rB = rB;
+      let ring = k(M.difference(k(M.cylinder(hB, ri0 + 0.6, ri0 + 0.6, 96)), k(M.cylinder(hB + 2, rB, rB, 96).translate([0, 0, -1]))));
+      ring = k(M.intersection(ring, k(_wchRevolve(w, p, -0.4, true, 144))));
+      const sektor = (r1, r2, a0, a1, z0, z1) => k(k(k(k(CS.circle(r2, 96)).subtract(k(CS.circle(r1, 96)))).intersect(k(new CS([[[0, 0], ...Array.from({ length: 13 }, (_, i) => { const t = (a0 + (a1 - a0) * i / 12) * Math.PI / 180; return [3 * r2 * Math.cos(t), 3 * r2 * Math.sin(t)]; })]], 'NonZero')))).extrude(z1 - z0)).translate([0, 0, z0]);
+      for (let i = 0; i < 3; i++) {
+        const a = 90 + i * 120, rS = rB + nubD + sp;
+        ring = k(M.difference(ring, sektor(rB - 0.5, rS, a - schW / 2, a + schW / 2, -1, zC1)));                    // Einführung von unten
+        ring = k(M.difference(ring, sektor(rB - 0.5, rS, a - schW / 2, a + 45 + schW / 2, zC0, zC1)));            // Drehkanal
+        ring = k(M.difference(ring, sektor(rB - 0.5, rS, a + 45 - nubW / 2 - 1, a + 45 + nubW / 2 + 1, zC0 - 0.8, zC0 + 0.1)));   // Rastmulde am Ende
+      }
+      koerper = k(M.union(koerper, ring));
+      // Bodenplatte (Gebrauchslage: z 0 … plT, sitzt bündig in der Öffnung) mit Nasen, Teelicht-Mulde, Schaltloch, Beinen
+      const rP = rB - sp;
+      let pl = k(M.cylinder(plT, rP, rP, 96));
+      for (let i = 0; i < 3; i++) { const a = 90 + i * 120; pl = k(M.union(pl, sektor(rP - 1, rB + nubD, a - nubW / 2, a + nubW / 2, plT - nubH, plT))); }
+      const led = p.ledD / 2 + 0.6;
+      info.ledPasst = led + 0.3 <= rP;                                    // Mulde zentriert das Teelicht, 0,3 mm Rand reichen
+      if (info.ledPasst) pl = k(M.difference(pl, k(M.cylinder(2, led, led, 96).translate([0, 0, plT - 1.6]))));
+      pl = k(M.difference(pl, k(M.cylinder(plT + 2, 6, 6, 48).translate([0, 0, -1]))));   // Schaltloch
+      if (p.beinL > 0) for (const sx of [-1, 1]) pl = k(M.union(pl, k(M.cylinder(p.beinL + 0.5, bd / 2, bd / 2, 32).translate([sx * bx, 0, -p.beinL]))));
+      boden = pl.translate([0, 0, 0]);
+      // Gesicht: zwei Stifte hinten, Löcher durch die Wand
+      const pinZ = zc - fh * 0.15;
+      for (const sx of [-1, 1]) {
+        const x = sx * fw * 0.32, ri = _wchRadius(p, pinZ, true) - tief, yi = -Math.sqrt(Math.max(1, ri * ri - x * x));
+        gesicht = k(M.union(gesicht, k(M.cylinder(4.2, 1.5, 1.5, 24).rotate([-90, 0, 0]).translate([x, yi - 0.2, pinZ]))));
+        koerper = k(M.difference(koerper, k(M.cylinder(wd + tief + 6, 1.7, 1.7, 24).rotate([-90, 0, 0]).translate([x, yi - 1, pinZ]))));
+      }
+    } else for (const sx of [-1, 1]) {
       koerper = k(M.difference(koerper, k(M.cylinder(zapfen + 0.5, (bd + 0.3) / 2, (bd + 0.3) / 2, 32).translate([sx * bx, 0, -0.5]))));
       if (p.beinL > 0) {
         const bein = M.union(M.cylinder(p.beinL, bd / 2, bd / 2, 32).translate([sx * bx, 0, -p.beinL]),
@@ -66,6 +105,6 @@ function _wchBuild(w, p) {
     } else if (p.aufhaenger === 'oben') koerper = k(M.difference(koerper, k(M.cylinder(14, 1.5, 1.5, 24).translate([0, 0, H - 12]))));
     const sauber = m => { const st = m.decompose(); if (st.length < 2) { st.forEach(q => q.delete()); return m.translate([0, 0, 0]); }   // Null-Splitter der Muldenkanten weg
       const r = M.union(st.filter(q => q.volume() > 1)); st.forEach(q => q.delete()); return r; };
-    return { koerper: sauber(koerper), gesicht: sauber(gesicht), beine, H, R };
+    return { koerper: sauber(koerper), gesicht: sauber(gesicht), beine, boden, info, H, R };
   } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
 }
