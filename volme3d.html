@@ -1714,7 +1714,7 @@ const firebaseConfig = {
       <button class="btn" onclick="openSculptTool()" title="Modellieren — mit dem Pinsel Beulen aufbauen, abtragen oder glätten (Radius per Mausrad, Shift = glätten)">🖌️ Modellieren</button>
       <button class="btn" onclick="openPaintTool()" title="Bemalen — Farben direkt aufs Modell malen (z.B. Tabletop-Figuren). Fürs Ansehen und Screenshots; der STL-Export bleibt einfarbig.">🎨 Bemalen</button>
       <button class="btn" onclick="openMmuPaintTool()" title="Mehrfarb-Druck — Flächen filamentgenau einfärben wie in Bambu Studio (Pinsel, Füllen, Dreieck, Höhenband). Export als 3MF (Farben → Filamente) oder OBJ.">🖍️ Mehrfarb-Druck</button>
-      <button class="btn" onclick="repairSelected()" title="Reparieren — offene Löcher im ausgewählten Objekt schließen (wieder wasserdicht/druckbar machen)">🩹 Reparieren</button>
+      <button class="btn" onclick="repairSelected()" title="Reparieren — offene Löcher im ausgewählten Objekt schließen, auch eine offene Schnittfläche (z. B. abgeschnittener Scan, innen hohl) — wieder wasserdicht/druckbar">🩹 Reparieren</button>
       <button class="btn" onclick="openSimplifyModal()" title="Vereinfachen — Dreiecke eines (importierten) Modells reduzieren, fürs schnellere Slicen">🔻 Vereinfachen</button>
       <button class="btn" onclick="openOffsetTool()" title="Spielraum — Körper um ±mm aufblasen/schrumpfen (Toleranz für Passungen, z.B. −0,2 mm für klemmende Deckel)">⧈ Spielraum</button>
     </div></div>
@@ -84651,8 +84651,12 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.375';
+const VOLME3D_VERSION = '1.18.376';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.376', date:'2026-11-11', changes:[
+    ['✂️','<b>Scans abschneiden: Schnittfläche wird zu.</b> Wer von einem Scan etwas abgeschnitten hat (z. B. ein Stuhlbein), bekam oft ein innen hohles Teil: Scans haben kleine Lücken, dann schloss sich der Schnittumriss nicht und ✂ Schneiden ließ den Deckel ganz weg. Jetzt werden die Lücken überbrückt und der Deckel entsteht trotzdem. Bleibt er doch einmal offen, sagt V3D CAD es und verweist auf Reparieren.'],
+    ['🩹','<b>Reparieren schließt ebene Öffnungen passgenau.</b> Ein Klick auf 🩹 Reparieren füllt eine offene Schnittfläche flach und genau in ihrer Form. Vorher wurde vom Mittelpunkt aus gefüllt, und bei L- oder U-förmigen Querschnitten ragte die Füllung über den Rand hinaus.'],
+  ]},
   { version:'1.18.375', date:'2026-11-11', changes:[
     '🧦 Fußhülle: innen jetzt komplett hohl – Scans aus mehreren dicht aneinanderliegenden Schalen oder mit Doppelflächen hinterließen Rippen und Zwischenwände in der Hülle; der Innenraum wird jetzt vorher geschlossen (Spalten bis 3 mm) und eingeschlossene Hohlräume gefüllt',
   ]},
@@ -93879,11 +93883,12 @@ function _cutClipMesh(mesh, P, N) {
     fan(ap, above); fan(bp, below);
     if (ip.length === 2) segs.push([ip[0], ip[1]]);
   }
-  for (const [a, b, c] of _cutBuildCap(segs, N)) {
+  const deckel = _cutBuildCap(segs, N);
+  for (const [a, b, c] of deckel) {
     _cutAddOriented(above, a, b, c, N.clone().negate());   // Deckel des oberen Teils zeigt nach −N
     _cutAddOriented(below, a, b, c, N);                     // Deckel des unteren Teils zeigt nach +N
   }
-  return { above: _cutGeoFromPos(above), below: _cutGeoFromPos(below) };
+  return { above: _cutGeoFromPos(above), below: _cutGeoFromPos(below), deckelFehlt: segs.length >= 3 && !deckel.length };
 }
 
 function _cutAddOriented(arr, a, b, c, wantN) {
@@ -93912,11 +93917,10 @@ function _cutBuildCap(segs, N) {
     (adj.get(ka) || adj.set(ka,[]).get(ka)).push(kb);
     (adj.get(kb) || adj.set(kb,[]).get(kb)).push(ka);
   }
-  // Schleifen über unbenutzte Kanten ablaufen
-  const usedE = new Set(), loops = [];
-  for (const [a,b] of segs) {
-    const ka = KEY(a), kb = KEY(b);
-    if (ka === kb || usedE.has(eKey(ka,kb))) continue;
+  // Schleifen über unbenutzte Kanten ablaufen. Offene Enden (Grad 1) zuerst: Scans haben
+  // Lücken, dann ist der Schnittumriss kein Ring, sondern mehrere Kettenstücke.
+  const usedE = new Set(), loops = [], ketten = [];
+  const lauf = (ka, kb) => {
     const loop = [ka]; let prev = ka, cur = kb, guard = 0;
     usedE.add(eKey(ka,kb));
     while (cur !== ka && guard++ < 200000) {
@@ -93926,9 +93930,42 @@ function _cutBuildCap(segs, N) {
       if (nxt === undefined) break;
       usedE.add(eKey(cur,nxt)); prev = cur; cur = nxt;
     }
-    if (cur === ka && loop.length >= 3) loops.push(loop.map(k => pt.get(k)));
+    if (cur === ka && loop.length >= 3) loops.push(loop); else if (loop.length >= 2) ketten.push(loop);
+  };
+  for (const [k, ns] of adj) if (ns.length === 1 && !usedE.has(eKey(k, ns[0]))) lauf(k, ns[0]);
+  for (const [a,b] of segs) {
+    const ka = KEY(a), kb = KEY(b);
+    if (ka === kb || usedE.has(eKey(ka,kb))) continue;
+    lauf(ka, kb);
+  }
+  // Kettenstücke über die Lücken verbinden (Volker 11.11., Stuhlbein vom Scan: Deckel fehlte
+  // ganz): jeweils zum nächsten freien Ende, bis die Kette wieder bei sich selbst ankommt.
+  // Höchstens 15 typische Segmentlängen bzw. 5 % des Umrisses weit — sonst bleibt es offen.
+  if (ketten.length) {
+    const P = k => pt.get(k), seg = segs.map(([a, b]) => a.distanceTo(b)).filter(x => x > 0).sort((x, y) => x - y);
+    const bb = new THREE.Box3(); pt.forEach(p => bb.expandByPoint(p));
+    const tol = Math.max(15 * (seg[seg.length >> 1] || 0), 0.05 * bb.getSize(new THREE.Vector3()).length());
+    const rest = ketten.slice();
+    while (rest.length) {
+      let cur = rest.shift();
+      for (let g = 0; g < 100000; g++) {
+        const ende = P(cur[cur.length - 1]);
+        let best = null, bd = cur.length >= 3 ? ende.distanceTo(P(cur[0])) : Infinity;
+        if (bd < Infinity) best = { selbst: true };
+        rest.forEach((c, i) => {
+          const ds = ende.distanceTo(P(c[0])), de = ende.distanceTo(P(c[c.length - 1]));
+          if (ds < bd) { bd = ds; best = { i, rev: false }; }
+          if (de < bd) { bd = de; best = { i, rev: true }; }
+        });
+        if (!best || bd > tol) break;
+        if (best.selbst) { loops.push(cur); break; }
+        const c = rest.splice(best.i, 1)[0];
+        cur = cur.concat(best.rev ? c.slice().reverse() : c);
+      }
+    }
   }
   if (!loops.length) return [];
+  for (let i = 0; i < loops.length; i++) loops[i] = loops[i].map(k => pt.get(k));
   const { U, V } = _cutBasis(N), origin = loops[0][0];
   const to2 = (p) => new THREE.Vector2(p.clone().sub(origin).dot(U), p.clone().sub(origin).dot(V));
   const inside = (p, poly) => {
@@ -94253,6 +94290,8 @@ async function _cutExecute() {
     const nBolt = parts.filter(q => q.role === 'bolt').length;
     notify(`In ${parts.length - nBolt} Teil(e) zerteilt ✓` +
            (nBolt ? ` + ${nBolt} Gewindebolzen (${boltSize} × ${boltLen.toFixed(1)} mm) zum Mitdrucken` : ''), 'ok');
+    if (clip.deckelFehlt) notify('Die Schnittfläche blieb offen – das Netz hat dort zu große Lücken. ' +
+                                 'Teil auswählen und unter „Form ändern“ auf 🩹 Reparieren klicken, das schließt sie', 'w');
     if (ohneSchwalbe) notify('Glatter Schnitt ohne Schwalbenschwanz: An dieser Schnittlinie war kein Platz für die Zunge — ' +
                              'Rückgängig, dann Breite/Länge kleiner wählen oder die Ebene verschieben', 'w');
     if (ohneSicherung) notify('Nur Gewinde ohne Stift: Die Hälften können sich beim Festschrauben ' +
@@ -98715,7 +98754,41 @@ function _eraserCloseHoles() {
   notify(loops ? `${loops} Loch/Löcher geschlossen ✓` : 'Keine offenen Ränder gefunden', loops ? 'ok' : 'w');
 }
 
-// Füllt offene Randschleifen einer Mesh-Geometrie (Fächer vom Schleifen-Mittelpunkt)
+// Ebenes Loch: Normale nach Newell (umgekehrte Randrichtung), alle Punkte nah an der Ebene
+// (< 2 % der Ausdehnung) → Earcut im Ebenen-Koordinatensystem. false = nicht eben / nicht
+// sauber triangulierbar → Aufrufer füllt als Fächer.
+function _fillHoleEben(pts, c, add) {
+  const n = new THREE.Vector3();
+  for (let i = 0; i < pts.length; i++) {          // Newell über die umgekehrte Reihenfolge
+    const a = pts[(i + 1) % pts.length], b = pts[i];
+    n.x += (a.y - b.y) * (a.z + b.z); n.y += (a.z - b.z) * (a.x + b.x); n.z += (a.x - b.x) * (a.y + b.y);
+  }
+  if (n.lengthSq() < 1e-20) return false;
+  n.normalize();
+  let ext = 0, abw = 0;
+  for (const p of pts) {
+    const dx = p.x - c.x, dy = p.y - c.y, dz = p.z - c.z;
+    ext = Math.max(ext, Math.hypot(dx, dy, dz)); abw = Math.max(abw, Math.abs(dx * n.x + dy * n.y + dz * n.z));
+  }
+  if (!(ext > 0) || abw > 0.02 * ext) return false;
+  const U = (Math.abs(n.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)).cross(n).normalize(), V = n.clone().cross(U);
+  const p2 = pts.map(p => new THREE.Vector2((p.x - c.x) * U.x + (p.y - c.y) * U.y + (p.z - c.z) * U.z, (p.x - c.x) * V.x + (p.y - c.y) * V.y + (p.z - c.z) * V.z));
+  let faces;
+  try { faces = THREE.ShapeUtils.triangulateShape(p2.slice(), []); } catch (e) { return false; }
+  if (!faces || faces.length < pts.length - 2) return false;
+  // Fläche muss zur Umrissfläche passen (sich selbst schneidender Umriss → Earcut lückenhaft)
+  let fl = 0; faces.forEach(([i, j, k]) => { fl += Math.abs((p2[j].x - p2[i].x) * (p2[k].y - p2[i].y) - (p2[k].x - p2[i].x) * (p2[j].y - p2[i].y)) / 2; });
+  if (Math.abs(fl - Math.abs(THREE.ShapeUtils.area(p2))) > 0.01 * fl + 1e-12) return false;
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+  for (const [i, j, k] of faces) {
+    const a = pts[i], b = pts[j], d = pts[k];
+    e1.set(b.x - a.x, b.y - a.y, b.z - a.z); e2.set(d.x - a.x, d.y - a.y, d.z - a.z);
+    if (e1.cross(e2).dot(n) >= 0) add.push(a.x, a.y, a.z, b.x, b.y, b.z, d.x, d.y, d.z);
+    else add.push(a.x, a.y, a.z, d.x, d.y, d.z, b.x, b.y, b.z);
+  }
+  return true;
+}
+// Füllt offene Randschleifen einer Mesh-Geometrie (eben: Earcut, sonst Fächer vom Mittelpunkt)
 function _fillHoles(mesh) {
   const g = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry;
   const pos = g.attributes.position, triN = pos.count / 3;
@@ -98753,13 +98826,16 @@ function _fillHoles(mesh) {
     if (loop.length >= 3) loops.push(loop);
   }
   if (!loops.length) return 0;
-  // Fächer-Füllung vom Mittelpunkt (umgekehrte Kantenrichtung → konsistente Wicklung)
+  // Füllung: ebene Löcher (z. B. abgeschnittenes Scan-Bein) in ihrer Ebene triangulieren —
+  // der Fächer vom Mittelpunkt ragt bei L-/U-förmigen Querschnitten über den Rand. Sonst
+  // (gewölbte Scan-Löcher) Fächer. Wicklung = umgekehrte Randrichtung (wie der Fächer).
   const add = [];
   for (const loop of loops) {
     const pts = loop.map(k => vpos.get(k));
     const c = { x:0, y:0, z:0 };
     pts.forEach(p => { c.x += p.x; c.y += p.y; c.z += p.z; });
     c.x /= pts.length; c.y /= pts.length; c.z /= pts.length;
+    if (pts.length > 3 && _fillHoleEben(pts, c, add)) continue;
     for (let i = 0; i < pts.length; i++) {
       const a = pts[i], b = pts[(i+1) % pts.length];
       add.push(b.x, b.y, b.z, a.x, a.y, a.z, c.x, c.y, c.z);
