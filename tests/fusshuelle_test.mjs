@@ -92,6 +92,32 @@ try {
   ok(await p.evaluate(n => objects.length === n - 1, nVor), 'Rückgängig entfernt die letzte Hülle');
   ok(r2.senk.length === 2 && Math.abs(r2.senk[1] - r2.senk[0] - 1.4) < 0.15, `Lauf 2 (Boden = Wand 1,4, Passung +0,2): Boden ${r2.senk.length === 2 ? (r2.senk[1] - r2.senk[0]).toFixed(2) : '?'} mm (Soll 1,4)`);
   ok(await p.evaluate(() => { const o = objects[0]; o.userData.type = o.userData.shapeType = 'custom'; o.userData.name = 'Teil A'; selectObjs([o]); updateCtxPopup(); return document.getElementById('ctx-fhl').style.display !== 'none' && _fhlPasst(o); }), '🧦 auch für geschnittenen Scan („Teil A“, kein Import)');
+  // Verrauschter Scan (±0,15 mm, wie ein echter Scan): Außen glätten „stark“ → senkrechtes Außenprofil ruhiger, Innenmaß bleibt
+  const gl = await p.evaluate(async () => {
+    _newCreate(false); const tris = [], n = 96, m = 60, H = 30;
+    let seed = 11; const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 - 0.5; };
+    const R = []; for (let j = 0; j <= m; j++) { R.push([]); for (let i = 0; i < n; i++) { const a = i / n * 2 * Math.PI, rr = (j === 0 || j === m) ? 0 : rnd() * 0.3;
+      R[j].push([(18 + rr) * Math.cos(a), (12 + rr) * Math.sin(a), H * j / m]); } }
+    for (let j = 0; j < m; j++) for (let i = 0; i < n; i++) { const k = (i + 1) % n; tris.push(...R[j][i], ...R[j][k], ...R[j + 1][k], ...R[j][i], ...R[j + 1][k], ...R[j + 1][i]); }
+    for (let i = 0; i < n; i++) { const k = (i + 1) % n; tris.push(...R[0][k], ...R[0][i], 0, 0, 0); tris.push(...R[m][i], ...R[m][k], 0, 0, H); }
+    const nt = tris.length / 9, buf = new ArrayBuffer(84 + nt * 50), dv = new DataView(buf); dv.setUint32(80, nt, true);
+    for (let t = 0; t < nt; t++) for (let k = 0; k < 9; k++) dv.setFloat32(84 + t * 50 + 12 + k * 4, tris[t * 9 + k], true);
+    _addImportedStl(buf, 'rauschen.stl', false); await new Promise(r => setTimeout(r, 300));
+    const w = await _mfInit(), out = {};
+    // Profil: größtes x bei |y| < 1 je Höhe (Außenseite), Rauheit = Abweichung vom gleitenden Mittel (±0,6 mm)
+    const prof = (g, innen) => { const o = []; for (let z = 4; z <= 17; z += 0.2) { const cs = g.slice(z); let mx = -1e9, mi = 1e9;
+      for (const q of cs.toPolygons()) for (const pt of q) if (Math.abs(pt[1]) < 1) { if (pt[0] > mx) mx = pt[0]; if (pt[0] < mi && pt[0] > 0) mi = pt[0]; } cs.delete(); o.push(innen ? mi : mx); }
+      let r = 0, k = 0; for (let i = 3; i < o.length - 3; i++) { let s = 0; for (let d = -3; d <= 3; d++) s += o[i + d]; r += Math.abs(o[i] - s / 7); k++; } return r / k; };
+    for (const g of [0, 3]) {
+      selectObjs([objects[0]]); _fhlOpen(); _fhlSet('hoehe', 20); _fhlSet('glatt', g); _fhlStr('profil', 'glatt'); await _fhlApply();
+      const mf = _mfUnionObjs(w, [objects[objects.length - 1]]), bb = mf.boundingBox(), mx = (bb.min[0] + bb.max[0]) / 2, my = (bb.min[1] + bb.max[1]) / 2;
+      const zen = mf.translate([-mx, -my, 0]), cs = zen.slice(10), pl = cs.toPolygons().map(q => { let a = 0; for (let i = 0; i < q.length; i++) { const A = q[i], B = q[(i + 1) % q.length]; a += A[0] * B[1] - B[0] * A[1]; } return Math.abs(a / 2); }).sort((x, y) => y - x);
+      out[g] = { rau: prof(zen, false), innenFl: pl[1] || 0, teile: mf.decompose().length }; cs.delete(); zen.delete(); mf.delete();
+    }
+    return out;
+  });
+  ok(gl[3].teile === 1 && gl[3].rau < gl[0].rau * 0.75, `Außen glätten „stark“: Rauheit außen ${gl[0].rau.toFixed(3)} → ${gl[3].rau.toFixed(3)} mm`);
+  ok(Math.abs(gl[3].innenFl - gl[0].innenFl) < gl[0].innenFl * 0.04, `Innenmaß bleibt: Innenfläche ${gl[0].innenFl.toFixed(0)} / ${gl[3].innenFl.toFixed(0)} mm²`);
   // Scan aus zwei dicht aneinanderliegenden Schalen (Spalt 0,4 mm): früher stand im Spalt eine Zwischenwand in der Hülle
   const zw = await p.evaluate(async () => {
     _newCreate(false); const tris = [];

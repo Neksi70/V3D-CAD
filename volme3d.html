@@ -2472,6 +2472,13 @@ const firebaseConfig = {
       <button class="vtb" data-v="0" onclick="_fhlSet('passung',0)" title="Genau der Scan">genau</button>
       <button class="vtb" data-v="0.2" onclick="_fhlSet('passung',0.2)" title="Etwas Luft, z. B. für hartes TPU 95A oder zum Kleben">locker</button>
     </div>
+    <span class="vsec">Außen glätten</span>
+    <div class="vbg" id="fhl-glatt-bg" style="margin-bottom:6px" title="Glättet die Außenseite der Hülle, damit das Scan-Rauschen nicht zu sehen ist. Innen bleibt der genaue Abdruck des Fußes.">
+      <button class="vtb" data-v="0" onclick="_fhlSet('glatt',0)">aus</button>
+      <button class="vtb" data-v="1" onclick="_fhlSet('glatt',1)">leicht</button>
+      <button class="vtb on" data-v="2" onclick="_fhlSet('glatt',2)">mittel</button>
+      <button class="vtb" data-v="3" onclick="_fhlSet('glatt',3)">stark</button>
+    </div>
     <span class="vsec">Sohle</span>
     <div class="vbg" id="fhl-profil-bg" style="margin-bottom:6px" title="Die Lauffläche ist immer eben (unabhängig vom Scan). Das Profil wird 0,5 mm tief in die Sohle eingelassen, mit glattem Rand.">
       <button class="vtb on" data-v="riffel" onclick="_fhlStr('profil','riffel')">▨ Riffel</button>
@@ -56319,7 +56326,7 @@ async function _ksnApply(){
 // Welt-mm Z-up wie _ksn*; Boden = tiefster Punkt des Scans. Der Scan wird oberhalb
 // der Hülle gekappt, bevor aufgedickt wird (spart Rechenzeit, Schnittkante sauber).
 var _fhlObj = null, _fhlPrev = null, _fhlBusy = false, _fhlRaf = 0;
-const _fhlP = { hoehe: 15, wand: 1, boden: 1.6, passung: -0.2, profil: 'riffel' };
+const _fhlP = { hoehe: 15, wand: 1, boden: 1.6, passung: -0.2, profil: 'riffel', glatt: 2 };
 function _fhlBox(o){
   const tris = _moldCollectTris(o); let x0=Infinity,y0=Infinity,z0=Infinity,x1=-Infinity,y1=-Infinity,z1=-Infinity;
   for (let i = 0; i < tris.length; i += 3) { const x=tris[i],y=tris[i+1],z=tris[i+2];
@@ -56361,6 +56368,7 @@ function _fhlSync(){
     const el = document.getElementById('fhl-' + k); if (el && +el.value !== _fhlP[k]) el.value = _fhlP[k];
     const vv = document.getElementById('fhlv-' + k); if (vv) vv.textContent = String(_fhlP[k]).replace('.', ',');
   }
+  document.querySelectorAll('#fhl-glatt-bg .vtb').forEach(b => b.classList.toggle('on', +b.dataset.v === _fhlP.glatt));
   document.querySelectorAll('#fhl-profil-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === _fhlP.profil));
   document.querySelectorAll('#fhl-pass-bg .vtb').forEach(b => b.classList.toggle('on', Math.abs(+b.dataset.v - _fhlP.passung) < 1e-6));
 }
@@ -56384,6 +56392,9 @@ function _fhlPreview(){
   t += '<br>Druck: mit der Öffnung nach oben, ohne Stützen. TPU 85A–95A, langsam (≈ 30 mm/s), Wand = 2–3 Linien.';
   info.innerHTML = t;
 }
+// Außenhaut glätten: Schließen + Öffnen mit Radius r (Spachteln + Schleifen) auf der Außenhaut —
+// dilate(wand + r) → erode(2r) → dilate(r). Taubin auf dem Voxelnetz ließ 2–3 mm-Hubbel stehen (11.11. geprüft).
+const _FHL_GLATT = [0, 1.5, 3, 5];
 // Eingeschlossene Hohlräume scheibenweise füllen (Löcher im Querschnitt), wie _ksuFuellen beim KI-Schuh
 function _fhlFuellen(w, m, dz, keep){
   const CS = w.CrossSection, bb = m.boundingBox(), parts = [];
@@ -56423,7 +56434,7 @@ async function _fhlCompute(w, o, p, keep, prog){
   const ext = 1000;
   const unter = zTop => keep(M.cube([ext, ext, zTop - (z0 - 50)]).translate([-ext / 2 + (bb.min[0] + bb.max[0]) / 2, -ext / 2 + (bb.min[1] + bb.max[1]) / 2, z0 - 50]));
   // Scan oberhalb kappen — mit Reserve, damit die Aufdickung an der Schnittkante vom weiterlaufenden Bein kommt
-  const zKapp = Math.min(bb.max[2], z0 + h + wand + Math.abs(pass) + 2);
+  const zKapp = Math.min(bb.max[2], z0 + h + wand + Math.abs(pass) + 2 + (_FHL_GLATT[p.glatt | 0] || 0));   // + r: Schleifen rundet die Kappkante ab
   let fuss = keep(M.intersection(solid, unter(zKapp)));
   if (fuss.numTri && fuss.numTri() > 120000 && typeof fuss.simplify === 'function') { try { fuss = keep(fuss.simplify(0.05)); } catch (_) {} }
   prog(28, 'Wand wird aufgedickt…');
@@ -56431,14 +56442,28 @@ async function _fhlCompute(w, o, p, keep, prog){
   const extra = boden - wand + pass;                                     // Passung verschiebt auch den Innenboden → ausgleichen, Boden = eingestellter Wert
   if (extra > 0.01) aussenQ = keep(M.union(fuss, keep(M.intersection(keep(fuss.translate([0, 0, -extra])), unter(z0)))));   // Boden dicker: nur die Kopie UNTER dem Fuß, sonst wird eine schräge Wand mit dick
   const vox = Math.min(0.3, wand / 3);
-  const aussen = keep(await _moldDilate3D(w, _mfToSoup(aussenQ), wand, f => prog(28 + f * 40), { voxTarget: vox, maxCells: 20e6 }));
+  const rG = _FHL_GLATT[p.glatt | 0] || 0;
+  let aussen;
+  if (rG) {
+    const a1 = keep(await _moldDilate3D(w, _mfToSoup(aussenQ), wand + rG, f => prog(28 + f * 14), { voxTarget: vox, maxCells: 20e6 }));
+    prog(42, 'Außenhaut wird geglättet…');
+    const a2 = keep(await _moldDilate3D(w, _mfToSoup(a1), -2 * rG, f => prog(42 + f * 14), { voxTarget: vox, maxCells: 20e6 }));
+    aussen = keep(await _moldDilate3D(w, _mfToSoup(a2), rG, f => prog(56 + f * 13), { voxTarget: vox, maxCells: 20e6 }));
+  } else aussen = keep(await _moldDilate3D(w, _mfToSoup(aussenQ), wand, f => prog(28 + f * 40), { voxTarget: vox, maxCells: 20e6 }));
   // Innenraum „zuspachteln“ (Schließen = aufdicken + zurücknehmen): Scans bestehen oft aus mehreren dicht
   // aneinanderliegenden Schalen oder haben Doppelflächen — jeder Spalt wurde sonst eine Rippe/Zwischenwand
   // in der Hülle (Volker 11.11.). Spalten bis 2·rZu schließen sich, die Außenform bleibt; Passung im selben Schritt.
   prog(70, 'Innenraum wird geschlossen…');
   const rZu = 1.5, voll = _fhlFuellen(w, fuss, 0.3, keep);
   const zu = keep(await _moldDilate3D(w, _mfToSoup(voll), rZu, f => prog(70 + f * 8), { voxTarget: Math.min(0.25, vox), maxCells: 20e6 }));
-  const innen = keep(await _moldDilate3D(w, _mfToSoup(zu), -(rZu - pass), f => prog(78 + f * 8), { voxTarget: Math.min(0.2, vox), maxCells: 20e6 }));
+  // Bei Glättung auch Scan-Hubbel im Abdruck abschleifen (Öffnen mit rI, im selben Erosionsschritt) — sonst holt die Mindestwand sie außen zurück
+  const rI = rG ? Math.min(rG, 1.5) : 0;
+  let innen = keep(await _moldDilate3D(w, _mfToSoup(zu), -(rZu - pass + rI), f => prog(78 + f * 5), { voxTarget: Math.min(0.2, vox), maxCells: 20e6 }));
+  if (rI) innen = keep(await _moldDilate3D(w, _mfToSoup(innen), rI, f => prog(83 + f * 3), { voxTarget: Math.min(0.2, vox), maxCells: 20e6 }));
+  if (rG) {                                                               // Mindestwand: wo das Schleifen einen Scan-Hubbel freilegt, bleibt ≥ wMin stehen
+    const wMin = Math.min(0.4, wand * 0.5);                               // eine TPU-Bahn; mehr holt bei rauen Scans die Hubbel zurück
+    aussen = keep(M.union(aussen, keep(M.intersection(keep(await _moldDilate3D(w, _mfToSoup(innen), wMin, f => prog(86 + f * 2), { voxTarget: vox, maxCells: 20e6 })), unter(zKapp)))));
+  }
   prog(88, 'Hülle wird ausgeschnitten…');
   // Eigene, ebene Sohle statt der Scan-Unterseite (Volker 11.11.: „übernimmt sonst die nicht sauber gescannte Struktur“):
   // Umriss = Schattenriss der Außenhaut im Bodenbereich, unten 0,4 mm Fase. Profil (Rillen) in die Lauffläche.
@@ -84709,8 +84734,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.380';
+const VOLME3D_VERSION = '1.18.381';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.381', date:'2026-11-11', changes:[
+    '🧦 Fußhülle: „Außen glätten“ (aus / leicht / mittel / stark) – die Außenseite wird gespachtelt und geschliffen (Radius 1,5 / 3 / 5 mm), damit die unruhige Scan-Oberfläche nicht durchkommt; innen bleibt der Abdruck, nur feine Scan-Hubbel werden mit abgeschliffen. Standard: mittel',
+  ]},
   { version:'1.18.380', date:'2026-11-11', changes:[
     'Schutzengel: neuer Schalter „😇 Engelsflügel dazu“ – echte Flügel mit Federn und Feder-Rillen oben am Rücken, zusätzlich zu den Fähnchen oder statt ihnen; druckt im Flügel-Teil mit',
   ]},
