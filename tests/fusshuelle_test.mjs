@@ -47,8 +47,8 @@ try {
   await p.evaluate(() => _fhlOpen());
   ok(await p.evaluate(() => document.getElementById('fhl-pop').style.display === 'block' && !!_fhlPrev), 'Panel offen, rote Ebene steht');
   await p.screenshot({ path: SHOTS + '/fhl-panel.png' });
-  const lauf = (hoehe, wand, boden, passung) => p.evaluate(async ([hoehe, wand, boden, passung]) => {
-    selectObjs([objects[0]]); _fhlOpen(); _fhlSet('hoehe', hoehe); _fhlSet('wand', wand); _fhlSet('boden', boden); _fhlSet('passung', passung);
+  const lauf = (hoehe, wand, boden, passung, profil = 'glatt') => p.evaluate(async ([hoehe, wand, boden, passung, profil]) => {
+    selectObjs([objects[0]]); _fhlOpen(); _fhlStr('profil', profil); _fhlSet('hoehe', hoehe); _fhlSet('wand', wand); _fhlSet('boden', boden); _fhlSet('passung', passung);
     const n0 = objects.length; await _fhlApply();
     const neu = objects[objects.length - 1]; if (objects.length !== n0 + 1) return { fehlt: true };
     const w = await _mfInit(), mf = _mfUnionObjs(w, [neu]), bb = mf.boundingBox();
@@ -64,9 +64,10 @@ try {
     const bmx = (bb.min[0] + bb.max[0]) / 2, bmy = (bb.min[1] + bb.max[1]) / 2;
     const senk = hits([bmx, bmy, -5], [0, 0, 1]);
     const zh = (bb.max[2] + boden) / 2, waag = hits([bb.min[0] - 5, bmy, zh], [1, 0, 0]);
-    const res = { vol: mf.volume(), teile: mf.decompose().length, bb: [bb.min, bb.max], senk, waag, name: neu.userData.name };
+    const fl = z => { const c = mf.slice(z), a = c.area(); c.delete(); return a; };
+    const res = { vol: mf.volume(), teile: mf.decompose().length, bb: [bb.min, bb.max], senk, waag, name: neu.userData.name, a02: fl(0.05), a025: fl(0.25), a10: fl(1.0) };
     mf.delete(); return res;
-  }, [hoehe, wand, boden, passung]);
+  }, [hoehe, wand, boden, passung, profil]);
   const r = await lauf(15, 1, 1.6, -0.2);
   ok(!r.fehlt && r.teile === 1, `Hülle: 1 Teil (${r.teile}), ${r.vol.toFixed(0)} mm³`);
   ok(Math.abs(r.bb[0][2]) < 0.01 && Math.abs(r.bb[1][2] - 16.4) < 0.25, `steht auf z=0, hoch ${r.bb[1][2].toFixed(2)} mm (Soll 15 + 1,6 − 0,2 Passung = 16,4)`);
@@ -76,12 +77,19 @@ try {
   ok(waende.length === 2 && waende.every(x => Math.abs(x - wSoll) < 0.15), `Wände ${waende.map(x => x.toFixed(2)).join(' / ')} mm waagerecht (Soll ${wSoll.toFixed(2)} = 1 mm + 0,2 Passung, schräg)`);
   // Innenweite in Messhöhe: Scan 25 mm tief in y, Breite in x = 40 mm waagerecht (schräg versetzt) → innen ≈ 40 − 0,4
   ok(r.waag.length === 4 && Math.abs((r.waag[2] - r.waag[1]) - (40 - 0.4 / Math.cos(Math.atan(20 / 35)))) < 0.3, `Innenmaß x ${r.waag.length === 4 ? (r.waag[2] - r.waag[1]).toFixed(2) : '?'} mm (Scan 40, Passung −0,2 je Seite)`);
+  ok(r.a02 > r.a10 * 0.85, `Sohle glatt + eben: Fläche knapp über dem Boden ${r.a02.toFixed(0)} mm² ≈ voll ${r.a10.toFixed(0)} mm² (nur Fase)`);
+  const rR = await lauf(15, 1, 1.6, -0.2, 'riffel'), rQ = await lauf(15, 1, 1.6, -0.2, 'raute');
+  ok(rR.teile === 1 && rR.a025 < rR.a10 * 0.8 && rR.a025 > rR.a10 * 0.35 && Math.abs(rR.bb[0][2]) < 0.01, `Riffel: in 0,25 mm ${(rR.a025 / rR.a10 * 100).toFixed(0)} % Fläche (Rillen), 1 Teil`);
+  ok(rQ.teile === 1 && rQ.a025 < rR.a025 * 0.95, `Raute: in 0,25 mm ${(rQ.a025 / rQ.a10 * 100).toFixed(0)} % Fläche (weniger als Riffel)`);
+  ok(Math.abs(rR.vol - r.vol) < r.vol * 0.12, `Profil nimmt nur wenig Material (${rR.vol.toFixed(0)} statt ${r.vol.toFixed(0)} mm³)`);
+  await p.evaluate(() => { objects.splice(1).forEach(o => scene.remove(o)); });
   const r2 = await lauf(40, 1.4, 1.4, 0.2);
   ok(r2.teile === 1 && Math.abs(r2.bb[1][2] - (35 - 0.5 + 1.4 + 0.2)) < 0.3, `Höhe über Scan wird begrenzt: ${r2.bb[1][2].toFixed(2)} mm`);
   await p.evaluate(() => { selectObjs([]); fitToObjects(objects); }); await p.waitForTimeout(400);
   await p.screenshot({ path: SHOTS + '/fhl-ergebnis.png' });
+  const nVor = await p.evaluate(() => objects.length);
   await p.evaluate(() => undo());
-  ok(await p.evaluate(() => objects.length === 2), 'Rückgängig entfernt die letzte Hülle');
+  ok(await p.evaluate(n => objects.length === n - 1, nVor), 'Rückgängig entfernt die letzte Hülle');
   ok(r2.senk.length === 2 && Math.abs(r2.senk[1] - r2.senk[0] - 1.4) < 0.15, `Lauf 2 (Boden = Wand 1,4, Passung +0,2): Boden ${r2.senk.length === 2 ? (r2.senk[1] - r2.senk[0]).toFixed(2) : '?'} mm (Soll 1,4)`);
   ok(await p.evaluate(() => { const o = objects[0]; o.userData.type = o.userData.shapeType = 'custom'; o.userData.name = 'Teil A'; selectObjs([o]); updateCtxPopup(); return document.getElementById('ctx-fhl').style.display !== 'none' && _fhlPasst(o); }), '🧦 auch für geschnittenen Scan („Teil A“, kein Import)');
   // Scan aus zwei dicht aneinanderliegenden Schalen (Spalt 0,4 mm): früher stand im Spalt eine Zwischenwand in der Hülle

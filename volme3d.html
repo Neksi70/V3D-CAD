@@ -2472,6 +2472,12 @@ const firebaseConfig = {
       <button class="vtb" data-v="0" onclick="_fhlSet('passung',0)" title="Genau der Scan">genau</button>
       <button class="vtb" data-v="0.2" onclick="_fhlSet('passung',0.2)" title="Etwas Luft, z. B. für hartes TPU 95A oder zum Kleben">locker</button>
     </div>
+    <span class="vsec">Sohle</span>
+    <div class="vbg" id="fhl-profil-bg" style="margin-bottom:6px" title="Die Lauffläche ist immer eben (unabhängig vom Scan). Das Profil wird 0,5 mm tief in die Sohle eingelassen, mit glattem Rand.">
+      <button class="vtb on" data-v="riffel" onclick="_fhlStr('profil','riffel')">▨ Riffel</button>
+      <button class="vtb" data-v="raute" onclick="_fhlStr('profil','raute')">◈ Raute</button>
+      <button class="vtb" data-v="glatt" onclick="_fhlStr('profil','glatt')">▭ glatt</button>
+    </div>
     <div id="fhl-info" style="font-size:11px;color:var(--dim);line-height:1.4;margin:4px 0 8px"></div>
     <div style="display:flex;gap:6px">
       <button class="btn" onclick="_fhlClose()">Abbrechen</button>
@@ -56280,7 +56286,7 @@ async function _ksnApply(){
 // Welt-mm Z-up wie _ksn*; Boden = tiefster Punkt des Scans. Der Scan wird oberhalb
 // der Hülle gekappt, bevor aufgedickt wird (spart Rechenzeit, Schnittkante sauber).
 var _fhlObj = null, _fhlPrev = null, _fhlBusy = false, _fhlRaf = 0;
-const _fhlP = { hoehe: 15, wand: 1, boden: 1.6, passung: -0.2 };
+const _fhlP = { hoehe: 15, wand: 1, boden: 1.6, passung: -0.2, profil: 'riffel' };
 function _fhlBox(o){
   const tris = _moldCollectTris(o); let x0=Infinity,y0=Infinity,z0=Infinity,x1=-Infinity,y1=-Infinity,z1=-Infinity;
   for (let i = 0; i < tris.length; i += 3) { const x=tris[i],y=tris[i+1],z=tris[i+2];
@@ -56315,12 +56321,14 @@ function _fhlClose(){
   const p = document.getElementById('fhl-pop'); if (p) p.style.display = 'none';
   const b = document.getElementById('ctx-fhl'); if (b) b.style.background = '';
 }
+function _fhlStr(k, v){ _fhlP[k] = v; _fhlSync(); _fhlPreview(); }
 function _fhlSet(k, v){ _fhlP[k] = parseFloat(v); _fhlSync(); if (!_fhlRaf) _fhlRaf = requestAnimationFrame(() => { _fhlRaf = 0; _fhlPreview(); }); }
 function _fhlSync(){
   for (const k of ['hoehe', 'wand', 'boden', 'passung']) {
     const el = document.getElementById('fhl-' + k); if (el && +el.value !== _fhlP[k]) el.value = _fhlP[k];
     const vv = document.getElementById('fhlv-' + k); if (vv) vv.textContent = String(_fhlP[k]).replace('.', ',');
   }
+  document.querySelectorAll('#fhl-profil-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === _fhlP.profil));
   document.querySelectorAll('#fhl-pass-bg .vtb').forEach(b => b.classList.toggle('on', Math.abs(+b.dataset.v - _fhlP.passung) < 1e-6));
 }
 function _fhlPreviewClear(){ if (!_fhlPrev) return; scene.remove(_fhlPrev); _fhlPrev.geometry.dispose(); _fhlPrev.material.dispose(); _fhlPrev = null; }
@@ -56339,6 +56347,7 @@ function _fhlPreview(){
   let t = 'Fuß: <b>' + z(c.x1 - c.x0) + ' × ' + z(c.y1 - c.y0) + ' mm</b>, Scan <b>' + z(c.H) + ' mm</b> hoch. Die rote Ebene zeigt die Oberkante der Hülle.';
   if (p.hoehe > c.H - 0.5) t += '<br><span style="color:#c0392b;font-weight:700">⚠️ Höhe auf ' + z(h) + ' mm begrenzt — höher reicht der Scan nicht.</span>';
   t += '<br>Innen = Abdruck des Scans ' + (p.passung < 0 ? '<b>' + z(-p.passung) + ' mm stramm</b> (TPU dehnt sich)' : p.passung > 0 ? '<b>' + z(p.passung) + ' mm Luft</b>' : '<b>genau</b>') + '.';
+  t += '<br>Sohle: immer eben' + (p.profil === 'glatt' ? '.' : (p.boden >= 0.9 ? ', mit <b>' + (p.profil === 'raute' ? 'Rauten' : 'Riffel') + '-Profil</b> ' + z(Math.min(0.5, p.boden - 0.7)) + ' mm tief.' : ' — <span style="color:#c0392b">für ein Profil Boden ≥ 0,9 mm stellen.</span>'));
   t += '<br>Druck: mit der Öffnung nach oben, ohne Stützen. TPU 85A–95A, langsam (≈ 30 mm/s), Wand = 2–3 Linien.';
   info.innerHTML = t;
 }
@@ -56398,13 +56407,29 @@ async function _fhlCompute(w, o, p, keep, prog){
   const zu = keep(await _moldDilate3D(w, _mfToSoup(voll), rZu, f => prog(70 + f * 8), { voxTarget: Math.min(0.25, vox), maxCells: 20e6 }));
   const innen = keep(await _moldDilate3D(w, _mfToSoup(zu), -(rZu - pass), f => prog(78 + f * 8), { voxTarget: Math.min(0.2, vox), maxCells: 20e6 }));
   prog(88, 'Hülle wird ausgeschnitten…');
-  let res = keep(M.intersection(keep(M.difference(aussen, innen)), unter(z0 + h)));
+  // Eigene, ebene Sohle statt der Scan-Unterseite (Volker 11.11.: „übernimmt sonst die nicht sauber gescannte Struktur“):
+  // Umriss = Schattenriss der Außenhaut im Bodenbereich, unten 0,4 mm Fase. Profil (Rillen) in die Lauffläche.
+  const zb = z0 - pass - boden, CS = w.CrossSection;
+  const umriss = keep(keep(M.intersection(aussen, keep(keep(M.cube([ext, ext, boden])).translate([-ext / 2 + (bb.min[0] + bb.max[0]) / 2, -ext / 2 + (bb.min[1] + bb.max[1]) / 2, zb])))).project());
+  const fase = Math.min(0.4, boden * 0.3);
+  const sohle = keep(M.union(keep(keep(keep(umriss.offset(-fase, 'Round')).extrude(fase + 0.01)).translate([0, 0, zb])),
+                             keep(keep(umriss.extrude(boden - fase)).translate([0, 0, zb + fase]))));
+  let res = keep(M.intersection(keep(M.difference(keep(M.union(keep(M.intersection(aussen, keep(M.difference(unter(z0 + h), unter(zb + fase))))), sohle)), innen)), unter(z0 + h)));
+  const tP = Math.min(0.5, boden - 0.7), info0 = { profil: 'glatt' };
+  if (p.profil !== 'glatt' && tP >= 0.2) {
+    const feld = keep(umriss.offset(-1.6, 'Round')), fb = feld.bounds(), cx = (fb.min[0] + fb.max[0]) / 2, cy = (fb.min[1] + fb.max[1]) / 2;
+    const L = Math.hypot(fb.max[0] - fb.min[0], fb.max[1] - fb.min[1]) + 4, gB = 1.0, per = 2.6, rillen = [];
+    for (const wnk of p.profil === 'raute' ? [45, -45] : [45])
+      for (let o = -L / 2; o <= L / 2; o += per) rillen.push(keep(keep(keep(CS.square([L, gB], true)).translate([0, o])).rotate(wnk)));
+    const muster = keep(keep(keep(CS.union(rillen)).translate([cx, cy])).intersect(feld));
+    if (muster.area() > 1) { res = keep(M.difference(res, keep(keep(muster.extrude(tP + 0.01)).translate([0, 0, zb - 0.01])))); info0.profil = p.profil; info0.tiefe = tP; }
+  }
   res = _ksnBiggest(w, res, 1, keep);
   if (res.isEmpty()) throw new Error('Ergebnis ist leer');
   if (typeof res.simplify === 'function') { try { res = keep(res.simplify(0.02)); } catch (_) {} }
   const rb = res.boundingBox();
   res = keep(res.translate([bb.max[0] - rb.min[0] + 10, 0, -rb.min[2]]));   // neben den Scan auf die Platte
-  const info = { weg, h, vol: res.volume(), hoch: rb.max[2] - rb.min[2], vox: _moldLastVox };
+  const info = { ...info0, weg, h, vol: res.volume(), hoch: rb.max[2] - rb.min[2], vox: _moldLastVox };
   try { info.teile = res.decompose().length; } catch (_) { info.teile = 1; }
   return { mf: res, info };
 }
@@ -84651,8 +84676,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.376';
+const VOLME3D_VERSION = '1.18.378';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.378', date:'2026-11-11', changes:[
+    '🧦 Fußhülle: Sohle immer eben (eigene Platte in Fußform statt der unsauberen Scan-Unterseite, unten kleine Fase) und automatisch mit Profil – ▨ Riffel (Standard), ◈ Raute oder glatt, 0,5 mm tief mit glattem Rand',
+  ]},
   { version:'1.18.377', date:'2026-11-11', changes:[
     ['🩹','<b>Reparieren: Schnittfläche bleibt eben, auch mit Scan-Lücken am Rand.</b> Hatte der Scan direkt am Schnittrand Lücken, füllte Reparieren die Öffnung vom Mittelpunkt aus, mit einem sichtbaren Knick quer durch die Fläche. Jetzt wird der ebene Teil flach geschlossen, und nur die Lücken am Rand bekommen kleine eigene Flicken. Schon reparierte Teile: Rückgängig, dann noch einmal 🩹 Reparieren.'],
   ]},
