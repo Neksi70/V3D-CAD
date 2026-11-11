@@ -38,6 +38,18 @@ try {
   await p.evaluate(() => { _newCreate(false); _sgeOpen(); _sgeVorlage('streifen'); _sgeStr('fluegel', 'beide'); });
   const r2 = await bauen();
   ok(r2.teile.length === 3 && r2.teile.find(t => /Flügel/.test(t.name)).shells === 2 && r2.ov < 0.01, 'Streifen + beide Flügel: ' + r2.teile.map(t => t.name + ' ' + t.shells + 'S').join(', '));
+  // Glatt: Schrift nach unten, alles bündig eingelegt, Pünktchen eigenes Teil
+  await p.evaluate(() => { _newCreate(false); _sgeOpen(); _sgeVorlage('text'); _sgeStr('fluegel', 'rechts'); _sgeStr('druck', 'glatt'); _sgeSet('stern', 1); });
+  const r3 = await bauen();
+  const k3 = r3.teile.find(t => /^Schutzengel/.test(t.name)), d3 = r3.teile.find(t => /Text/.test(t.name)), p3 = r3.teile.find(t => /Pünktchen/.test(t.name));
+  ok(r3.teile.length === 4 && k3 && d3 && p3 && p3.vol > 20, 'Glatt: ' + r3.teile.map(t => t.name + ' ' + t.vol.toFixed(0) + 'mm³').join(', '));
+  ok(r3.teile.every(t => t.minY > -1e-3 && t.maxY < 4 + 1e-3) && Math.abs(d3.minY) < 1e-3 && Math.abs(d3.maxY - 0.6) < 0.05 && Math.abs(p3.minY) < 1e-3,
+     `Glatt: alles in 0–4 mm, Text ${d3.minY.toFixed(2)}–${d3.maxY.toFixed(2)} mm auf der Platte`);
+  ok(k3.shells === 1 && r3.ov < 0.01, `Glatt: Körper 1 Schale, Überlappung ${r3.ov.toFixed(3)}`);
+  const vSoll = await p.evaluate(async () => { const w = await _mfInit(), r = _sgeBuild(w, { ..._sgeP, druck: 'oben' }, _sgeText), v = r.koerper.volume();
+    for (const x of ['koerper', 'fluegel', 'dunkel', 'punkte']) if (r[x]) r[x].delete(); return v; });
+  ok(vSoll > 0, 'Erhaben-Bau läuft weiter');
+  await p.evaluate(() => { _sgeStr('druck', 'oben'); });
   await p.evaluate(() => { selectObjs([]); fitToObjects(objects); }); await p.waitForTimeout(500);
   await p.evaluate(() => undo());
   ok(await p.evaluate(() => objects.length === 0), 'Rückgängig entfernt die Teile');

@@ -1,6 +1,7 @@
 // Schutzengel-Anhänger — Manifold, mm, Platte in XY (y oben), Dicke entlang Z, liegt auf z = 0.
 // Teile: Körper (Kopf + Kegel, Aufhängeloch, Pünktchen/Stern), Flügel (Fähnchen mit Herz,
 // eigene Farbe), Dunkel (Streifen + Text, erhaben oben drauf → Farbwechsel nur bei z = Dicke).
+// p.druck 'glatt': Text/Streifen/Punkte bündig eingelegt (Tiefe p.tiefe), Schauseite wird auf die Platte gelegt (App dreht).
 // textFn(CS, keep, txt, font, h, cx, yb, maxW) → {cs} (App: _lttText) — in Node null.
 function _sgeZufall(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 function _sgeMasse(p) {
@@ -43,6 +44,7 @@ function _sgeBuild(w, p, textFn) {
     if (p.fluegel === 'links' || p.fluegel === 'beide') fluegel.push(k(fahne(-1)));
     let fl = fluegel.length ? k(M.difference(k(M.union(fluegel)), koerper)) : null;   // im Körper steckender Teil gehört zum Körper
     // ── Dunkel: Text + Streifen (erhaben auf der Oberseite) ──
+    const glatt = p.druck === 'glatt', tE = Math.min(p.tiefe || 0.6, d - 1);     // glatt: Einlage-Tiefe von oben
     const dunkel = [], hR = p.relief, sperr = [];                            // sperr = Rechtecke ohne Pünktchen
     const innen = k(u.offset(-2.2, 'Round'));
     if (textFn && (p.text1 || p.text2)) {
@@ -50,7 +52,7 @@ function _sgeBuild(w, p, textFn) {
       const zeile = (txt, font, h) => {
         if (!txt || !(h > 0)) return;
         const r = textFn(CS, k, txt, font, h, 0, yb, 2 * halbB(yb + h) - 8);
-        if (r && r.cs) { dunkel.push(k(k(r.cs.intersect(innen)).extrude(hR).translate([0, 0, d - 0.01]))); sperr.push([-halbB(yb) , yb - 2, halbB(yb), yb + r.h + 2]); yb += r.h + h * 0.25; }
+        if (r && r.cs) { dunkel.push(k(k(r.cs.intersect(innen)).extrude(glatt ? tE : hR).translate([0, 0, glatt ? d - tE : d - 0.01]))); sperr.push([-halbB(yb) , yb - 2, halbB(yb), yb + r.h + 2]); yb += r.h + h * 0.25; }
       };
       zeile(p.text2, p.font2, p.h2);                                          // untere Zeile zuerst (Schreibschrift)
       zeile(p.text1, p.font1, p.h1);
@@ -61,7 +63,7 @@ function _sgeBuild(w, p, textFn) {
         const y = y0 + (y1 - y0) * (i + 0.5) / n + (rnd() - 0.5) * (y1 - y0) / n * 0.25, t = 1 + rnd() * 1.6, a = (rnd() - 0.5) * 7;
         const hb = halbB(y) * (0.8 + rnd() * 0.15), x0 = -hb + rnd() * hb * 0.25;
         const bar = k(CS.square([hb * 2 - (x0 + hb), t]).translate([x0, y - t / 2]).rotate(a));
-        dunkel.push(k(k(bar.intersect(innen)).extrude(hR).translate([0, 0, d - 0.01])));
+        dunkel.push(k(k(bar.intersect(innen)).extrude(glatt ? tE : hR).translate([0, 0, glatt ? d - tE : d - 0.01])));
       }
     }
     let dk = dunkel.length ? k(M.union(dunkel)) : null;
@@ -70,27 +72,34 @@ function _sgeBuild(w, p, textFn) {
     if (p.muster === 'punkte') {
       const flaeche = u.area(), n = Math.round(flaeche * p.punkte / 1000);
       const ib = innen.bounds();
-      let gesetzt = 0;
-      for (let t = 0; t < n * 6 && gesetzt < n; t++) {
+      let gesetzt = 0; const pkt = [];
+      for (let t = 0; t < n * 8 && gesetzt < n; t++) {
         const x = ib.min[0] + rnd() * (ib.max[0] - ib.min[0]), y = ib.min[1] + rnd() * (ib.max[1] - ib.min[1]);
         if (Math.abs(x) > halbB(y) - 2.2 && y < yHals) continue;
         if ((x * x + (y - yK) ** 2 > (rk - 2.2) ** 2) && y > yHals) continue;
         if (sperr.some(r => x > r[0] && x < r[2] && y > r[1] && y < r[3])) continue;
         if (p.oese > 0 && x * x + (y - lochY) ** 2 < (oeseR + 2) ** 2) continue;
         if (p.stern && x * x + (y - H * 0.6) ** 2 < 64) continue;
-        const r = 0.5 + rnd() * 0.8;
-        auf.push(k(M.sphere(r, 10).scale([1, 1, 0.75]).translate([x, y, d - 0.05]))); gesetzt++;
+        const r = 0.9 + rnd() * 0.7;                                          // Fuß-Ø 1,8–3,2 mm: ≥ 4 Düsenbahnen, sonst schmieren die Mini-Inseln (Druck 11.11.)
+        if (pkt.some(q => (q[0] - x) ** 2 + (q[1] - y) ** 2 < (q[2] + r + 1.2) ** 2)) continue;   // Abstand, keine Klumpen
+        pkt.push([x, y, r]);
+        auf.push(glatt ? k(M.cylinder(tE, r, r, 24).translate([x, y, d - tE]))
+                       : k(M.cylinder(hR + 0.05, r, r * 0.6, 24).translate([x, y, d - 0.05]))); gesetzt++;   // flacher Kegelstumpf, Höhe = Relief (3 Schichten à 0,2)
       }
     }
     if (p.stern) {
       const sR = H * 0.055, pts = [];
       for (let i = 0; i < 10; i++) { const a = Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? sR * 0.45 : sR; pts.push([r * Math.cos(a), H * 0.6 + r * Math.sin(a)]); }
-      auf.push(k(k(new CS([pts])).extrude(hR + 0.2).translate([0, 0, d - 0.01])));
+      auf.push(glatt ? k(k(new CS([pts])).extrude(tE).translate([0, 0, d - tE])) : k(k(new CS([pts])).extrude(hR + 0.2).translate([0, 0, d - 0.01])));
     }
-    if (auf.length) koerper = k(M.union(koerper, k(M.union(auf))));
+    let pk = null;
+    if (glatt) {                                                              // Einlagen: aus dem Körper schneiden, Punkte/Stern als eigenes Teil (Gold)
+      if (auf.length) { pk = k(M.union(auf)); if (dk) pk = k(M.difference(pk, dk)); koerper = k(M.difference(koerper, pk)); }
+    } else if (auf.length) koerper = k(M.union(koerper, k(M.union(auf))));
     if (dk) koerper = k(M.difference(koerper, dk));
-    const res = { koerper: koerper.translate([0, 0, 0]), fluegel: fl ? fl.translate([0, 0, 0]) : null, dunkel: dk ? dk.translate([0, 0, 0]) : null };   // Kopien: tmp wird gleich gelöscht
-    res.farbwechsel = d; res.masse = m;
+    const res = { koerper: koerper.translate([0, 0, 0]), fluegel: fl ? fl.translate([0, 0, 0]) : null, dunkel: dk ? dk.translate([0, 0, 0]) : null,
+      punkte: pk ? pk.translate([0, 0, 0]) : null, wenden: glatt };   // Kopien: tmp wird gleich gelöscht
+    res.farbwechsel = glatt ? tE : d; res.masse = m;
     return res;
   } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
 }
