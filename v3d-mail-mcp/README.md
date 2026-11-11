@@ -99,3 +99,15 @@ Schutz: Start nur mit `bett_frei=true` und nicht während eines Drucks; Bewegung
 Neustart-G-Code während eines Drucks nur mit `erzwingen=true` (M112 geht immer); Upload nur
 G-Code-Endungen aus den freigegebenen Ordnern; die gerade gedruckte Datei lässt sich nicht löschen.
 Während eines Makros (z. B. Heat Soak) stellt Klipper G-Code hinten an → `fertig: false`, läuft später.
+
+## Claude Code headless: code_* (11.11.2026)
+`code_auftrag(auftrag, ordner?, titel?)` → sofort `job_id`; `code_status`, `code_ergebnis`, `code_liste`, `code_abbrechen`.
+- Jobs unter `~/code-auftraege/<id>/` (auftrag.md, meta.json, ausgabe.jsonl = stream-json, ergebnis.md, stderr.txt).
+- Jeder Job = eigene systemd-User-Unit `code-auftrag-<id>` (`systemd-run --user`): überlebt MCP-Neustarts,
+  RuntimeMaxSec = Zeitlimit + 2 min, Abbruch = `systemctl --user stop`. Höchstens 1 parallel (CODE_AUFTRAG_PARALLEL),
+  60 min (CODE_AUFTRAG_MINUTEN); der fertige Läufer startet den nächsten wartenden.
+- `claude -p --permission-mode auto --output-format stream-json` + angehängte Regel „folgenreiche Schritte nur
+  unter ‚Wartet auf Bestätigung‘ listen“ + `--disallowedTools` (sudo, git push, ssh/rsync, ausrollen, Drucker-Neustart/
+  Druckstart, Mail senden, code_auftrag selbst gegen Rekursion …).
+- Kurzbericht je Job ins Gedächtnis: `code-auftraege-protokoll.md` (eine Datei, neueste oben, max. 30).
+- Läufer lädt den Mail-Kern (Kontodaten) bewusst nicht (`python -m v3dmcp.code laeufer <id>`).

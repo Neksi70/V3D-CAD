@@ -17,7 +17,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from . import settings  # zuerst: lädt .env
-from . import audit, browser, drucker, familie, gedaechtnis, mail
+from . import audit, browser, code, drucker, familie, gedaechtnis, mail
 from .core import MailError, vm
 from .netz import RateLimit
 from .oauth import Provider, login
@@ -58,7 +58,13 @@ ANLEITUNG = (
     '3D-DRUCKER Sovol SV08 Max (Klipper/Moonraker im Heimnetz): Werkzeuge drucker_* sprechen ihn '
     'direkt vom Server aus an — dafür NICHT den Browser nehmen. Ablauf drucken: G-Code auf V3DA '
     '(OrcaSlicer-Skript, Ausgabe ~/tools/orcaslicer/ausgabe) → drucker_upload → drucker_druck start. '
-    'Einen Druck startet Claude NUR, wenn Volker im Gespräch bestätigt hat, dass das Bett frei ist.'
+    'Einen Druck startet Claude NUR, wenn Volker im Gespräch bestätigt hat, dass das Bett frei ist. '
+    'CLAUDE CODE (code_*): Programmier-/Server-Aufgaben auf V3DA direkt an Claude Code geben statt sie '
+    'Volker zum Kopieren zu schreiben. ASYNCHRON: code_auftrag liefert sofort eine job_id; der Auftrag '
+    'läuft im Hintergrund (Minuten bis 1 h). Später code_status bzw. code_ergebnis aufrufen — nicht in '
+    'einer Schleife warten, sondern Volker sagen, dass er nachfragen kann. Folgenreiche Schritte (löschen, '
+    'Drucker-Neustart, Druck, Mails, git push, netcup) führt Claude Code nicht aus, sondern listet sie '
+    'unter „Wartet auf Bestätigung"; nach Volkers OK einen neuen code_auftrag damit schicken.'
 )
 
 mcp = MCPServer(
@@ -478,6 +484,48 @@ def drucker_mesh(profil: Annotated[str | None, Field(description='Bed-Mesh-Profi
     """3D-Drucker: Bettnetz auswerten — Spannweite gesamt und innen, grobes Raster (Blockmittel in mm,
     oben = hinten), optional Differenz zu einem zweiten Profil. Liefert keine Rohmatrix."""
     return drucker.mesh(profil, vergleich, raster, rand_mm)
+
+
+# --- Claude Code headless auf V3DA (siehe code.py) -------------------------------
+
+JobId = Annotated[str, Field(description='job_id aus code_auftrag bzw. code_liste, z. B. "20261111-101500-a3f2"')]
+
+
+@werkzeug(AENDERN)
+def code_auftrag(auftrag: Annotated[str, Field(description='Vollständiger Auftrag an Claude Code (deutsch, mit allem '
+                                                           'Kontext – Claude Code kann NICHT zurückfragen)')],
+                 ordner: Annotated[str | None, Field(description='Arbeitsordner unter /home/v3da, z. B. "~/v3dtodo" '
+                                                                 '(Standard: ~)')] = None,
+                 titel: Annotated[str | None, Field(description='Kurztitel für Liste/Protokoll')] = None) -> CallToolResult:
+    """Auftrag an Claude Code auf Volkers Server V3DA übergeben (headless, im Hintergrund). Kehrt SOFORT
+    mit job_id zurück; der Auftrag läuft bis zu 60 min, höchstens einer gleichzeitig (weitere warten).
+    Ergebnis später mit code_status / code_ergebnis abholen. Folgenreiches (löschen, Neustarts, Druck,
+    Mails, git push, netcup) wird nicht ausgeführt, sondern im Bericht unter „Wartet auf Bestätigung" gelistet."""
+    return code.auftrag(auftrag, ordner, titel)
+
+
+@werkzeug(LESEN)
+def code_status(job_id: JobId) -> CallToolResult:
+    """Stand eines code_auftrag: wartet / läuft / fertig / fehler / abgebrochen, Laufzeit, letzte Schritte."""
+    return code.status(job_id)
+
+
+@werkzeug(LESEN)
+def code_ergebnis(job_id: JobId) -> CallToolResult:
+    """Abschlussbericht eines fertigen code_auftrag + geänderte Dateien (solange er läuft: nur Status)."""
+    return code.ergebnis(job_id)
+
+
+@werkzeug(LESEN)
+def code_liste(anzahl: Annotated[int, Field(ge=1, le=50, description='wie viele (neueste zuerst)')] = 10) -> CallToolResult:
+    """Die letzten code_auftrag-Jobs mit Status."""
+    return code.liste(anzahl)
+
+
+@werkzeug(LOESCHEN)
+def code_abbrechen(job_id: JobId) -> CallToolResult:
+    """Laufenden oder wartenden code_auftrag abbrechen (nur auf Volkers Wunsch)."""
+    return code.abbrechen(job_id)
 
 
 # --- Browser: Server oder Notebook (Playwright MCP, siehe browser.py) -------------------------
