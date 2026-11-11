@@ -12324,7 +12324,7 @@ function _getDispThumb(pattern) {
 
 // ─── Edge Mode ────────────────────────────────────────────────────────
 function _buildEdgesFromGeometry(mesh, angleDeg) {
-  const edgesGeo = new THREE.EdgesGeometry(mesh.geometry, angleDeg ?? _edgeAngleThresh);
+  const edgesGeo = _kantenGeo(mesh.geometry, angleDeg ?? _edgeAngleThresh);
   const ePos = edgesGeo.attributes.position;
   const srcPos = mesh.geometry.attributes.position;
   const EPS = 1e-2;
@@ -21616,6 +21616,44 @@ function buildGeo(type) {
   }
 }
 
+// Kantenlinien wie THREE.EdgesGeometry (r128, gleiche Vertex-Hashes/Paarung), aber
+// Splitter-Dreiecke zählen nicht mit ihrer Ecken-Normale: Manifold-Netze haben an
+// kleinen Kugeln/Reliefs fast entartete Dreiecke (Höhe ≪ 0,1 mm). Schon das Runden
+// beim Speichern (0,001 cm) kippt deren Ecken-Normale → nach dem Laden lange
+// schwarze Striche quer über ebene Flächen (Volker 11.11., Schutzengel mit Punkten).
+// Splitter nehmen stattdessen die mitgespeicherte Normale; ohne die ziehen sie keine Linie.
+const _kgA = new THREE.Vector3(), _kgB = new THREE.Vector3(), _kgC = new THREE.Vector3(), _kgN = new THREE.Vector3(), _kgT = new THREE.Vector3();
+function _kantenGeo(geo, winkel) {
+  const P = geo.getAttribute('position'), I = geo.getIndex(), NA = geo.getAttribute('normal');
+  const n = I ? I.count : P.count, schwelle = Math.cos(THREE.MathUtils.DEG2RAD * (winkel ?? 1));
+  const genau = 1e4, hash = v => Math.round(v.x * genau) + ',' + Math.round(v.y * genau) + ',' + Math.round(v.z * genau);
+  const kanten = {}, out = [], ix = [0, 0, 0], h = ['', '', ''], ecke = [_kgA, _kgB, _kgC];
+  for (let i = 0; i + 2 < n; i += 3) {
+    for (let k = 0; k < 3; k++) { ix[k] = I ? I.getX(i + k) : i + k; ecke[k].fromBufferAttribute(P, ix[k]); h[k] = hash(ecke[k]); }
+    if (h[0] === h[1] || h[1] === h[2] || h[2] === h[0]) continue;   // entartet (wie three.js)
+    _kgN.subVectors(_kgC, _kgB); _kgT.subVectors(_kgA, _kgB); _kgN.cross(_kgT);
+    const zweiA = _kgN.length();
+    const L2 = Math.max(_kgA.distanceToSquared(_kgB), _kgB.distanceToSquared(_kgC), _kgC.distanceToSquared(_kgA)), L = Math.sqrt(L2);
+    let nrm;
+    if (zweiA / L < 0.01 && zweiA < 0.1 * L2) {                     // Splitter: Höhe < 0,1 mm und < 10 % der Länge
+      nrm = null;
+      if (NA) { _kgT.set(0, 0, 0); for (let k = 0; k < 3; k++) { _kgT.x += NA.getX(ix[k]); _kgT.y += NA.getY(ix[k]); _kgT.z += NA.getZ(ix[k]); }
+        if (_kgT.lengthSq() > 1e-12) nrm = _kgT.clone().normalize(); }
+    } else nrm = _kgN.multiplyScalar(1 / zweiA).clone();
+    for (let j = 0; j < 3; j++) {
+      const jn = (j + 1) % 3, vor = h[j] + '_' + h[jn], rueck = h[jn] + '_' + h[j];
+      const e = kanten[rueck];
+      if (e) {
+        if (nrm && e.n && nrm.dot(e.n) <= schwelle) out.push(ecke[j].x, ecke[j].y, ecke[j].z, ecke[jn].x, ecke[jn].y, ecke[jn].z);
+        kanten[rueck] = null;
+      } else if (!(vor in kanten)) kanten[vor] = { i0: ix[j], i1: ix[jn], n: nrm };
+    }
+  }
+  for (const k in kanten) { const e = kanten[k]; if (e) out.push(P.getX(e.i0), P.getY(e.i0), P.getZ(e.i0), P.getX(e.i1), P.getY(e.i1), P.getZ(e.i1)); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+  return g;
+}
+
 // Kanten-Gesprenkel entfernen: Auf Scans/organischen Netzen (Kühlerfigur,
 // Volker 17.10.) überschreiten tausende Mini-Knicke die 30°-Schwelle — als
 // Linien nur schwarze Punkte (Stern + Ring um jede Netz-Spitze). Echte Kanten
@@ -21722,7 +21760,7 @@ function _updateObjEdgeLines(mesh) {
   { const g = mesh.geometry, nTri = g?.attributes?.position ? (g.index ? g.index.count : g.attributes.position.count) / 3 : 0;
     if (nTri > 200000) return; }
   const wf = new THREE.LineSegments(
-    _edgeDespeckle(new THREE.EdgesGeometry(mesh.geometry, (mesh.userData && mesh.userData.edgeAngle) || 30), mesh.geometry),
+    _edgeDespeckle(_kantenGeo(mesh.geometry, (mesh.userData && mesh.userData.edgeAngle) || 30), mesh.geometry),
     new THREE.LineBasicMaterial({ color: 0x000000, depthTest: true })
   );
   wf.userData.isEdgeLines = true;
@@ -84264,8 +84302,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.366';
+const VOLME3D_VERSION = '1.18.367';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.367', date:'2026-11-11', changes:[
+    ['🖊️','<b>Keine schwarzen Striche mehr nach dem Neuladen.</b> Lag beim Öffnen einer neuen Version noch etwas auf der Platte (z. B. der Schutzengel mit Punkten), zogen sich danach lange schwarze Striche über die Fläche. Ursache: Beim Speichern werden die Eckpunkte auf 0,01 mm gerundet, und an kleinen Reliefs kippen dadurch hauchdünne Dreiecke, die die Kantenlinien für scharfe Kanten hielten. Die Kantenlinien beachten solche Splitter-Dreiecke jetzt nicht mehr. Am Modell selbst und an der Druckdatei ändert sich nichts.'],
+  ]},
   { version:'1.18.366', date:'2026-11-11', changes:[
     ['🧩','<b>3MF als Projekt auch für OrcaSlicer, Anycubic Slicer Next, Snapmaker Orca und ElegooSlicer.</b> Beim Speichern als 3MF gab es bisher nur „Als Bambu-Studio-Projekt speichern“ mit Bambu-Druckern. Jetzt wählst du zuerst den <b>Slicer</b>, bei den Orca-Slicern dazu den <b>Hersteller</b> (Anycubic, Snapmaker, Elegoo, Prusa, Creality, Qidi, Flashforge, Sovol, Voron, Artillery, Anker, Bambu Lab), dann Drucker, Filament und Schichthöhe. Die Datei enthält die passenden Profile des Herstellers und öffnet im Slicer als Projekt mit genau diesen Einstellungen statt „nur Geometriedaten“. Mit OrcaSlicer 2.4.2 nachgeprüft.'],
   ]},
