@@ -33,8 +33,9 @@ try {
   ok(pass.ledPasst && pass.led < 0.01 && pass.ges < 0.01, `LED-Teelicht Ø${38} passt in Mulde + Innenraum, Gesicht-Stifte ohne Überschneidung`);
   const r1 = await p.evaluate(async () => {
     await _wchCreate();
-    return objects.map(o => ({ name: o.userData.name, minY: getMeshBox(o).min.y }));
+    return objects.map(o => ({ name: o.userData.name, minY: getMeshBox(o).min.y, linien: o.children.some(c => c.userData && c.userData.isEdgeLines) }));
   });
+  ok(r1.find(t => /Gesicht/.test(t.name)).linien === false && r1.find(t => /Boden/.test(t.name)).linien === true, 'Gesicht ohne schwarze Kantenlinien (Bart bleibt weiß), Bodenplatte behält ihre');
   ok(r1.length === 3 && r1.every(t => Math.abs(t.minY) < 1e-3 || /Gesicht/.test(t.name)), 'Erstellt: ' + r1.map(t => t.name).join(', '));
   await p.evaluate(() => { _newCreate(false); _wchOpen(); _wchSet('hohl', 0); });
   const r1b = await p.evaluate(async () => { await _wchCreate(); const w = await _mfInit(); return objects.map(o => ({ name: o.userData.name, s: _mfUnionObjs(w, [o]).decompose().length })); });
