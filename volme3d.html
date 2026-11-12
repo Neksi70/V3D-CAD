@@ -5866,6 +5866,34 @@ Patrick</textarea>
   </div>
 </div>
 
+<div id="snm-modal" class="g3dm" onclick="if(event.target===this)_snmClose()">
+  <div class="g3box">
+    <div class="g3hdr">⛄ Schneemann<span class="vx" onclick="_snmClose()">✕</span></div>
+    <div class="g3body">
+      <canvas id="snm-canvas" width="200" height="320"></canvas>
+      <div class="g3ctrl">
+        <div class="vrow"><label>Höhe</label> <input type="range" id="snm-hoehe" min="50" max="250" value="120" step="5" oninput="_snmSet('hoehe',this.value)"><span class="vv" id="snmv-hoehe">120</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Anzahl der senkrechten Rillen am Körper">Rillen</label> <input type="range" id="snm-rillen" min="16" max="80" value="48" step="2" oninput="_snmSet('rillen',this.value)"><span class="vv" id="snmv-rillen">48</span></div>
+        <div class="vrow"><label title="0 = glatter Körper">Rillentiefe</label> <input type="range" id="snm-rillenTief" min="0" max="200" value="100" step="10" oninput="_snmSet('rillenTief',this.value)"><span class="vv" id="snmv-rillenTief">100</span><span class="vu">%</span></div>
+        <div class="vrow"><label>Nase</label> <input type="range" id="snm-nase" min="40" max="200" value="100" step="10" oninput="_snmSet('nase',this.value)"><span class="vv" id="snmv-nase">100</span><span class="vu">%</span></div>
+        <div class="vrow"><label title="0 = ohne Bommel">Bommel</label> <input type="range" id="snm-bommel" min="0" max="160" value="100" step="10" oninput="_snmSet('bommel',this.value)"><span class="vv" id="snmv-bommel">100</span><span class="vu">%</span></div>
+        <div class="vtbrow" id="snm-muetze-bg" style="display:flex;gap:4px;margin-bottom:7px">
+          <button class="vtb on" data-v="#7a5236" onclick="_snmStr('muetze','#7a5236')">Mütze braun</button>
+          <button class="vtb" data-v="#a8262f" onclick="_snmStr('muetze','#a8262f')">rot</button>
+          <button class="vtb" data-v="#2f5f4a" onclick="_snmStr('muetze','#2f5f4a')">grün</button>
+          <button class="vtb" data-v="#7b8fa6" onclick="_snmStr('muetze','#7b8fa6')">blaugrau</button>
+        </div>
+        <div class="g3info" id="snm-info"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_snmReset()">Zurücksetzen</button>
+      <button class="btn" onclick="_snmClose()">Abbrechen</button>
+      <button class="btn pri" onclick="_snmCreate()">✓ Erstellen</button>
+    </div>
+  </div>
+</div>
+
 <div id="swa-modal" class="g3dm" onclick="if(event.target===this)_swaClose()">
   <div class="g3box">
     <div class="g3hdr">🔠 Schrift-Aufsteller<span class="vx" onclick="_swaClose()">✕</span></div>
@@ -36976,6 +37004,108 @@ async function _skeCreate(){
   } catch (e) { console.error('Strick-Engel:', e); _progressHide(); notify('Strick-Engel fehlgeschlagen: ' + (e && e.message || e), 'w'); }
 }
 
+// ═══ SCHNEEMANN (⛄ _snm*, 1.18.391) ══════════════════════════════════════════════
+// Nach Bild: Rillen-Körper, glatter Kopf, Karotten-Nase, Rippen-Mütze mit Umschlag, Bommel. Kern 1:1 aus tools/schneemann/snm_core.js.
+// Schneemann (Rillen-Körper, glatter Kopf, Karotten-Nase, Rippen-Mütze mit Umschlag, Bommel) — Distanzfelder,
+// mm, Y oben, Gesicht nach +Z, Standfläche y = 0. Teile je Farbe. Braucht aus der App: _dklH, _dklEll, _dklCone, _lgfSmin, _lgfLevel.
+function _snmFelder(p) {
+  const u = p.hoehe / 106.3,                                               // Gesamthöhe inkl. Bommel = 107,5 u − 1,2 u Standfläche
+   nR = Math.max(8, Math.round(p.rillen)), aR = p.rillenTief * u / 100 * 1.2;
+  const rip = (x, z, n) => { const t = Math.atan2(z, x); return Math.sqrt(Math.abs(Math.cos(n * t / 2))); };   // 1 auf dem Wulst, 0 in der Rille
+  const kopfC = [0, 63 * u, 0], kopfR = 17 * u;
+  const koerper = (x, y, z) => {
+    let d = _dklEll(x, y, z, [0, 29 * u, 0], [30 * u, 29.5 * u, 30 * u]);
+    if (aR > 0 && Math.abs(d) < 3 * aR && y > 1.5 * u) d -= aR * (rip(x, z, nR) - 0.6) * Math.min(1, (y - 1.5 * u) / (3 * u));
+    d = _lgfSmin(d, _dklH(x - kopfC[0], y - kopfC[1], z - kopfC[2]) - kopfR, 3 * u);
+    return Math.max(d, 1.2 * u - y);                                         // Standfläche
+  };
+  const mY0 = 68 * u, mR = 19.5 * u;                                         // Umschlag sitzt über der Kopfmitte → Gesicht bleibt frei
+  const muetze = (x, y, z) => {
+    const r = _dklH(x, z);
+    // Krone: oben gerundet (Ellipsoid ab mY0), Rippen senkrecht
+    let d = _dklEll(x, y, z, [0, mY0 + 6 * u, 0], [mR, 22 * u, mR]); d = Math.max(d, mY0 - y);
+    d -= 0.55 * u * (rip(x, z, 44) - 0.6);
+    // Umschlag: dickerer Ring mit Rippen, unten 45° nach innen (druckt ohne Stütze)
+    let um = Math.max(r - (mR + 1.6 * u) - 0.7 * u * (rip(x, z, 44) - 0.6), y - (mY0 + 9 * u), (mY0 - 2 * u) - y);
+    um = Math.max(um, (r - (mR - 3 * u) - (y - (mY0 - 2 * u))) * 0.7071);   // Unterseite: Kegel 45° von innen (im Kopf) nach außen
+    return _lgfSmin(d, um, 1.2 * u);
+  };
+  const nase = (x, y, z) => _dklCone(x, y, z, [0, 60.5 * u, kopfR * 0.78], [0, 59.5 * u, kopfR + 9 * u * p.nase / 100], 3.2 * u, 0.7 * u);   // direkt unter dem Umschlag
+  const bommelC = [0, mY0 + 6 * u + 22 * u + 4 * u, 0], bR = 7.5 * u * p.bommel / 100;
+  const bommel = (x, y, z) => _dklH(x - bommelC[0], y - bommelC[1], z - bommelC[2]) - bR;
+  const B = (x0, y0, z0, x1, y1, z1) => [x0 * u, y0 * u, z0 * u, x1 * u, y1 * u, z1 * u];
+  return { u, teile: [['koerper', koerper, B(-32, 0, -32, 32, 81, 32)], ['muetze', muetze, B(-24, 62, -24, 24, 98, 24)],
+    ['nase', nase, B(-5, 55, 10, 5, 65, 29 + 9 * p.nase / 100)], ...(p.bommel > 0 ? [['bommel', bommel, [-bR - u, bommelC[1] - bR - u, -bR - u, bR + u, bommelC[1] + bR + u, bR + u]]] : [])] };
+}
+function _snmBuild(w, p, q) {
+  const M = w.Manifold, tmp = [], keep = x => { tmp.push(x); return x; };
+  try {
+    const F = _snmFelder(p), mf = {};
+    for (const [n, f, bb] of F.teile) {
+      const V = (bb[3] - bb[0]) * (bb[4] - bb[1]) * (bb[5] - bb[2]), ziel = q === 'fein' ? (n === 'koerper' || n === 'muetze' ? 1.8e6 : 3e5) : 1.2e5;
+      mf[n] = keep(_lgfLevel(w, f, bb, Math.max(0.3, Math.cbrt(V / ziel))));
+    }
+    // Vorrang: Mütze > Kopf/Körper, Nase vor dem Körper, Bommel auf der Mütze
+    mf.koerper = keep(M.difference(keep(M.difference(mf.koerper, mf.muetze)), mf.nase));
+    mf.nase = keep(M.difference(mf.nase, mf.muetze));
+    if (mf.bommel) mf.bommel = keep(M.difference(mf.bommel, mf.muetze));
+    for (const n of Object.keys(mf)) { const st = mf[n].decompose(); if (st.length < 2) { st.forEach(x => x.delete()); continue; }
+      const v = st.map(x => x.volume()), mx = Math.max(...v), gut = st.filter((x, i) => v[i] >= Math.max(2, mx * 0.005));
+      mf[n] = keep(gut.length > 1 ? M.union(gut) : gut[0].translate([0, 0, 0])); st.forEach(x => x.delete()); }
+    const out = { u: F.u }; for (const n of Object.keys(mf)) out[n] = mf[n].translate([0, -1.2 * F.u, 0]);   // Standfläche auf y = 0
+    return out;
+  } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
+}
+const _snmP = { hoehe: 120, rillen: 48, rillenTief: 100, nase: 100, bommel: 100, muetze: '#7a5236', koerper: '#f2f0ea' };
+const _SNM_DEF = { ..._snmP };
+const _SNM_FARBE = p => ({ koerper: p.koerper, muetze: p.muetze, nase: '#e8792b', bommel: p.koerper });
+const _SNM_NAME = { koerper: 'Schneemann', muetze: 'Schneemann Mütze', nase: 'Schneemann Nase', bommel: 'Schneemann Bommel' };
+let _snmRT = null;
+function _snmPreviewGeo(){
+  if (!_mfWasm) throw new Error('Manifold lädt noch');
+  const r = _snmBuild(_mfWasm, _snmP, 'vorschau'), F = _SNM_FARBE(_snmP), ks = Object.keys(F).filter(k => r[k]);
+  let n = 0; const geos = ks.map(k => { const g = _mfToGeo(r[k]).toNonIndexed(); r[k].delete(); n += g.attributes.position.count; return [g, F[k]]; });
+  const pos = new Float32Array(n * 3), col = new Float32Array(n * 3); let o = 0;
+  for (const [g, hex] of geos) { const a = g.attributes.position.array, c = new THREE.Color(hex); pos.set(a, o * 3);
+    for (let i = 0; i < a.length / 3; i++) { col[(o + i) * 3] = c.r; col[(o + i) * 3 + 1] = c.g; col[(o + i) * 3 + 2] = c.b; } o += a.length / 3; g.dispose(); }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.scale(0.1, 0.1, 0.1); geo.computeVertexNormals(); return geo;
+}
+function _snmOpen(){ document.getElementById('snm-modal').classList.add('show'); _snmSync(); _mfInit().then(_snmBoot).catch(() => notify('Rechenkern konnte nicht geladen werden', 'w')); }
+function _snmBoot(){ const m = document.getElementById('snm-modal'); if (!m || !m.classList.contains('show')) return;
+  if (!_gpv['snm']) _gpvInit('snm', () => _snmPreviewGeo()); else { _gpvUpdate('snm'); if (!_gpv['snm'].anim) _gpvLoop('snm'); } }
+function _snmClose(){ document.getElementById('snm-modal').classList.remove('show'); _gpvStop('snm'); }
+function _snmRepaint(){ if (_snmRT) clearTimeout(_snmRT); _snmRT = setTimeout(() => { _snmRT = null; if (!_mfWasm) return; if (_gpv['snm']) _gpvUpdate('snm'); else _snmBoot(); }, 300); }
+function _snmSet(k, v){ _snmP[k] = parseFloat(v); _snmSync(); _snmRepaint(); }
+function _snmStr(k, v){ _snmP[k] = v; _snmSync(); _snmRepaint(); }
+function _snmReset(){ Object.assign(_snmP, _SNM_DEF); _snmSync(); _snmRepaint(); }
+function _snmSync(){
+  for (const k of ['hoehe', 'rillen', 'rillenTief', 'nase', 'bommel']) { const s = document.getElementById('snm-' + k), t = document.getElementById('snmv-' + k); if (s) s.value = _snmP[k]; if (t) t.textContent = _snmP[k]; }
+  document.querySelectorAll('#snm-muetze-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === _snmP.muetze));
+  const el = document.getElementById('snm-info'); if (!el) return;
+  el.innerHTML = `Schneemann ca. ${_snmP.hoehe} mm hoch. Teile je Farbe: Körper, Mütze, Nase` + (_snmP.bommel > 0 ? ', Bommel' : '') + ' – mit AMS zusammen drucken.' +
+    '<br><b>Druck stehend, ohne Stützen:</b> Mützen-Umschlag unten 45° angeschrägt, Nase kurz. Ohne AMS: Mütze und Nase einzeln drucken und aufkleben.';
+}
+async function _snmCreate(){
+  const p = { ..._snmP };
+  _progressShow('Schneemann wird gebaut…'); _progressSet(8); _progressCreep(90, 0.5);
+  try {
+    const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
+    const r = _snmBuild(w, p, 'fein'), F = _SNM_FARBE(p);
+    saveUndo();
+    typeCounts['schneemann'] = (typeCounts['schneemann'] || 0) + 1;
+    const nr = typeCounts['schneemann'], meshes = [];
+    for (const k of Object.keys(F)) { if (!r[k]) continue;
+      const geo = _mfToGeo(r[k]).toNonIndexed(); r[k].delete(); geo.scale(0.1, 0.1, 0.1); _creaseNormals(geo, 70);
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(F[k]), roughness: 0.75, metalness: 0.02, side: THREE.DoubleSide }));
+      mesh.castShadow = mesh.receiveShadow = true;
+      mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: _SNM_NAME[k] + ' #' + nr, color: F[k], isHole: false, fillet: 0, chamfer: 0, displacementPattern: 'keine', schneemannParams: p, edgeAngle: 85, noEdgeLines: k !== 'nase' };
+      scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh); meshes.push(mesh); }
+    selectObjs(meshes); updateTree(); fitToObjects(meshes);
+    _progressDone(); notify('⛄ Schneemann erstellt ✓ stehend, ohne Stützen — Teile je Farbe mit AMS', 'ok'); _snmClose();
+  } catch (e) { console.error('Schneemann:', e); _progressHide(); notify('Schneemann fehlgeschlagen: ' + (e && e.message || e), 'w'); }
+}
+
 // ═══ ADVENTSKALENDER-GENERATOR (🎁 _adv*) ═════════════════════════════════════
 // ═══ ADVENTSKALENDER-GENERATOR (🎁 _adv*) ═════════════════════════════════════
 // Kern (Manifold, mm), 1:1 in volme3d.html eingebettet. Test in Node: tools/adventskalender/test_core.mjs
@@ -50477,6 +50607,7 @@ const _STARTERS = [
   {i:'🫧',t:'Bubble-Buchstaben',d:'Kissen-Buchstaben für die Wand: beliebiger Text, aufgeblasen mit flacher Rückseite, je Buchstabe ein Teil – Klebeband, Magnet oder Schlüsselloch',run:()=>_bubOpen()},
   {i:'😇',t:'Strick-Engel',d:'Engel mit Strick-Kleid, Strick-Flügeln und Strick-Haaren, glattes Gesicht mit Knopfaugen, gefaltete Hände, goldener Heiligenschein – Teile je Farbe',run:()=>_skeOpen()},
   {i:'🎄',t:'Kugel-Anhänger',d:'Flache Weihnachtskugel mit Rippen-Käfig, Schleife und Öse, Schreibschrift (Frohe Weihnachten, Name …) in zweiter Farbe – ohne Stützen',run:()=>_kglOpen()},
+  {i:'⛄',t:'Schneemann',d:'Rillen-Körper, glatter Kopf, Karotten-Nase, gerippte Mütze mit Umschlag und Bommel – Teile je Farbe, stehend ohne Stützen',run:()=>_snmOpen()},
   {i:'🔠',t:'Schrift-Aufsteller',d:'Dicke Blockschrift (WEIH/NACH/TEN, FEST, XMAS) gleich breit gestapelt, Schreibschrift-Wort obendrauf in zweiter Farbe – ohne Stützen',run:()=>_swaOpen()},
   {i:'🏠',t:'Lichthaus',d:'Satteldach-Haus mit Lichtschlitzen oder Fenstern, Bodenplatte mit LED-Teelicht-Halter – ohne Stützen',run:()=>_lhsOpen()},
   {i:'🪢',t:'Kordel-Topf',d:'Übertopf, Vase oder Schale aus gedrehten Seilringen, loses Seilende über den Rand – ohne Stützen',run:()=>_kdlOpen()},
@@ -50662,7 +50793,7 @@ function _maybeShowStarter(){
 // 🎄 Rubrik Weihnachten (Volker 9.11.26: „solche Sachen in eine Rubrik Weihnachten schieben, da kommt
 // noch einiges hinterher“). Neue Weihnachts-Generatoren NUR hier eintragen — die Liste speist das
 // Thema auf der Generatoren-Seite und den Block oben im Generator-Menü.
-const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
+const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Schneemann', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
   'Dackel-Kerzenhalter', 'Mops-Kerzenhalter', 'Schwein-Kerzenhalter', 'Spaniel-Kerzenhalter', 'Islandpferd-Kerzenhalter'];
 const _GEN_THEMEN = [
   ['🎄 Weihnachten', _GEN_WEIHNACHTEN],
@@ -85508,8 +85639,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.390';
+const VOLME3D_VERSION = '1.18.391';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.391', date:'2026-11-12', changes:[
+    ['⛄','<b>Neu: Schneemann</b> (Weihnachten) – Körper mit senkrechten Rillen, glatter Kopf, Karotten-Nase, gerippte Mütze mit Umschlag und Bommel; Teile je Farbe, stehend ohne Stützen'],
+  ]},
   { version:'1.18.390', date:'2026-11-12', changes:[
     ['🎄','<b>Neu: Kugel-Anhänger</b> (Weihnachten) – flache Weihnachtskugel mit Rippen-Käfig, Kappe, Schleife und Öse; Schreibschrift (Merry Christmas, Frohe Weihnachten, Für dich, Name …) als zweite Farbe quer darüber. Flach drucken, ohne Stützen'],
   ]},
@@ -98291,6 +98425,7 @@ const CMDK = [
   {i:'🫧',g:'Generator',t:'Bubble-Buchstaben',k:'bubble buchstaben letters puffy kissen aufgeblasen ballon name wand deko kinderzimmer alphabet magnet schlüsselloch fuzzy plüsch',run:()=>_bubOpen()},
   {i:'😇',g:'Generator',t:'Strick-Engel',k:'engel strick gestrickt wolle heiligenschein flügel weihnachten figur deko gebet hände',run:()=>_skeOpen()},
   {i:'🎄',g:'Generator',t:'Kugel-Anhänger',k:'kugel anhänger weihnachtskugel christbaumkugel ornament baumschmuck schleife frohe weihnachten merry christmas name geschenkanhänger',run:()=>_kglOpen()},
+  {i:'⛄',g:'Generator',t:'Schneemann',k:'schneemann snowman winter weihnachten mütze bommel karotte nase rillen figur deko',run:()=>_snmOpen()},
   {i:'🔠',g:'Generator',t:'Schrift-Aufsteller',k:'schrift aufsteller schriftzug frohe weihnachten frohes fest merry xmas blockschrift schreibschrift text deko',run:()=>_swaOpen()},
   {i:'🏠',g:'Generator',t:'Lichthaus',k:'haus lichthaus häuschen windlicht led teelicht lichterkette weihnachten advent winter deko schlitze fenster satteldach giebel',run:()=>_lhsOpen()},
   {i:'🎄',g:'Generator',t:'Weihnachts-Studio',k:'weihnachts studio weihnachten baum tanne mütze nikolausmütze glocke licht lampe teelicht dose anhänger sockel name jahr inschrift stern noel advent deko',run:()=>_wstOpen()},
