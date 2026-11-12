@@ -25,6 +25,9 @@ try {
   const r2 = await p.evaluate(async () => { await _elcCreate(); const w = await _mfInit(); return objects.map(o => { const m = _mfUnionObjs(w, [o]), bb = getMeshBox(o); return { name: o.userData.name, s: m.decompose().length, g: m.genus(), h: bb.getSize(new THREE.Vector3()).y * 10, minY: bb.min.y }; }); });
   ok(r2.length === 2 && r2.every(t => Math.abs(t.minY) < 1e-3 && t.h < 40), 'halbiert: ' + r2.map(t => `${t.name} (${t.h.toFixed(0)} mm hoch liegend, ${t.s} Teil(e))`).join(', '));
   ok(r2.every(t => t.s <= 2), 'Hälften zerfallen nicht in viele Stücke');
+  const hk = await p.evaluate(async () => { const w = await _mfInit(), a = _elcBuild(w, { ..._elcP, teilen: 0, muster: 'haekel', geweihForm: 'hand' }, 'vorschau'), z = _elcBuild(w, { ..._elcP, teilen: 0 }, 'vorschau');
+    const r = { s: a.elch.decompose().length, va: a.elch.volume(), vz: z.elch.volume(), h: a.elch.boundingBox().max[1] }; a.elch.delete(); z.elch.delete(); return r; });
+  ok(hk.s === 1 && hk.va > hk.vz * 0.5, `Häkelmuster + Hand-Geweih: 1 Stück, ${Math.round(hk.h)} mm hoch`);
   await p.evaluate(() => undo());
   ok(await p.evaluate(() => objects.length === 0), 'Rückgängig entfernt die Teile');
   ok(errs.length === 0, 'keine Seitenfehler ' + errs.slice(0, 3).join(' | '));
