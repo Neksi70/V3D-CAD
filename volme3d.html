@@ -6022,6 +6022,24 @@ Patrick</textarea>
   </div>
 </div>
 
+<div id="wmn-modal" class="g3dm" onclick="if(event.target===this)_wmnClose()">
+  <div class="g3box">
+    <div class="g3hdr">🎅 Weihnachtsmann (sitzend)<span class="vx" onclick="_wmnClose()">✕</span></div>
+    <div class="g3body">
+      <canvas id="wmn-canvas" width="200" height="320"></canvas>
+      <div class="g3ctrl">
+        <div class="vrow"><label>Höhe</label> <input type="range" id="wmn-hoehe" min="50" max="250" value="120" step="5" oninput="_wmnSet('hoehe',this.value)"><span class="vv" id="wmnv-hoehe">120</span><span class="vu">mm</span></div>
+        <div class="g3info" id="wmn-info"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_wmnReset()">Zurücksetzen</button>
+      <button class="btn" onclick="_wmnClose()">Abbrechen</button>
+      <button class="btn pri" onclick="_wmnCreate()">✓ Erstellen</button>
+    </div>
+  </div>
+</div>
+
 <div id="swa-modal" class="g3dm" onclick="if(event.target===this)_swaClose()">
   <div class="g3box">
     <div class="g3hdr">🔠 Schrift-Aufsteller<span class="vx" onclick="_swaClose()">✕</span></div>
@@ -37441,6 +37459,105 @@ async function _zwiCreate(){
   } catch (e) { console.error('Zipfel-Wichtel:', e); _progressHide(); notify('Zipfel-Wichtel fehlgeschlagen: ' + (e && e.message || e), 'w'); }
 }
 
+// ═══ WEIHNACHTSMANN (🎅 _wmn*, 1.18.398) ═══════════════════════════════════════════
+// Nach Bild: sitzender Weihnachtsmann, vier Farbteile. Kern 1:1 aus tools/weihnachtsmann/wmn_core.js.
+// Sitzender Weihnachtsmann — Distanzfelder, mm, Y oben, Gesicht +Z, Standfläche y = 0. Teile je Farbe:
+// Rot (Körper, Mütze, Arme), Weiß (Bart, Umschlag, Bommel, Ärmelbündchen), Haut (Gesichtsband, Nase), Schwarz (Stiefel, Fäustlinge).
+// Braucht: _dklH, _dklEll, _dklCone, _lgfSmin, _lgfLevel, _zwiPolyD (Zipfel-Wichtel).
+function _wmnFelder(p) {
+  const u = p.hoehe / 99;
+  const kE = { c: [0, 31 * u, 0], r: [23 * u, 31 * u, 20 * u] };
+  const koerperG = (x, y, z) => Math.max(_dklEll(x, y, z, kE.c, kE.r), -y);
+  const hutY = 64 * u;                                                     // hoch genug, dass das Gesichtsband zwischen Bart und Umschlag sichtbar bleibt
+  const hut = (x, y, z) => Math.max(_dklEll(x, y, z, [0, hutY, -1 * u], [18 * u, 26 * u, 16.5 * u]), hutY - y);
+  const arm = (x, y, z) => { const ax = Math.abs(x); return _dklCone(ax, y, z, [17 * u, 40 * u, 0], [26 * u, 21 * u, 6 * u], 6 * u, 5.5 * u); };
+  const rot = (x, y, z) => _lgfSmin(_lgfSmin(koerperG(x, y, z), hut(x, y, z), 2 * u), arm(x, y, z), 2.5 * u);
+  const ring = (x, y, z, yc, r, h) => { const rr = _dklH(x, z), qx = Math.max(rr - (r - 1.5 * u), 0), qy = Math.max(Math.abs(y - yc) - (h / 2 - 1.5 * u), 0); return _dklH(qx, qy) - 1.5 * u; };
+  const umschlag = (x, y, z) => ring(x, y, z, hutY + 1.5 * u, 19.6 * u, 7 * u);
+  const bommel = (x, y, z) => _dklH(x, y - 91 * u, z + 1 * u) - 6 * u;
+  const buendchen = (x, y, z) => { const ax = Math.abs(x), dx = ax - 25.4 * u, dy = y - 22.2 * u, dz = z - 5.6 * u; return Math.max(_dklH(dx, dy, dz) - 6.6 * u, Math.abs((dx * 9 - dy * 19 + dz * 6) / 21.9) - 1.6 * u); };
+  const BP = [[-15, 55.5], [15, 55.5], [14, 42], [8, 26], [0, 15], [-8, 26], [-14, 42]].map(([x, y]) => [x * u, y * u]);
+  const bart = (x, y, z) => { if (z < 0) return 10 * u; const d = koerperG(x, y, z), sh = Math.max(d - 1.8 * u, -d - 0.6 * u); return Math.max(sh, _zwiPolyD(BP, x, y)); };
+  const weiss = (x, y, z) => Math.min(umschlag(x, y, z), bommel(x, y, z), buendchen(x, y, z), bart(x, y, z));
+  const gesicht = (x, y, z) => { if (z < 0) return 10 * u; const d = koerperG(x, y, z), sh = Math.max(d - 0.05 * u, -d - 1.2 * u);
+    return Math.max(sh, Math.abs(x) - 14 * u, Math.abs(y - 59 * u) - 4.5 * u); };
+  const nY = 57.5 * u, nZ = 20 * u * Math.sqrt(Math.max(0, 1 - ((nY - kE.c[1]) / kE.r[1]) ** 2)) + 1.6 * u;
+  const nase = (x, y, z) => _dklH(x, y - nY, z - nZ) - 4.2 * u;
+  const haut = (x, y, z) => Math.min(gesicht(x, y, z), nase(x, y, z));
+  const stiefel = (x, y, z) => { const ax = Math.abs(x); return Math.max(_dklCone(ax, y, z, [9.5 * u, 6.5 * u, 6 * u], [10.5 * u, 6.5 * u, 22 * u], 6.5 * u, 6.8 * u), -y); };
+  const faust = (x, y, z) => _dklH(Math.abs(x) - 27.5 * u, y - 17.5 * u, z - 7.5 * u) - 5 * u;
+  const schwarz = (x, y, z) => Math.min(stiefel(x, y, z), faust(x, y, z));
+  const B = (x0, y0, z0, x1, y1, z1) => [x0 * u, y0 * u, z0 * u, x1 * u, y1 * u, z1 * u];
+  return { u, teile: [['rot', rot, B(-34, 0, -22, 34, 92, 22)], ['weiss', weiss, B(-34, 12, -22, 34, 99, 24)], ['haut', haut, B(-16, 50, 4, 16, 66, 26)], ['schwarz', schwarz, B(-34, 0, -8, 34, 24, 30)]] };
+}
+function _wmnBuild(w, p, q) {
+  const M = w.Manifold, tmp = [], keep = x => { tmp.push(x); return x; };
+  try {
+    const F = _wmnFelder(p), mf = {};
+    for (const [n, f, bb] of F.teile) {
+      const V = (bb[3] - bb[0]) * (bb[4] - bb[1]) * (bb[5] - bb[2]), ziel = q === 'fein' ? (n === 'haut' ? 3e5 : 1.6e6) : 1.2e5;
+      mf[n] = keep(_lgfLevel(w, f, bb, Math.max(0.3, Math.cbrt(V / ziel))));
+    }
+    // Vorrang: Schwarz > Haut > Weiß > Rot
+    mf.haut = keep(M.difference(mf.haut, mf.schwarz));
+    mf.weiss = keep(M.difference(keep(M.difference(mf.weiss, mf.schwarz)), mf.haut));
+    mf.rot = keep(M.difference(keep(M.difference(keep(M.difference(mf.rot, mf.schwarz)), mf.haut)), mf.weiss));
+    for (const n of Object.keys(mf)) { const st = mf[n].decompose(); if (st.length < 2) { st.forEach(x => x.delete()); continue; }
+      const v = st.map(x => x.volume()), mx = Math.max(...v), gut = st.filter((x, i) => v[i] >= Math.max(2, mx * 0.005));
+      mf[n] = keep(gut.length > 1 ? M.union(gut) : gut[0].translate([0, 0, 0])); st.forEach(x => x.delete()); }
+    const out = { u: F.u }; for (const n of Object.keys(mf)) out[n] = mf[n].translate([0, 0, 0]);
+    return out;
+  } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
+}
+
+const _wmnP = { hoehe: 120 };
+const _WMN_DEF = { ..._wmnP };
+const _WMN_FARBE = { rot: '#c8202a', weiss: '#f4f2ec', haut: '#e8c49a', schwarz: '#262626' };
+const _WMN_NAME = { rot: 'Weihnachtsmann Rot', weiss: 'Weihnachtsmann Weiß', haut: 'Weihnachtsmann Gesicht', schwarz: 'Weihnachtsmann Stiefel + Fäustlinge' };
+let _wmnRT = null;
+function _wmnPreviewGeo(){
+  if (!_mfWasm) throw new Error('Manifold lädt noch');
+  const r = _wmnBuild(_mfWasm, _wmnP, 'vorschau'), ks = Object.keys(_WMN_FARBE).filter(k => r[k]);
+  let n = 0; const geos = ks.map(k => { const g = _mfToGeo(r[k]).toNonIndexed(); r[k].delete(); n += g.attributes.position.count; return [g, _WMN_FARBE[k]]; });
+  const pos = new Float32Array(n * 3), col = new Float32Array(n * 3); let o = 0;
+  for (const [g, hex] of geos) { const a = g.attributes.position.array, c = new THREE.Color(hex); pos.set(a, o * 3);
+    for (let i = 0; i < a.length / 3; i++) { col[(o + i) * 3] = c.r; col[(o + i) * 3 + 1] = c.g; col[(o + i) * 3 + 2] = c.b; } o += a.length / 3; g.dispose(); }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.scale(0.1, 0.1, 0.1); geo.computeVertexNormals(); return geo;
+}
+function _wmnOpen(){ document.getElementById('wmn-modal').classList.add('show'); _wmnSync(); _mfInit().then(_wmnBoot).catch(() => notify('Rechenkern konnte nicht geladen werden', 'w')); }
+function _wmnBoot(){ const m = document.getElementById('wmn-modal'); if (!m || !m.classList.contains('show')) return;
+  if (!_gpv['wmn']) _gpvInit('wmn', () => _wmnPreviewGeo()); else { _gpvUpdate('wmn'); if (!_gpv['wmn'].anim) _gpvLoop('wmn'); } }
+function _wmnClose(){ document.getElementById('wmn-modal').classList.remove('show'); _gpvStop('wmn'); }
+function _wmnRepaint(){ if (_wmnRT) clearTimeout(_wmnRT); _wmnRT = setTimeout(() => { _wmnRT = null; if (!_mfWasm) return; if (_gpv['wmn']) _gpvUpdate('wmn'); else _wmnBoot(); }, 300); }
+function _wmnSet(k, v){ _wmnP[k] = parseFloat(v); _wmnSync(); _wmnRepaint(); }
+function _wmnReset(){ Object.assign(_wmnP, _WMN_DEF); _wmnSync(); _wmnRepaint(); }
+function _wmnSync(){
+  { const s = document.getElementById('wmn-hoehe'), t = document.getElementById('wmnv-hoehe'); if (s) s.value = _wmnP.hoehe; if (t) t.textContent = _wmnP.hoehe; }
+  const el = document.getElementById('wmn-info'); if (!el) return;
+  el.innerHTML = `Weihnachtsmann ca. ${_wmnP.hoehe} mm hoch, sitzend. Vier Farbteile: Rot, Weiß (Bart, Umschlag, Bommel, Bündchen), Haut (Gesicht, Nase), Schwarz (Stiefel, Fäustlinge) – mit AMS zusammen drucken.` +
+    '<br><b>Druck stehend mit Baumstützen</b> unter Armen, Stiefeln, Umschlag und Bommel.';
+}
+async function _wmnCreate(){
+  const p = { ..._wmnP };
+  _progressShow('Weihnachtsmann wird gebaut…'); _progressSet(8); _progressCreep(90, 0.5);
+  try {
+    const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
+    const r = _wmnBuild(w, p, 'fein');
+    saveUndo();
+    typeCounts['weihnachtsmann'] = (typeCounts['weihnachtsmann'] || 0) + 1;
+    const nr = typeCounts['weihnachtsmann'], meshes = [];
+    for (const k of Object.keys(_WMN_FARBE)) { if (!r[k]) continue;
+      const geo = _mfToGeo(r[k]).toNonIndexed(); r[k].delete(); geo.scale(0.1, 0.1, 0.1); _creaseNormals(geo, 70);
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(_WMN_FARBE[k]), roughness: 0.7, metalness: 0.02, side: THREE.DoubleSide }));
+      mesh.castShadow = mesh.receiveShadow = true;
+      mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: _WMN_NAME[k] + ' #' + nr, color: _WMN_FARBE[k], isHole: false, fillet: 0, chamfer: 0, displacementPattern: 'keine', weihnachtsmannParams: p, edgeAngle: 70 };
+      scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh); meshes.push(mesh); }
+    selectObjs(meshes); updateTree(); fitToObjects(meshes);
+    _progressDone(); notify('🎅 Weihnachtsmann erstellt ✓ vier Farbteile, stehend mit Baumstützen', 'ok'); _wmnClose();
+  } catch (e) { console.error('Weihnachtsmann:', e); _progressHide(); notify('Weihnachtsmann fehlgeschlagen: ' + (e && e.message || e), 'w'); }
+}
+
 // ═══ ADVENTSKALENDER-GENERATOR (🎁 _adv*) ═════════════════════════════════════
 // ═══ ADVENTSKALENDER-GENERATOR (🎁 _adv*) ═════════════════════════════════════
 // Kern (Manifold, mm), 1:1 in volme3d.html eingebettet. Test in Node: tools/adventskalender/test_core.mjs
@@ -51150,6 +51267,7 @@ const _STARTERS = [
   {i:'🌀',t:'Spiral-Baum',d:'Weihnachtsbaum als Spiralband um einen Kegel, Fußring unten, Stern oben – stehend mit Baumstützen',run:()=>_spbOpen()},
   {i:'🚪',t:'Wichtel-Türecke',d:'Wichtel-Silhouetten als Türecke (L-Rahmen für die Türzarge) oder Aufsteller mit Steckfuß – Bart, Mützen-Streifen und Nasen als erhabene zweite Farbe',run:()=>_wsiOpen()},
   {i:'🧑‍🎄',t:'Zipfel-Wichtel',d:'Hoher Wichtel (Christmas Gnome): Holzrillen-Körper, rote Zipfelmütze mit weißem Umschlag und Bommel, Bart vorn, Holznase – Teile je Farbe',run:()=>_zwiOpen()},
+  {i:'🎅',t:'Weihnachtsmann',d:'Sitzender Weihnachtsmann mit Mütze, V-Bart, Gesichtsband, Armen und Stiefeln – vier Farbteile',run:()=>_wmnOpen()},
   {i:'🔠',t:'Schrift-Aufsteller',d:'Dicke Blockschrift (WEIH/NACH/TEN, FEST, XMAS) gleich breit gestapelt, Schreibschrift-Wort obendrauf in zweiter Farbe – ohne Stützen',run:()=>_swaOpen()},
   {i:'🏠',t:'Lichthaus',d:'Satteldach-Haus mit Lichtschlitzen oder Fenstern, Bodenplatte mit LED-Teelicht-Halter – ohne Stützen',run:()=>_lhsOpen()},
   {i:'🪢',t:'Kordel-Topf',d:'Übertopf, Vase oder Schale aus gedrehten Seilringen, loses Seilende über den Rand – ohne Stützen',run:()=>_kdlOpen()},
@@ -51335,7 +51453,7 @@ function _maybeShowStarter(){
 // 🎄 Rubrik Weihnachten (Volker 9.11.26: „solche Sachen in eine Rubrik Weihnachten schieben, da kommt
 // noch einiges hinterher“). Neue Weihnachts-Generatoren NUR hier eintragen — die Liste speist das
 // Thema auf der Generatoren-Seite und den Block oben im Generator-Menü.
-const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Stern-Anhänger', 'Schneemann', 'Kugelkranz', 'Spiral-Baum', 'Wichtel-Türecke', 'Zipfel-Wichtel', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
+const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Stern-Anhänger', 'Schneemann', 'Kugelkranz', 'Spiral-Baum', 'Wichtel-Türecke', 'Zipfel-Wichtel', 'Weihnachtsmann', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
   'Dackel-Kerzenhalter', 'Mops-Kerzenhalter', 'Schwein-Kerzenhalter', 'Spaniel-Kerzenhalter', 'Islandpferd-Kerzenhalter'];
 const _GEN_THEMEN = [
   ['🎄 Weihnachten', _GEN_WEIHNACHTEN],
@@ -86262,8 +86380,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.397';
+const VOLME3D_VERSION = '1.18.398';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.398', date:'2026-11-12', changes:[
+    ['🎅','<b>Neu: Weihnachtsmann</b> (Weihnachten) – sitzend mit Mütze, Umschlag und Bommel, V-Bart, Gesichtsband mit Nase, Armen mit Bündchen und Fäustlingen, Stiefeln; vier Farbteile für AMS'],
+  ]},
   { version:'1.18.397', date:'2026-11-12', changes:[
     ['🧑‍🎄','<b>Neu: Zipfel-Wichtel</b> (Weihnachten, „Christmas Gnome“) – Körper mit Holzrillen, rote Zipfelmütze mit weißem Umschlag und Bommel, Bart als Auflage vorn, Holznase; Teile je Farbe für AMS'],
   ]},
@@ -99072,6 +99193,7 @@ const CMDK = [
   {i:'🌀',g:'Generator',t:'Spiral-Baum',k:'spiral baum weihnachtsbaum tannenbaum spirale band stern deko modern',run:()=>_spbOpen()},
   {i:'🚪',g:'Generator',t:'Wichtel-Türecke',k:'türecke tür ecke türzarge wichtel gnome silhouette aufsteller weihnachten deko zwerge',run:()=>_wsiOpen()},
   {i:'🧑‍🎄',g:'Generator',t:'Zipfel-Wichtel',k:'wichtel gnome christmas zipfelmütze bart holz rillen weihnachten figur skandinavisch tomte',run:()=>_zwiOpen()},
+  {i:'🎅',g:'Generator',t:'Weihnachtsmann',k:'weihnachtsmann santa claus nikolaus figur sitzend bart mütze weihnachten',run:()=>_wmnOpen()},
   {i:'🔠',g:'Generator',t:'Schrift-Aufsteller',k:'schrift aufsteller schriftzug frohe weihnachten frohes fest merry xmas blockschrift schreibschrift text deko',run:()=>_swaOpen()},
   {i:'🏠',g:'Generator',t:'Lichthaus',k:'haus lichthaus häuschen windlicht led teelicht lichterkette weihnachten advent winter deko schlitze fenster satteldach giebel',run:()=>_lhsOpen()},
   {i:'🎄',g:'Generator',t:'Weihnachts-Studio',k:'weihnachts studio weihnachten baum tanne mütze nikolausmütze glocke licht lampe teelicht dose anhänger sockel name jahr inschrift stern noel advent deko',run:()=>_wstOpen()},
