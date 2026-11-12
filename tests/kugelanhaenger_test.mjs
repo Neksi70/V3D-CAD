@@ -34,6 +34,16 @@ try {
   fs.writeFileSync('/tmp/kgl_k.bin', Buffer.from(new Float32Array(vl.bin[0]).buffer)); fs.writeFileSync('/tmp/kgl_t.bin', Buffer.from(new Float32Array(vl.bin[1]).buffer)); delete vl.bin;
   ok(Object.values(vl).every(v => v.lose === 0 && v.ov < 0.01) && vl.leer.k === 1, 'Käfig: kein loses Stück (Stücke in Buchstabenschleifen hängen am Text), keine Überlappung: ' + JSON.stringify(vl));
   ok(vl.frohe.zeilen === 2 && vl.fuer.zeilen === 2 && vl.leer.t === 0, 'Text: 2 Zeilen, „ohne Text“ ohne Textteil');
+  const sv = await p.evaluate(async () => { const w = await _mfInit(), r = _kglBuild(w, { ..._kglP, form: 'stern', text: 'Merry\nChristmas', groesse: 120 }, _kglText);
+    const bin = m => { const me = m.getMesh(), V = me.vertProperties, T = me.triVerts, np = me.numProp, a = []; for (let i = 0; i < T.length; i++) { const q = T[i] * np; a.push(V[q], V[q + 1], V[q + 2]); } return a; };
+    const st = r.kaefig.decompose(), vols = st.map(q => q.volume()), haupt = st[vols.indexOf(Math.max(...vols))];
+    const lose = st.filter(q => q !== haupt && q.minGap(r.text, 1) > 0.01 && q.minGap(r.lamellen, 1) > 0.01).length;
+    const o = { k: st.length, lose, lam: r.lamellen.decompose().length, lamGap: Math.max(...r.lamellen.decompose().map(q => Math.min(q.minGap(r.kaefig, 1), q.minGap(r.text, 1)))),
+      ov: w.Manifold.intersection(r.kaefig, r.lamellen).volume() + w.Manifold.intersection(r.text, r.lamellen).volume() + w.Manifold.intersection(r.kaefig, r.text).volume(),
+      lamH: r.lamellen.boundingBox().max[2], bin: [bin(r.kaefig), bin(r.lamellen), bin(r.text)] };
+    return o; });
+  ['k', 'l', 't'].forEach((n, i) => fs.writeFileSync(`/tmp/st_${n}.bin`, Buffer.from(new Float32Array(sv.bin[i]).buffer))); delete sv.bin;
+  ok(sv.lose === 0 && sv.lamGap < 0.01 && sv.ov < 0.01 && sv.lamH < 2.5, 'Stern: Rahmen/Lamellen/Text ohne Überlappung, jede Lamelle hängt an, Lamellen flacher: ' + JSON.stringify(sv));
   const r1 = await p.evaluate(async () => { await _kglCreate(); return objects.map(o => { const bb = getMeshBox(o); return { n: o.userData.name, y0: bb.min.y * 10, y1: bb.max.y * 10, b: (bb.max.x - bb.min.x) * 10 }; }); });
   ok(r1.length === 2 && r1.every(t => Math.abs(t.y0) < 0.01) && Math.abs(r1[0].y1 - 3) < 0.01 && Math.abs(r1[1].y1 - 3.6) < 0.01, 'flach: ' + r1.map(t => `${t.n} ${t.y1.toFixed(1)} mm`).join(', '));
   await p.evaluate(() => undo());

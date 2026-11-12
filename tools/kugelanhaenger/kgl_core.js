@@ -17,22 +17,35 @@ function _kglBuild(w, p, textFn) {
   try {
     const R = p.groesse / 2, t = p.dicke, b = p.steg, ry = R * 0.94;           // Kugel leicht gedrückt
     const kreis = (rx, ryy, n) => { const o = []; for (let i = 0; i < n; i++) { const a = i / n * 2 * Math.PI; o.push([rx * Math.cos(a), ryy * Math.sin(a)]); } return o; };
-    const aussen = k(new CS([kreis(R, ry, 160)])), innen = k(new CS([kreis(R - p.rand, ry - p.rand, 160)]));
+    const stern = p.form === 'stern';
+    let aussen, innen;
+    if (stern) {                                                             // Stern (5 Zacken, runde Spitzen): Rahmen + senkrechte Lamellen dahinter
+      const pts = []; for (let i = 0; i < 10; i++) { const a = Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? R * 0.5 : R; pts.push([r * Math.cos(a), r * Math.sin(a) - R * 0.06]); }
+      const rk = Math.min(4, R * 0.06);
+      aussen = k(k(k(new CS([pts])).offset(-rk, 'Round', 2, 24)).offset(rk, 'Round', 2, 24));
+      innen = k(aussen.offset(-p.rand, 'Round', 2, 24));
+    } else { aussen = k(new CS([kreis(R, ry, 160)])); innen = k(new CS([kreis(R - p.rand, ry - p.rand, 160)])); }
     let kaefig = k(aussen.subtract(innen));
+    let lamellen = null;
     // Längsrippen: Meridiane x = a·sin(s), y = ry·cos(s); paarweise links/rechts + Mittellinie
     const n = Math.max(1, Math.round(p.rippen));
     const rip = [];
+    if (stern) {                                                             // Lamellen: Bretter mit schmalen Fugen, nur 60 % so dick wie der Rahmen (liegen hinten)
+      const nL = Math.max(5, Math.round(p.lamellen || 14)), fuge = Math.max(1, p.fuge || 1.6), bw = (2 * R - (nL - 1) * fuge) / nL, L = [];
+      for (let i = 0; i < nL; i++) { const x0 = -R + i * (bw + fuge); L.push(k(k(CS.square([bw, 2 * R + 4], false)).translate([x0, -R - 2]))); }
+      lamellen = k(k(k(CS.union(L)).intersect(k(innen.offset(0.4, 'Round')))));
+    } else
     for (let i = 0; i <= n; i++) {
       const a = (R - p.rand / 2) * i / (n + 1);
       for (const sx of i === 0 ? [1] : [-1, 1]) { const pts = []; for (let j = 0; j <= 48; j++) { const s = Math.PI * j / 48; pts.push([sx * a * Math.sin(s), ry * Math.cos(s)]); } rip.push(_kglStrich(CS, k, pts, b, true)); }
     }
-    kaefig = k(kaefig.add(k(k(CS.union(rip)).intersect(aussen))));
+    if (rip.length) kaefig = k(kaefig.add(k(k(CS.union(rip)).intersect(aussen))));
     // Kappe oben (mit Rillen), Schleife (zwei Schlaufen + zwei Bänder), Öse
-    const kb = R * 0.3, kh = R * 0.16, ky = ry - R * 0.03;
+    const kb = R * 0.3, kh = R * 0.16, ky = stern ? R * 0.94 - R * 0.2 : ry - R * 0.03;
     let kappe = k(k(CS.square([kb, kh], false)).translate([-kb / 2, ky]));
     for (const gx of [-0.25, 0, 0.25]) kappe = k(kappe.subtract(k(k(CS.square([Math.max(0.8, b * 0.6), kh * 0.6], false)).translate([gx * kb - Math.max(0.4, b * 0.3), ky + kh * 0.2]))));
-    const sm = [0, ky + kh * 0.55], teile = [kappe];
-    if (p.schleife) {
+    const sm = [0, ky + kh * 0.55], teile = stern ? [] : [kappe];
+    if (p.schleife && !stern) {
       for (const sx of [-1, 1]) {
         const loop = [], loopI = [], c = [sx * R * 0.3, sm[1] + R * 0.1], ang = sx * 0.28;
         for (let i = 0; i < 72; i++) { const a = i / 72 * 2 * Math.PI, x = R * 0.27 * Math.cos(a), y = R * 0.14 * Math.sin(a);
@@ -46,7 +59,7 @@ function _kglBuild(w, p, textFn) {
       }
       teile.push(k(k(CS.circle(R * 0.075, 32)).translate(sm)));               // Knoten
     }
-    const oy = ky + kh + R * 0.06, ro = Math.max(3.2, R * 0.1), ri = Math.max(1.8, ro * 0.55);
+    const ro = Math.max(3.2, R * 0.1 * (stern ? 0.7 : 1)), ri = Math.max(1.8, ro * 0.55), oy = stern ? aussen.bounds().max[1] + ro - p.rand * 0.6 - ro * 0.4 : ky + kh + R * 0.06;   // Stern: Öse an der echten (gerundeten) Spitze
     teile.push(k(k(k(CS.circle(ro, 40)).subtract(k(CS.circle(ri, 32)))).translate([0, oy + ro * 0.4])));
     kaefig = k(kaefig.add(k(CS.union(teile))));
     kaefig = k(k(kaefig.offset(-0.3, 'Round')).offset(0.3, 'Round'));        // Haarspitzen weg
@@ -62,10 +75,12 @@ function _kglBuild(w, p, textFn) {
         tc = k(tc.offset(p.textDick / 2, 'Round'));                         // Schreibschrift etwas fetter → druckbar
         text = k(k(tc.extrude(t + p.erhaben)));
         kaefig = k(kaefig.subtract(tc));
+        if (lamellen) lamellen = k(lamellen.subtract(tc));
         info.textTeile = text.decompose().length;
       }
     }
     const kf = k(kaefig.extrude(t)), out = { kaefig: kf.translate([0, 0, 0]), text: text ? text.translate([0, 0, 0]) : null, info };
+    if (lamellen) { const lm = k(k(lamellen.subtract(kaefig)).extrude(Math.max(1.2, t * 0.6))); out.lamellen = lm.translate([0, 0, 0]); }
     out.info.kaefigTeile = kf.decompose().length;
     out.info.breite = 2 * R; const bb2 = kf.boundingBox(); out.info.hoehe = bb2.max[1] - bb2.min[1];
     return out;
