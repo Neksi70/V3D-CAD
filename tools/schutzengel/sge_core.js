@@ -166,6 +166,29 @@ function _sgeBuild(w, p, textFn) {
       if (auf.length) { pk = k(M.union(auf)); if (dk) pk = k(M.difference(pk, dk)); koerper = k(M.difference(koerper, pk)); }
     } else if (auf.length) koerper = k(M.union(koerper, k(M.union(auf))));
     if (dk) koerper = k(M.difference(koerper, dk));
+    // Rückseite (z = 0) mit Struktur — beim Glatt-Druck ist sie die große oberste Fläche; Glätten krümelte dort und
+    // zeigte das Füllmuster (Druck 12.11.). 'auto' = beim Glatt-Druck Leinen, sonst glatt (liegt dann auf der Platte).
+    const rueck = (p.rueck || 'auto') === 'auto' ? (glatt ? 'leinen' : 'glatt') : p.rueck;
+    if (rueck === 'leinen' || rueck === 'hammer') {
+      const tB = Math.min(0.4, d * 0.15), rr = _sgeZufall((p.seed || 7) + 99);
+      const muster = feld => {
+        const fb = feld.bounds(), cx = (fb.min[0] + fb.max[0]) / 2, cy = (fb.min[1] + fb.max[1]) / 2, L = Math.hypot(fb.max[0] - fb.min[0], fb.max[1] - fb.min[1]) + 4, z = [];
+        if (rueck === 'leinen') { for (const wnk of [45, -45]) for (let o = -L / 2; o <= L / 2; o += 1.6) z.push(k(k(k(CS.square([L, 0.5], true)).translate([0, o])).rotate(wnk))); }
+        else {                                                              // Hammerschlag: dichte, zufällige Mulden mit Abstand
+          const mp = [], n = Math.round(feld.area() / 4.5);
+          for (let t = 0; t < n * 12 && mp.length < n; t++) {
+            const x = fb.min[0] + rr() * (fb.max[0] - fb.min[0]) - cx, y = fb.min[1] + rr() * (fb.max[1] - fb.min[1]) - cy, r = 0.6 + rr() * 0.6;
+            if (mp.some(q => (q[0] - x) ** 2 + (q[1] - y) ** 2 < (q[2] + r + 0.45) ** 2)) continue;
+            mp.push([x, y, r]); z.push(k(k(CS.circle(r, 14)).translate([x, y])));
+          }
+        }
+        return z.length ? k(k(k(CS.union(z)).translate([cx, cy])).intersect(feld)) : null;
+      };
+      const schnitt = cs => k(k(cs.extrude(tB + 0.01)).translate([0, 0, -0.01]));
+      const mK = muster(k(u.offset(-1.5, 'Round')));
+      if (mK && mK.area() > 1) koerper = k(M.difference(koerper, schnitt(mK)));
+      if (fl) { const mF = muster(k(k(fl.project()).offset(-1.2, 'Round'))); if (mF && mF.area() > 1) fl = k(M.difference(fl, schnitt(mF))); }
+    }
     const res = { koerper: koerper.translate([0, 0, 0]), fluegel: fl ? fl.translate([0, 0, 0]) : null, dunkel: dk ? dk.translate([0, 0, 0]) : null,
       punkte: pk ? pk.translate([0, 0, 0]) : null, wenden: glatt };   // Kopien: tmp wird gleich gelöscht
     res.farbwechsel = glatt ? tE : d; res.masse = m;

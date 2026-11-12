@@ -5318,6 +5318,12 @@ Patrick</textarea>
           <button class="vtb on" data-v="oben" onclick="_sgeStr('druck','oben')">Erhaben (tastbar)</button>
           <button class="vtb" data-v="glatt" onclick="_sgeStr('druck','glatt')">Schrift nach unten (glatt)</button>
         </div>
+        <div class="vtbrow" id="sge-rueck-bg" style="display:flex;gap:4px;margin-bottom:7px" title="Struktur auf der Rückseite, 0,4 mm tief mit glattem Rand. Beim Druck „Schrift nach unten“ ist die Rückseite die oberste Fläche – dort sieht man sonst Glätt- und Füllmuster. Auto = dann Leinen, sonst glatt.">
+          <button class="vtb on" data-v="auto" onclick="_sgeStr('rueck','auto')">Rückseite auto</button>
+          <button class="vtb" data-v="glatt" onclick="_sgeStr('rueck','glatt')">glatt</button>
+          <button class="vtb" data-v="leinen" onclick="_sgeStr('rueck','leinen')">▦ Leinen</button>
+          <button class="vtb" data-v="hammer" onclick="_sgeStr('rueck','hammer')">◌ Hammerschlag</button>
+        </div>
         <div class="vtbrow" id="sge-muster-bg" style="display:flex;gap:4px;margin-bottom:7px">
           <button class="vtb on" data-v="punkte" onclick="_sgeStr('muster','punkte')">Pünktchen</button>
           <button class="vtb" data-v="streifen" onclick="_sgeStr('muster','streifen')">Streifen</button>
@@ -35289,13 +35295,36 @@ function _sgeBuild(w, p, textFn) {
       if (auf.length) { pk = k(M.union(auf)); if (dk) pk = k(M.difference(pk, dk)); koerper = k(M.difference(koerper, pk)); }
     } else if (auf.length) koerper = k(M.union(koerper, k(M.union(auf))));
     if (dk) koerper = k(M.difference(koerper, dk));
+    // Rückseite (z = 0) mit Struktur — beim Glatt-Druck ist sie die große oberste Fläche; Glätten krümelte dort und
+    // zeigte das Füllmuster (Druck 12.11.). 'auto' = beim Glatt-Druck Leinen, sonst glatt (liegt dann auf der Platte).
+    const rueck = (p.rueck || 'auto') === 'auto' ? (glatt ? 'leinen' : 'glatt') : p.rueck;
+    if (rueck === 'leinen' || rueck === 'hammer') {
+      const tB = Math.min(0.4, d * 0.15), rr = _sgeZufall((p.seed || 7) + 99);
+      const muster = feld => {
+        const fb = feld.bounds(), cx = (fb.min[0] + fb.max[0]) / 2, cy = (fb.min[1] + fb.max[1]) / 2, L = Math.hypot(fb.max[0] - fb.min[0], fb.max[1] - fb.min[1]) + 4, z = [];
+        if (rueck === 'leinen') { for (const wnk of [45, -45]) for (let o = -L / 2; o <= L / 2; o += 1.6) z.push(k(k(k(CS.square([L, 0.5], true)).translate([0, o])).rotate(wnk))); }
+        else {                                                              // Hammerschlag: dichte, zufällige Mulden mit Abstand
+          const mp = [], n = Math.round(feld.area() / 4.5);
+          for (let t = 0; t < n * 12 && mp.length < n; t++) {
+            const x = fb.min[0] + rr() * (fb.max[0] - fb.min[0]) - cx, y = fb.min[1] + rr() * (fb.max[1] - fb.min[1]) - cy, r = 0.6 + rr() * 0.6;
+            if (mp.some(q => (q[0] - x) ** 2 + (q[1] - y) ** 2 < (q[2] + r + 0.45) ** 2)) continue;
+            mp.push([x, y, r]); z.push(k(k(CS.circle(r, 14)).translate([x, y])));
+          }
+        }
+        return z.length ? k(k(k(CS.union(z)).translate([cx, cy])).intersect(feld)) : null;
+      };
+      const schnitt = cs => k(k(cs.extrude(tB + 0.01)).translate([0, 0, -0.01]));
+      const mK = muster(k(u.offset(-1.5, 'Round')));
+      if (mK && mK.area() > 1) koerper = k(M.difference(koerper, schnitt(mK)));
+      if (fl) { const mF = muster(k(k(fl.project()).offset(-1.2, 'Round'))); if (mF && mF.area() > 1) fl = k(M.difference(fl, schnitt(mF))); }
+    }
     const res = { koerper: koerper.translate([0, 0, 0]), fluegel: fl ? fl.translate([0, 0, 0]) : null, dunkel: dk ? dk.translate([0, 0, 0]) : null,
       punkte: pk ? pk.translate([0, 0, 0]) : null, wenden: glatt };   // Kopien: tmp wird gleich gelöscht
     res.farbwechsel = glatt ? tE : d; res.masse = m;
     return res;
   } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
 }
-const _sgeP = { hoehe: 110, breite: 62, dicke: 4, relief: 0.6, oese: 3.5, fluegel: 'rechts', herz: 1, muster: 'punkte', punkte: 25, streifen: 9, stern: 0, engel: 0, seed: 7, druck: 'oben', tiefe: 0.6,
+const _sgeP = { hoehe: 110, breite: 62, dicke: 4, relief: 0.6, oese: 3.5, fluegel: 'rechts', herz: 1, muster: 'punkte', punkte: 25, streifen: 9, stern: 0, engel: 0, seed: 7, druck: 'oben', tiefe: 0.6, rueck: 'auto',
   text1: 'KLEINER', font1: 'helvetiker_bold', h1: 7, text2: 'Schutzengel', font2: 'greatvibes_local', h2: 11, vorlage: 'text' };
 const _SGE_DEF = { ..._sgeP };
 const _SGE_VORLAGEN = {
@@ -35349,7 +35378,7 @@ function _sgeSync(tippen){
   for (const k of ['hoehe', 'breite', 'dicke', 'oese', 'punkte', 'streifen', 'seed', 'h1', 'h2']) { const s = document.getElementById('sge-' + k), t = document.getElementById('sgev-' + k); if (s) s.value = _sgeP[k]; if (t) t.textContent = _sgeP[k]; }
   if (!tippen) for (const k of ['text1', 'text2', 'font1', 'font2']) { const e = document.getElementById('sge-' + k); if (e) e.value = _sgeP[k]; }
   const mark = (sel, val) => document.querySelectorAll(sel + ' .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === String(val)));
-  mark('#sge-vorlage-bg', _sgeP.vorlage); mark('#sge-fluegel-bg', !_sgeP.engel ? 'fahne' : (_sgeP.engel === 1 || _sgeP.engel === true ? 'federn' : _sgeP.engel)); mark('#sge-muster-bg', _sgeP.muster); mark('#sge-druck-bg', _sgeP.druck);
+  mark('#sge-vorlage-bg', _sgeP.vorlage); mark('#sge-fluegel-bg', !_sgeP.engel ? 'fahne' : (_sgeP.engel === 1 || _sgeP.engel === true ? 'federn' : _sgeP.engel)); mark('#sge-muster-bg', _sgeP.muster); mark('#sge-druck-bg', _sgeP.druck); mark('#sge-rueck-bg', _sgeP.rueck || 'auto');
   const on = (id, v) => { const e = document.getElementById(id); if (e) e.classList.toggle('on', !!v); };
   on('sge-herz', _sgeP.herz); on('sge-stern', _sgeP.stern);
   { const h = document.getElementById('sge-herz'); if (h) h.style.display = _sgeP.engel ? 'none' : ''; }
@@ -84808,8 +84837,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.385';
+const VOLME3D_VERSION = '1.18.386';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.386', date:'2026-11-12', changes:[
+    ['▦','<b>Schutzengel:</b> Rückseite mit Struktur – <b>Leinen</b> (feines Kreuzgewebe) oder <b>Hammerschlag</b> (kleine Mulden), 0,4 mm tief mit glattem Rand. Beim Druck „Schrift nach unten“ automatisch Leinen: Dort ist die Rückseite die oberste Fläche, Glätten krümelte und das Füllmuster schien durch'],
+  ]},
   { version:'1.18.385', date:'2026-11-11', changes:[
     ['😇','<b>Schutzengel:</b> drei neue Flügelformen nach Vorlage – <b>Rund</b> (großer Bogen, unten drei Bögen), <b>Lang</b> (hoch neben dem Kopf, mit Federreihen) und <b>Schwung</b> (drei Sichel-Striche); dazu weiter Federn oder das Fähnchen mit Herz'],
   ]},

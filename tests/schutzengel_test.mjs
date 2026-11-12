@@ -61,6 +61,15 @@ try {
   ok(r3.teile.every(t => t.minY > -1e-3 && t.maxY < 4 + 1e-3) && Math.abs(d3.minY) < 1e-3 && Math.abs(d3.maxY - 0.6) < 0.05 && Math.abs(p3.minY) < 1e-3,
      `Glatt: alles in 0–4 mm, Text ${d3.minY.toFixed(2)}–${d3.maxY.toFixed(2)} mm auf der Platte`);
   ok(k3.shells === 1 && r3.ov < 0.01, `Glatt: Körper 1 Schale, Überlappung ${r3.ov.toFixed(3)}`);
+  // Rückseite: beim Glatt-Druck automatisch Leinen (oberste Fläche), beim Erhaben-Druck glatt (liegt auf der Platte)
+  const rk = await p.evaluate(async () => { const w = await _mfInit(), v = {};
+    for (const [dr, rk] of [['glatt', 'glatt'], ['glatt', 'auto'], ['glatt', 'hammer'], ['oben', 'auto'], ['oben', 'glatt']]) { const r = _sgeBuild(w, { ..._sgeP, druck: dr, rueck: rk }, null);
+      const unten = w.Manifold.intersection(r.koerper, w.Manifold.cube([400, 400, 0.2]).translate([-200, -50, 0.05])).volume();
+      v[dr + '_' + rk] = { unten, n: r.koerper.decompose().length }; ['koerper', 'fluegel', 'dunkel', 'punkte'].forEach(k => r[k] && r[k].delete()); }
+    return v; });
+  ok(rk.glatt_auto.unten < rk.glatt_glatt.unten * 0.85 && rk.glatt_hammer.unten < rk.glatt_glatt.unten * 0.95 && rk.glatt_auto.n === 1 && rk.glatt_hammer.n === 1,
+     `Rückseite Glatt-Druck: Leinen ${(100 - rk.glatt_auto.unten / rk.glatt_glatt.unten * 100).toFixed(0)} % / Hammerschlag ${(100 - rk.glatt_hammer.unten / rk.glatt_glatt.unten * 100).toFixed(0)} % der Rückseite vertieft, Körper 1 Teil`);
+  ok(Math.abs(rk.oben_auto.unten - rk.oben_glatt.unten) < 0.01, 'Erhaben-Druck: Rückseite bleibt glatt (liegt auf der Platte)');
   const vSoll = await p.evaluate(async () => { const w = await _mfInit(), r = _sgeBuild(w, { ..._sgeP, druck: 'oben' }, _sgeText), v = r.koerper.volume();
     for (const x of ['koerper', 'fluegel', 'dunkel', 'punkte']) if (r[x]) r[x].delete(); return v; });
   ok(vSoll > 0, 'Erhaben-Bau läuft weiter');
