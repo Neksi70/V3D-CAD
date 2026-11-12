@@ -5936,6 +5936,35 @@ Patrick</textarea>
   </div>
 </div>
 
+<div id="spb-modal" class="g3dm" onclick="if(event.target===this)_spbClose()">
+  <div class="g3box">
+    <div class="g3hdr">🌀 Spiral-Baum<span class="vx" onclick="_spbClose()">✕</span></div>
+    <div class="g3body">
+      <canvas id="spb-canvas" width="200" height="320"></canvas>
+      <div class="g3ctrl">
+        <div class="vrow"><label>Höhe</label> <input type="range" id="spb-hoehe" min="60" max="300" value="160" step="5" oninput="_spbSet('hoehe',this.value)"><span class="vv" id="spbv-hoehe">160</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Ø unten</label> <input type="range" id="spb-durchmesser" min="40" max="200" value="100" step="5" oninput="_spbSet('durchmesser',this.value)"><span class="vv" id="spbv-durchmesser">100</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Windungen</label> <input type="range" id="spb-windungen" min="2" max="10" value="5" step="0.5" oninput="_spbSet('windungen',this.value)"><span class="vv" id="spbv-windungen">5</span></div>
+        <div class="vrow"><label title="Höhe des Bandes">Band</label> <input type="range" id="spb-band" min="5" max="30" value="14" step="1" oninput="_spbSet('band',this.value)"><span class="vv" id="spbv-band">14</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Dicke</label> <input type="range" id="spb-dicke" min="1.2" max="5" value="2.4" step="0.2" oninput="_spbSet('dicke',this.value)"><span class="vv" id="spbv-dicke">2,4</span><span class="vu">mm</span></div>
+        <div class="vtbrow" style="display:flex;gap:4px;margin-bottom:7px"><button class="vtb on" id="spb-stern" style="flex:1" onclick="_spbSet('stern',_spbP.stern?0:1)">⭐ Stern oben</button></div>
+        <div class="vtbrow" id="spb-farbe-bg" style="display:flex;gap:4px;margin-bottom:7px">
+          <button class="vtb on" data-v="#f2f0ea" onclick="_spbStr('farbe','#f2f0ea')">Weiß</button>
+          <button class="vtb" data-v="#2f5f4a" onclick="_spbStr('farbe','#2f5f4a')">Tannengrün</button>
+          <button class="vtb" data-v="#c9a24a" onclick="_spbStr('farbe','#c9a24a')">Gold</button>
+          <button class="vtb" data-v="#9c2f36" onclick="_spbStr('farbe','#9c2f36')">Rot</button>
+        </div>
+        <div class="g3info" id="spb-info"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_spbReset()">Zurücksetzen</button>
+      <button class="btn" onclick="_spbClose()">Abbrechen</button>
+      <button class="btn pri" onclick="_spbCreate()">✓ Erstellen</button>
+    </div>
+  </div>
+</div>
+
 <div id="swa-modal" class="g3dm" onclick="if(event.target===this)_swaClose()">
   <div class="g3box">
     <div class="g3hdr">🔠 Schrift-Aufsteller<span class="vx" onclick="_swaClose()">✕</span></div>
@@ -37161,6 +37190,96 @@ async function _snmCreate(){
   } catch (e) { console.error('Schneemann:', e); _progressHide(); notify('Schneemann fehlgeschlagen: ' + (e && e.message || e), 'w'); }
 }
 
+// ═══ SPIRAL-BAUM (🌀 _spb*, 1.18.395) ══════════════════════════════════════════════
+// Nach Bild: Band als Kegelspirale, unten geschlossener Fußring, Stern oben. Distanzfeld, Y oben.
+// Freistehende Windungen haben unten einen fast waagerechten Rand → Druck mit Baumstützen (wie das Original).
+function _spbFelder(p){
+  const H = p.hoehe, R0 = p.durchmesser / 2, P = (H * 0.86) / p.windungen, hB = Math.min(P * 0.85, p.band), tB = p.dicke, Hc = H * 0.9, fuss = hB * 0.9;
+  const rc = y => R0 * Math.max(0.04, 1 - y / Hc);
+  const baum = (x, y, z) => {
+    if (y < -0.5 || y > Hc) return 1;
+    const r = Math.sqrt(x * x + z * z), th = Math.atan2(z, x);
+    const d1 = Math.abs(r - rc(y)) - tB / 2;
+    let v = (y - P * th / (2 * Math.PI)) % P; if (v < 0) v += P;
+    let d2 = Math.abs(v - hB / 2) - hB / 2;
+    if (y < fuss) d2 = Math.min(d2, y - fuss);                               // Fußring geschlossen
+    const top = y - (Hc - hB * 0.3);
+    const q1 = Math.max(d1, 0), q2 = Math.max(d2, 0);
+    return Math.max(Math.min(Math.max(d1, d2), 0) + Math.sqrt(q1 * q1 + q2 * q2), -y, top);
+  };
+  return { baum, H, Hc, R0, P, hB };
+}
+function _spbBuild(w, p, q){
+  const M = w.Manifold, CS = w.CrossSection, tmp = [], k = x => { tmp.push(x); return x; };
+  try {
+    const F = _spbFelder(p), bb = [-F.R0 - 3, 0, -F.R0 - 3, F.R0 + 3, F.Hc + 2, F.R0 + 3];
+    const V = (bb[3] - bb[0]) * (bb[4] - bb[1]) * (bb[5] - bb[2]), edge = Math.max(0.3, Math.min(p.dicke / 2.2, Math.cbrt(V / (q === 'fein' ? 6e6 : 6e5))));
+    let baum = k(_lgfLevel(w, F.baum, bb, edge));
+    { const hS = F.hB * 1.4, r0 = F.R0 * Math.max(0.04, 1 - (F.Hc - hS) / F.Hc) + p.dicke / 2;   // geschlossene Spitze: Band endet dort, Stern-Stiel steckt darin
+      baum = k(M.union(baum, k(k(M.cylinder(hS, r0, 1.4, 48)).rotate([-90, 0, 0]).translate([0, F.Hc - hS, 0])))); }
+    const out = {};
+    if (p.stern) {                                                         // Stern stehend (in x-y-Ebene), Stiel steckt in der Spitze
+      const sR = p.durchmesser * 0.16, pts = []; for (let i = 0; i < 10; i++) { const a = Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? sR * 0.45 : sR; pts.push([r * Math.cos(a), r * Math.sin(a)]); }
+      const yc = F.Hc + sR * 0.75, sd = Math.max(3, p.dicke * 1.6);
+      const sc = k(k(k(new CS([pts])).offset(-0.6, 'Round')).offset(0.6, 'Round'));
+      const st = k(k(sc.extrude(sd)).translate([0, yc, -sd / 2]));
+      const stiel = k(M.cylinder(sR * 0.6 + 6, 1.8, 1.8, 24).rotate([-90, 0, 0]).translate([0, F.Hc - 6, 0]));
+      out.stern = k(M.union(st, stiel)).translate([0, 0, 0]);
+      baum = k(M.difference(baum, out.stern));
+    }
+    out.baum = baum.translate([0, 0, 0]); out.info = { windungen: p.windungen, hoehe: F.Hc + (p.stern ? p.durchmesser * 0.16 * 1.75 : 0) };
+    return out;
+  } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
+}
+const _spbP = { hoehe: 160, durchmesser: 100, windungen: 5, band: 14, dicke: 2.4, stern: 1, farbe: '#f2f0ea', sternFarbe: '#f2f0ea' };
+const _SPB_DEF = { ..._spbP };
+let _spbRT = null;
+function _spbPreviewGeo(){
+  if (!_mfWasm) throw new Error('Manifold lädt noch');
+  const r = _spbBuild(_mfWasm, _spbP, 'vorschau'), parts = [[r.baum, _spbP.farbe], [r.stern, _spbP.sternFarbe]].filter(t => t[0]);
+  let n = 0; const geos = parts.map(([m, c]) => { const g = _mfToGeo(m).toNonIndexed(); m.delete(); n += g.attributes.position.count; return [g, c]; });
+  const pos = new Float32Array(n * 3), col = new Float32Array(n * 3); let o = 0;
+  for (const [g, hex] of geos) { const a = g.attributes.position.array, c = new THREE.Color(hex); pos.set(a, o * 3);
+    for (let i = 0; i < a.length / 3; i++) { col[(o + i) * 3] = c.r; col[(o + i) * 3 + 1] = c.g; col[(o + i) * 3 + 2] = c.b; } o += a.length / 3; g.dispose(); }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.scale(0.1, 0.1, 0.1); geo.computeVertexNormals(); return geo;
+}
+function _spbOpen(){ document.getElementById('spb-modal').classList.add('show'); _spbSync(); _mfInit().then(_spbBoot).catch(() => notify('Rechenkern konnte nicht geladen werden', 'w')); }
+function _spbBoot(){ const m = document.getElementById('spb-modal'); if (!m || !m.classList.contains('show')) return;
+  if (!_gpv['spb']) _gpvInit('spb', () => _spbPreviewGeo()); else { _gpvUpdate('spb'); if (!_gpv['spb'].anim) _gpvLoop('spb'); } }
+function _spbClose(){ document.getElementById('spb-modal').classList.remove('show'); _gpvStop('spb'); }
+function _spbRepaint(){ if (_spbRT) clearTimeout(_spbRT); _spbRT = setTimeout(() => { _spbRT = null; if (!_mfWasm) return; if (_gpv['spb']) _gpvUpdate('spb'); else _spbBoot(); }, 300); }
+function _spbSet(k, v){ _spbP[k] = parseFloat(v); _spbSync(); _spbRepaint(); }
+function _spbStr(k, v){ _spbP[k] = v; _spbSync(); _spbRepaint(); }
+function _spbReset(){ Object.assign(_spbP, _SPB_DEF); _spbSync(); _spbRepaint(); }
+function _spbSync(){
+  for (const k of ['hoehe', 'durchmesser', 'windungen', 'band', 'dicke']) { const s = document.getElementById('spb-' + k), t = document.getElementById('spbv-' + k); if (s) s.value = _spbP[k]; if (t) t.textContent = String(_spbP[k]).replace('.', ','); }
+  document.querySelectorAll('#spb-farbe-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === _spbP.farbe));
+  { const b = document.getElementById('spb-stern'); if (b) b.classList.toggle('on', !!_spbP.stern); }
+  const el = document.getElementById('spb-info'); if (!el) return;
+  el.innerHTML = `Spiral-Baum ca. ${_spbP.hoehe} mm hoch, Ø ${_spbP.durchmesser} mm, ${_spbP.windungen} Windungen.` +
+    '<br><b>Druck stehend mit Baumstützen</b> (nur unter den Bandkanten, lassen sich leicht abbrechen) – die Windungen schweben sonst. Stern als eigenes Teil (z. B. Gold oder Glitzer). Für die Optik wie im Bild: <b>Fuzzy Skin</b> an.';
+}
+async function _spbCreate(){
+  const p = { ..._spbP };
+  _progressShow('Spiral-Baum wird gebaut…'); _progressSet(8); _progressCreep(90, 0.5);
+  try {
+    const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
+    const r = _spbBuild(w, p, 'fein');
+    saveUndo();
+    typeCounts['spiralbaum'] = (typeCounts['spiralbaum'] || 0) + 1;
+    const nr = typeCounts['spiralbaum'], meshes = [];
+    for (const [m, farbe, name] of [[r.baum, p.farbe, 'Spiral-Baum'], [r.stern, p.sternFarbe, 'Spiral-Baum Stern']]) { if (!m) continue;
+      const geo = _mfToGeo(m).toNonIndexed(); m.delete(); geo.scale(0.1, 0.1, 0.1); _creaseNormals(geo, 60);
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(farbe), roughness: 0.75, metalness: 0.02, side: THREE.DoubleSide }));
+      mesh.castShadow = mesh.receiveShadow = true;
+      mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: name + ' #' + nr, color: farbe, isHole: false, fillet: 0, chamfer: 0, displacementPattern: 'keine', spiralbaumParams: p, edgeAngle: 70 };
+      scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh); meshes.push(mesh); }
+    selectObjs(meshes); updateTree(); fitToObjects(meshes);
+    _progressDone(); notify('🌀 Spiral-Baum erstellt ✓ stehend mit Baumstützen drucken', 'ok'); _spbClose();
+  } catch (e) { console.error('Spiral-Baum:', e); _progressHide(); notify('Spiral-Baum fehlgeschlagen: ' + (e && e.message || e), 'w'); }
+}
+
 // ═══ ADVENTSKALENDER-GENERATOR (🎁 _adv*) ═════════════════════════════════════
 // ═══ ADVENTSKALENDER-GENERATOR (🎁 _adv*) ═════════════════════════════════════
 // Kern (Manifold, mm), 1:1 in volme3d.html eingebettet. Test in Node: tools/adventskalender/test_core.mjs
@@ -50760,6 +50879,7 @@ const _STARTERS = [
   {i:'🎄',t:'Kugel-Anhänger',d:'Flache Weihnachtskugel mit Rippen-Käfig, Schleife und Öse, Schreibschrift (Frohe Weihnachten, Name …) in zweiter Farbe – ohne Stützen',run:()=>_kglOpen()},
   {i:'⛄',t:'Schneemann',d:'Rillen-Körper, glatter Kopf, Karotten-Nase, gerippte Mütze mit Umschlag und Bommel – Teile je Farbe, stehend ohne Stützen',run:()=>_snmOpen()},
   {i:'🔴',t:'Kugelkranz',d:'Adventskranz aus Kugeln im Ring, unten flach, mit Haltern für 4 Stabkerzen oder Teelichter – ohne Stützen',run:()=>_kkzOpen()},
+  {i:'🌀',t:'Spiral-Baum',d:'Weihnachtsbaum als Spiralband um einen Kegel, Fußring unten, Stern oben – stehend mit Baumstützen',run:()=>_spbOpen()},
   {i:'🔠',t:'Schrift-Aufsteller',d:'Dicke Blockschrift (WEIH/NACH/TEN, FEST, XMAS) gleich breit gestapelt, Schreibschrift-Wort obendrauf in zweiter Farbe – ohne Stützen',run:()=>_swaOpen()},
   {i:'🏠',t:'Lichthaus',d:'Satteldach-Haus mit Lichtschlitzen oder Fenstern, Bodenplatte mit LED-Teelicht-Halter – ohne Stützen',run:()=>_lhsOpen()},
   {i:'🪢',t:'Kordel-Topf',d:'Übertopf, Vase oder Schale aus gedrehten Seilringen, loses Seilende über den Rand – ohne Stützen',run:()=>_kdlOpen()},
@@ -50945,7 +51065,7 @@ function _maybeShowStarter(){
 // 🎄 Rubrik Weihnachten (Volker 9.11.26: „solche Sachen in eine Rubrik Weihnachten schieben, da kommt
 // noch einiges hinterher“). Neue Weihnachts-Generatoren NUR hier eintragen — die Liste speist das
 // Thema auf der Generatoren-Seite und den Block oben im Generator-Menü.
-const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Stern-Anhänger', 'Schneemann', 'Kugelkranz', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
+const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Stern-Anhänger', 'Schneemann', 'Kugelkranz', 'Spiral-Baum', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
   'Dackel-Kerzenhalter', 'Mops-Kerzenhalter', 'Schwein-Kerzenhalter', 'Spaniel-Kerzenhalter', 'Islandpferd-Kerzenhalter'];
 const _GEN_THEMEN = [
   ['🎄 Weihnachten', _GEN_WEIHNACHTEN],
@@ -85872,8 +85992,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.394';
+const VOLME3D_VERSION = '1.18.395';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.395', date:'2026-11-12', changes:[
+    ['🌀','<b>Neu: Spiral-Baum</b> (Weihnachten) – Weihnachtsbaum als Spiralband um einen Kegel, geschlossener Fußring, Stern oben als eigenes Teil. Höhe, Ø, Windungen, Bandhöhe und Dicke einstellbar; Druck stehend mit Baumstützen'],
+  ]},
   { version:'1.18.394', date:'2026-11-12', changes:[
     ['🔴','<b>Neu: Kugelkranz</b> (Weihnachten) – Adventskranz aus Kugeln im Ring, ineinander verschmolzen und unten flach, mit Haltern für Stabkerzen (Ø einstellbar, mit Einführfase) oder Teelicht-Mulden. Ein Teil, ohne Stützen'],
   ]},
@@ -98670,6 +98793,7 @@ const CMDK = [
   {i:'🎄',g:'Generator',t:'Kugel-Anhänger',k:'kugel anhänger weihnachtskugel christbaumkugel ornament baumschmuck schleife frohe weihnachten merry christmas name geschenkanhänger',run:()=>_kglOpen()},
   {i:'⛄',g:'Generator',t:'Schneemann',k:'schneemann snowman winter weihnachten mütze bommel karotte nase rillen figur deko',run:()=>_snmOpen()},
   {i:'🔴',g:'Generator',t:'Kugelkranz',k:'adventskranz kranz kugeln kugelkranz kerzen stabkerze teelicht advent weihnachten bubble',run:()=>_kkzOpen()},
+  {i:'🌀',g:'Generator',t:'Spiral-Baum',k:'spiral baum weihnachtsbaum tannenbaum spirale band stern deko modern',run:()=>_spbOpen()},
   {i:'🔠',g:'Generator',t:'Schrift-Aufsteller',k:'schrift aufsteller schriftzug frohe weihnachten frohes fest merry xmas blockschrift schreibschrift text deko',run:()=>_swaOpen()},
   {i:'🏠',g:'Generator',t:'Lichthaus',k:'haus lichthaus häuschen windlicht led teelicht lichterkette weihnachten advent winter deko schlitze fenster satteldach giebel',run:()=>_lhsOpen()},
   {i:'🎄',g:'Generator',t:'Weihnachts-Studio',k:'weihnachts studio weihnachten baum tanne mütze nikolausmütze glocke licht lampe teelicht dose anhänger sockel name jahr inschrift stern noel advent deko',run:()=>_wstOpen()},
