@@ -5995,6 +5995,33 @@ Patrick</textarea>
   </div>
 </div>
 
+<div id="zwi-modal" class="g3dm" onclick="if(event.target===this)_zwiClose()">
+  <div class="g3box">
+    <div class="g3hdr">🧑‍🎄 Zipfel-Wichtel<span class="vx" onclick="_zwiClose()">✕</span></div>
+    <div class="g3body">
+      <canvas id="zwi-canvas" width="200" height="320"></canvas>
+      <div class="g3ctrl">
+        <div class="vrow"><label>Höhe</label> <input type="range" id="zwi-hoehe" min="60" max="300" value="160" step="5" oninput="_zwiSet('hoehe',this.value)"><span class="vv" id="zwiv-hoehe">160</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Rillen</label> <input type="range" id="zwi-rillen" min="16" max="80" value="44" step="2" oninput="_zwiSet('rillen',this.value)"><span class="vv" id="zwiv-rillen">44</span></div>
+        <div class="vrow"><label title="0 = glatt">Rillentiefe</label> <input type="range" id="zwi-rillenTief" min="0" max="200" value="100" step="10" oninput="_zwiSet('rillenTief',this.value)"><span class="vv" id="zwiv-rillenTief">100</span><span class="vu">%</span></div>
+        <div class="vrow"><label title="Wie weit die Mützenspitze zur Seite kippt (in % der Höhe)">Zipfel</label> <input type="range" id="zwi-zipfel" min="0" max="12" value="0" step="1" oninput="_zwiSet('zipfel',this.value)"><span class="vv" id="zwiv-zipfel">0</span></div>
+        <div class="vrow"><label>Nase</label> <input type="range" id="zwi-nase" min="60" max="160" value="100" step="10" oninput="_zwiSet('nase',this.value)"><span class="vv" id="zwiv-nase">100</span><span class="vu">%</span></div>
+        <div class="vtbrow" id="zwi-farbe-bg" style="display:flex;gap:4px;margin-bottom:7px">
+          <button class="vtb on" data-v="#a8262f" onclick="_zwiStr('muetzeFarbe','#a8262f')">Mütze rot</button>
+          <button class="vtb" data-v="#2f5f4a" onclick="_zwiStr('muetzeFarbe','#2f5f4a')">grün</button>
+          <button class="vtb" data-v="#7b8fa6" onclick="_zwiStr('muetzeFarbe','#7b8fa6')">blaugrau</button>
+        </div>
+        <div class="g3info" id="zwi-info"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_zwiReset()">Zurücksetzen</button>
+      <button class="btn" onclick="_zwiClose()">Abbrechen</button>
+      <button class="btn pri" onclick="_zwiCreate()">✓ Erstellen</button>
+    </div>
+  </div>
+</div>
+
 <div id="swa-modal" class="g3dm" onclick="if(event.target===this)_swaClose()">
   <div class="g3box">
     <div class="g3hdr">🔠 Schrift-Aufsteller<span class="vx" onclick="_swaClose()">✕</span></div>
@@ -37310,6 +37337,110 @@ async function _spbCreate(){
   } catch (e) { console.error('Spiral-Baum:', e); _progressHide(); notify('Spiral-Baum fehlgeschlagen: ' + (e && e.message || e), 'w'); }
 }
 
+// ═══ ZIPFEL-WICHTEL (🧑‍🎄 _zwi*, 1.18.397) ═════════════════════════════════════════
+// Nach Bild (Christmas Gnome): Holzrillen-Körper, rote Zipfelmütze mit weißem Umschlag + Bommel, Bart vorn, Holznase.
+// Kern 1:1 aus tools/zipfelwichtel/zwi_core.js.
+// Zipfel-Wichtel (Christmas Gnome) — Distanzfelder, mm, Y oben, Gesicht +Z, Standfläche y = 0. Teile je Farbe:
+// Körper (Ei mit senkrechten Holzrillen), Mütze (rot), Weiß (Umschlag, Bommel, Bart als Auflage vorn), Nase (Holzkugel).
+// Braucht aus der App: _dklH, _dklEll, _dklCone, _lgfSmin, _lgfLevel.
+function _zwiPolyD(P, x, y) {                                               // vorzeichenbehafteter Abstand zu einem Polygon (innen < 0)
+  let d = Infinity, inn = false;
+  for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+    const [ax, ay] = P[j], [bx, by] = P[i], ex = bx - ax, ey = by - ay, L = ex * ex + ey * ey;
+    let t = L ? ((x - ax) * ex + (y - ay) * ey) / L : 0; t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const dx = x - ax - t * ex, dy = y - ay - t * ey; d = Math.min(d, dx * dx + dy * dy);
+    if ((ay > y) !== (by > y) && x < ax + (y - ay) / (by - ay) * ex) inn = !inn;
+  }
+  return inn ? -Math.sqrt(d) : Math.sqrt(d);
+}
+function _zwiFelder(p) {
+  const u = p.hoehe / 104.5, nR = Math.max(12, Math.round(p.rillen)), aR = 0.7 * u * p.rillenTief / 100;
+  const rip = (x, z) => Math.sqrt(Math.abs(Math.cos(nR * Math.atan2(z, x) / 2)));
+  const kE = { c: [0, 30 * u, 0], r: [17 * u, 34 * u, 17 * u] };
+  const koerperGlatt = (x, y, z) => Math.max(_dklEll(x, y, z, kE.c, kE.r), -y);
+  const koerper = (x, y, z) => { let d = koerperGlatt(x, y, z); if (aR > 0 && Math.abs(d) < 3 * aR && y > 1) d -= aR * (rip(x, z) - 0.6); return d; };
+  const yU = 56 * u, hU = 7.5 * u, rU = 15.5 * u;
+  const umschlag = (x, y, z) => { const r = _dklH(x, z), qx = Math.max(r - (rU - 2 * u), 0), qy = Math.max(Math.abs(y - (yU + hU / 2)) - (hU / 2 - 2 * u), 0); return _dklH(qx, qy) - 2 * u; };
+  const muetze = (x, y, z) => Math.max(_dklCone(x, y, z, [0, yU + hU * 0.5, 0], [p.zipfel * u, 98 * u, 0], 14 * u, 1.8 * u), yU + 1 * u - y);
+  const bommel = (x, y, z) => _dklH(x - p.zipfel * u * 1.02, y - 100 * u, z) - 4.6 * u;
+  const B = [[-12.5, 58.5], [12.5, 58.5], [13.5, 42], [11, 28], [5, 17], [-3, 10], [-11, 5], [-8, 11], [-10.5, 24], [-13.5, 40]].map(([x, y]) => [x * u, y * u]);
+  const bart = (x, y, z) => { if (z < 0) return 10 * u; const dB = koerperGlatt(x, y, z), sh = Math.max(dB - 1.8 * u, -dB - 0.6 * u); return Math.max(sh, _zwiPolyD(B, x, y)); };
+  const weiss = (x, y, z) => Math.min(umschlag(x, y, z), bommel(x, y, z), bart(x, y, z));
+  const nY = 52.5 * u, nZ = 17 * u * Math.sqrt(Math.max(0, 1 - ((nY - kE.c[1]) / kE.r[1]) ** 2)) + 2.2 * u;
+  const nase = (x, y, z) => _dklH(x, y - nY, z - nZ) - 4.3 * u * p.nase / 100;
+  const Bx = (x0, y0, z0, x1, y1, z1) => [x0 * u, y0 * u, z0 * u, x1 * u, y1 * u, z1 * u], zx = Math.max(0, p.zipfel);
+  return { u, teile: [['koerper', koerper, Bx(-19, 0, -19, 19, 66, 19)], ['muetze', muetze, Bx(-16, 55, -16, 16 + zx, 100, 16)],
+    ['weiss', weiss, Bx(-19, 3, -19, 19 + zx, 106, 21)], ['nase', nase, Bx(-6, 46, 8, 6, 59, 25)]] };
+}
+function _zwiBuild(w, p, q) {
+  const M = w.Manifold, tmp = [], keep = x => { tmp.push(x); return x; };
+  try {
+    const F = _zwiFelder(p), mf = {};
+    for (const [n, f, bb] of F.teile) {
+      const V = (bb[3] - bb[0]) * (bb[4] - bb[1]) * (bb[5] - bb[2]), ziel = q === 'fein' ? (n === 'nase' ? 2e5 : 1.6e6) : 1.2e5;
+      mf[n] = keep(_lgfLevel(w, f, bb, Math.max(0.3, Math.cbrt(V / ziel))));
+    }
+    mf.weiss = keep(M.difference(mf.weiss, mf.nase));
+    mf.muetze = keep(M.difference(mf.muetze, mf.weiss));
+    mf.koerper = keep(M.difference(keep(M.difference(keep(M.difference(mf.koerper, mf.weiss)), mf.nase)), mf.muetze));
+    for (const n of Object.keys(mf)) { const st = mf[n].decompose(); if (st.length < 2) { st.forEach(x => x.delete()); continue; }
+      const v = st.map(x => x.volume()), mx = Math.max(...v), gut = st.filter((x, i) => v[i] >= Math.max(2, mx * 0.005));
+      mf[n] = keep(gut.length > 1 ? M.union(gut) : gut[0].translate([0, 0, 0])); st.forEach(x => x.delete()); }
+    const out = { u: F.u }; for (const n of Object.keys(mf)) out[n] = mf[n].translate([0, 0, 0]);
+    return out;
+  } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
+}
+
+const _zwiP = { hoehe: 160, rillen: 44, rillenTief: 100, zipfel: 0, nase: 100, koerperFarbe: '#c99a6b', muetzeFarbe: '#a8262f' };
+const _ZWI_DEF = { ..._zwiP };
+const _ZWI_FARBE = p => ({ koerper: p.koerperFarbe, muetze: p.muetzeFarbe, weiss: '#f4f2ec', nase: '#d9b08c' });
+const _ZWI_NAME = { koerper: 'Zipfel-Wichtel Körper', muetze: 'Zipfel-Wichtel Mütze', weiss: 'Zipfel-Wichtel Bart + Umschlag', nase: 'Zipfel-Wichtel Nase' };
+let _zwiRT = null;
+function _zwiPreviewGeo(){
+  if (!_mfWasm) throw new Error('Manifold lädt noch');
+  const r = _zwiBuild(_mfWasm, _zwiP, 'vorschau'), F = _ZWI_FARBE(_zwiP), ks = Object.keys(F).filter(k => r[k]);
+  let n = 0; const geos = ks.map(k => { const g = _mfToGeo(r[k]).toNonIndexed(); r[k].delete(); n += g.attributes.position.count; return [g, F[k]]; });
+  const pos = new Float32Array(n * 3), col = new Float32Array(n * 3); let o = 0;
+  for (const [g, hex] of geos) { const a = g.attributes.position.array, c = new THREE.Color(hex); pos.set(a, o * 3);
+    for (let i = 0; i < a.length / 3; i++) { col[(o + i) * 3] = c.r; col[(o + i) * 3 + 1] = c.g; col[(o + i) * 3 + 2] = c.b; } o += a.length / 3; g.dispose(); }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.scale(0.1, 0.1, 0.1); geo.computeVertexNormals(); return geo;
+}
+function _zwiOpen(){ document.getElementById('zwi-modal').classList.add('show'); _zwiSync(); _mfInit().then(_zwiBoot).catch(() => notify('Rechenkern konnte nicht geladen werden', 'w')); }
+function _zwiBoot(){ const m = document.getElementById('zwi-modal'); if (!m || !m.classList.contains('show')) return;
+  if (!_gpv['zwi']) _gpvInit('zwi', () => _zwiPreviewGeo()); else { _gpvUpdate('zwi'); if (!_gpv['zwi'].anim) _gpvLoop('zwi'); } }
+function _zwiClose(){ document.getElementById('zwi-modal').classList.remove('show'); _gpvStop('zwi'); }
+function _zwiRepaint(){ if (_zwiRT) clearTimeout(_zwiRT); _zwiRT = setTimeout(() => { _zwiRT = null; if (!_mfWasm) return; if (_gpv['zwi']) _gpvUpdate('zwi'); else _zwiBoot(); }, 300); }
+function _zwiSet(k, v){ _zwiP[k] = parseFloat(v); _zwiSync(); _zwiRepaint(); }
+function _zwiStr(k, v){ _zwiP[k] = v; _zwiSync(); _zwiRepaint(); }
+function _zwiReset(){ Object.assign(_zwiP, _ZWI_DEF); _zwiSync(); _zwiRepaint(); }
+function _zwiSync(){
+  for (const k of ['hoehe', 'rillen', 'rillenTief', 'zipfel', 'nase']) { const s = document.getElementById('zwi-' + k), t = document.getElementById('zwiv-' + k); if (s) s.value = _zwiP[k]; if (t) t.textContent = _zwiP[k]; }
+  document.querySelectorAll('#zwi-farbe-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === _zwiP.muetzeFarbe));
+  const el = document.getElementById('zwi-info'); if (!el) return;
+  el.innerHTML = `Zipfel-Wichtel ca. ${_zwiP.hoehe} mm hoch. Teile je Farbe: Körper (Holz), Mütze, Weiß (Bart, Umschlag, Bommel), Nase – mit AMS zusammen drucken.` +
+    '<br><b>Druck stehend</b>: Körper und Mütze ohne Stützen; unter dem Umschlag-Rand und der Bommel helfen <b>Baumstützen</b>. Holz-PLA für den Körper, Fuzzy Skin für Mütze und Bart wirkt wie Filz.';
+}
+async function _zwiCreate(){
+  const p = { ..._zwiP };
+  _progressShow('Zipfel-Wichtel wird gebaut…'); _progressSet(8); _progressCreep(90, 0.5);
+  try {
+    const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
+    const r = _zwiBuild(w, p, 'fein'), F = _ZWI_FARBE(p);
+    saveUndo();
+    typeCounts['zipfelwichtel'] = (typeCounts['zipfelwichtel'] || 0) + 1;
+    const nr = typeCounts['zipfelwichtel'], meshes = [];
+    for (const k of Object.keys(F)) { if (!r[k]) continue;
+      const geo = _mfToGeo(r[k]).toNonIndexed(); r[k].delete(); geo.scale(0.1, 0.1, 0.1); _creaseNormals(geo, 70);
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(F[k]), roughness: 0.8, metalness: 0.02, side: THREE.DoubleSide }));
+      mesh.castShadow = mesh.receiveShadow = true;
+      mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: _ZWI_NAME[k] + ' #' + nr, color: F[k], isHole: false, fillet: 0, chamfer: 0, displacementPattern: 'keine', zipfelWichtelParams: p, edgeAngle: 85, noEdgeLines: k === 'koerper' };
+      scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh); meshes.push(mesh); }
+    selectObjs(meshes); updateTree(); fitToObjects(meshes);
+    _progressDone(); notify('🧑‍🎄 Zipfel-Wichtel erstellt ✓ Teile je Farbe mit AMS', 'ok'); _zwiClose();
+  } catch (e) { console.error('Zipfel-Wichtel:', e); _progressHide(); notify('Zipfel-Wichtel fehlgeschlagen: ' + (e && e.message || e), 'w'); }
+}
+
 // ═══ ADVENTSKALENDER-GENERATOR (🎁 _adv*) ═════════════════════════════════════
 // ═══ ADVENTSKALENDER-GENERATOR (🎁 _adv*) ═════════════════════════════════════
 // Kern (Manifold, mm), 1:1 in volme3d.html eingebettet. Test in Node: tools/adventskalender/test_core.mjs
@@ -51018,6 +51149,7 @@ const _STARTERS = [
   {i:'🔴',t:'Kugelkranz',d:'Adventskranz aus Kugeln im Ring, unten flach, mit Haltern für 4 Stabkerzen oder Teelichter – ohne Stützen',run:()=>_kkzOpen()},
   {i:'🌀',t:'Spiral-Baum',d:'Weihnachtsbaum als Spiralband um einen Kegel, Fußring unten, Stern oben – stehend mit Baumstützen',run:()=>_spbOpen()},
   {i:'🚪',t:'Wichtel-Türecke',d:'Wichtel-Silhouetten als Türecke (L-Rahmen für die Türzarge) oder Aufsteller mit Steckfuß – Bart, Mützen-Streifen und Nasen als erhabene zweite Farbe',run:()=>_wsiOpen()},
+  {i:'🧑‍🎄',t:'Zipfel-Wichtel',d:'Hoher Wichtel (Christmas Gnome): Holzrillen-Körper, rote Zipfelmütze mit weißem Umschlag und Bommel, Bart vorn, Holznase – Teile je Farbe',run:()=>_zwiOpen()},
   {i:'🔠',t:'Schrift-Aufsteller',d:'Dicke Blockschrift (WEIH/NACH/TEN, FEST, XMAS) gleich breit gestapelt, Schreibschrift-Wort obendrauf in zweiter Farbe – ohne Stützen',run:()=>_swaOpen()},
   {i:'🏠',t:'Lichthaus',d:'Satteldach-Haus mit Lichtschlitzen oder Fenstern, Bodenplatte mit LED-Teelicht-Halter – ohne Stützen',run:()=>_lhsOpen()},
   {i:'🪢',t:'Kordel-Topf',d:'Übertopf, Vase oder Schale aus gedrehten Seilringen, loses Seilende über den Rand – ohne Stützen',run:()=>_kdlOpen()},
@@ -51203,7 +51335,7 @@ function _maybeShowStarter(){
 // 🎄 Rubrik Weihnachten (Volker 9.11.26: „solche Sachen in eine Rubrik Weihnachten schieben, da kommt
 // noch einiges hinterher“). Neue Weihnachts-Generatoren NUR hier eintragen — die Liste speist das
 // Thema auf der Generatoren-Seite und den Block oben im Generator-Menü.
-const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Stern-Anhänger', 'Schneemann', 'Kugelkranz', 'Spiral-Baum', 'Wichtel-Türecke', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
+const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Stern-Anhänger', 'Schneemann', 'Kugelkranz', 'Spiral-Baum', 'Wichtel-Türecke', 'Zipfel-Wichtel', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
   'Dackel-Kerzenhalter', 'Mops-Kerzenhalter', 'Schwein-Kerzenhalter', 'Spaniel-Kerzenhalter', 'Islandpferd-Kerzenhalter'];
 const _GEN_THEMEN = [
   ['🎄 Weihnachten', _GEN_WEIHNACHTEN],
@@ -86130,8 +86262,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.396';
+const VOLME3D_VERSION = '1.18.397';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.397', date:'2026-11-12', changes:[
+    ['🧑‍🎄','<b>Neu: Zipfel-Wichtel</b> (Weihnachten, „Christmas Gnome“) – Körper mit Holzrillen, rote Zipfelmütze mit weißem Umschlag und Bommel, Bart als Auflage vorn, Holznase; Teile je Farbe für AMS'],
+  ]},
   { version:'1.18.396', date:'2026-11-12', changes:[
     ['🚪','<b>Neu: Wichtel-Türecke</b> (Weihnachten) – Reihe aus Wichtel-Silhouetten (gepunktet, Zipfel mit Streifen, gestreift mit Stern) als L-Rahmen für die Türzarge oder als Aufsteller mit Steckfuß; Bart, Krempe, Streifen und Nasen liegen erhaben als zweite Farbe auf'],
   ]},
@@ -98936,6 +99071,7 @@ const CMDK = [
   {i:'🔴',g:'Generator',t:'Kugelkranz',k:'adventskranz kranz kugeln kugelkranz kerzen stabkerze teelicht advent weihnachten bubble',run:()=>_kkzOpen()},
   {i:'🌀',g:'Generator',t:'Spiral-Baum',k:'spiral baum weihnachtsbaum tannenbaum spirale band stern deko modern',run:()=>_spbOpen()},
   {i:'🚪',g:'Generator',t:'Wichtel-Türecke',k:'türecke tür ecke türzarge wichtel gnome silhouette aufsteller weihnachten deko zwerge',run:()=>_wsiOpen()},
+  {i:'🧑‍🎄',g:'Generator',t:'Zipfel-Wichtel',k:'wichtel gnome christmas zipfelmütze bart holz rillen weihnachten figur skandinavisch tomte',run:()=>_zwiOpen()},
   {i:'🔠',g:'Generator',t:'Schrift-Aufsteller',k:'schrift aufsteller schriftzug frohe weihnachten frohes fest merry xmas blockschrift schreibschrift text deko',run:()=>_swaOpen()},
   {i:'🏠',g:'Generator',t:'Lichthaus',k:'haus lichthaus häuschen windlicht led teelicht lichterkette weihnachten advent winter deko schlitze fenster satteldach giebel',run:()=>_lhsOpen()},
   {i:'🎄',g:'Generator',t:'Weihnachts-Studio',k:'weihnachts studio weihnachten baum tanne mütze nikolausmütze glocke licht lampe teelicht dose anhänger sockel name jahr inschrift stern noel advent deko',run:()=>_wstOpen()},
