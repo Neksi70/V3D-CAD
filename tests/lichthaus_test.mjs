@@ -22,6 +22,10 @@ const varianten = [
   { name: 'Geschlossen + Lichterkette', p: { muster: 'ohne', licht: 'kette' } },
   { name: 'Groß 140×120×160, 45°, breite Schlitze', p: { breite: 140, tiefe: 120, wandH: 160, neigung: 45, sb: 4, sa: 10 } },
   { name: 'Klein 50×45, steil 70°, Fenster', p: { breite: 50, tiefe: 45, wandH: 50, neigung: 70, muster: 'fenster', ledD: 30 } },
+  { name: 'Dorf: Haus (Dachüberstand, Schornstein)', p: { breite: 64, tiefe: 64, wandH: 88, neigung: 55, muster: 'dorf', sockel: 8, dach: 1, kamin: 1, turm: 0 } },
+  { name: 'Dorf: Stadthaus', p: { breite: 56, tiefe: 70, wandH: 105, neigung: 58, muster: 'dorf', sockel: 8, dach: 1, kamin: 1, turm: 0 } },
+  { name: 'Dorf: Kirche mit Turm', p: { breite: 66, tiefe: 92, wandH: 78, neigung: 52, muster: 'dorf', sockel: 8, dach: 1, kamin: 0, turm: 1 } },
+  { name: 'Dorf: Klein', p: { breite: 54, tiefe: 54, wandH: 62, neigung: 52, muster: 'dorf', sockel: 8, dach: 1, kamin: 1, turm: 0 } },
 ];
 for (const v of varianten) {
   const r = await pg.evaluate(P => {
@@ -56,7 +60,14 @@ for (const v of varianten) {
   if (v.p.muster !== 'ohne') ok(v.name + ': Öffnungen vorhanden', r.oeff > 4, r.oeff);
   ok(v.name + ': Haus sitzt über dem Kragen (frei, seitlich stößt an)', r.sitzt < 0.01 && r.seitlich > 1, [r.sitzt, r.seitlich]);
   if (r.teelicht !== undefined) ok(v.name + ': LED-Teelicht passt in die Mulde', r.teelicht < 0.01, r.teelicht);
-  ok(v.name + ': ohne Stützen druckbar', r.stuetz[0] === 0 && r.stuetz[1] === 0, r.stuetz);
+  if (v.p.muster === 'dorf') {                                             // Rundbögen/Sprossen = kurze Brücken (≤ 11 mm) → Gerüst (Dach, Schornstein, Turm) ohne Fenster streng prüfen
+    const g = await pg.evaluate(async (P) => { const w = await _mfInit(), R = _lhsBuild(w, { ..._lhsP, ...P, muster: 'ohne', licht: 'ohne' }), H = R.haus, me = H.getMesh(), V = me.vertProperties, T = me.triVerts, np = me.numProp;
+      let flaeche = 0; for (let t = 0; t < T.length; t += 3) { const A = [0, 1, 2].map(i => [V[T[t + i] * np], V[T[t + i] * np + 1], V[T[t + i] * np + 2]]);
+        const u = A[1].map((x, i) => x - A[0][i]), vv = A[2].map((x, i) => x - A[0][i]), c = [u[1] * vv[2] - u[2] * vv[1], u[2] * vv[0] - u[0] * vv[2], u[0] * vv[1] - u[1] * vv[0]], L = Math.hypot(...c);
+        if (L > 0 && c[2] / L < -0.75 && Math.min(A[0][2], A[1][2], A[2][2]) > 0.5) flaeche += L / 2; }
+      H.delete(); return flaeche; }, v.p);
+    ok(v.name + ': Gerüst (Dach, Schornstein, Turm) ohne nach unten zeigende Flächen > 45°', g < 6, Math.round(g) + ' mm²');   // < 6: Rechensplitter (8 × 0,46 mm²) an der Naht Turmwand/Helm-Innenseite
+  } else ok(v.name + ': ohne Stützen druckbar', r.stuetz[0] === 0 && r.stuetz[1] === 0, r.stuetz);
 }
 {
   const r = await pg.evaluate(async () => { _newCreate(false); Object.assign(_lhsP, _LHS_DEF); _lhsOpen(); await new Promise(res => setTimeout(res, 300));
