@@ -5900,6 +5900,42 @@ Patrick</textarea>
   </div>
 </div>
 
+<div id="kkz-modal" class="g3dm" onclick="if(event.target===this)_kkzClose()">
+  <div class="g3box">
+    <div class="g3hdr">🔴 Kugelkranz (Adventskranz)<span class="vx" onclick="_kkzClose()">✕</span></div>
+    <div class="g3body">
+      <canvas id="kkz-canvas" width="200" height="320"></canvas>
+      <div class="g3ctrl">
+        <div class="vrow"><label>Kugeln</label> <input type="range" id="kkz-anzahl" min="6" max="20" value="12" step="1" oninput="_kkzSet('anzahl',this.value)"><span class="vv" id="kkzv-anzahl">12</span></div>
+        <div class="vrow"><label>Kugel-Ø</label> <input type="range" id="kkz-kugelD" min="25" max="90" value="50" step="1" oninput="_kkzSet('kugelD',this.value)"><span class="vv" id="kkzv-kugelD">50</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Wie weit die Kugeln ineinander gehen">Überlappung</label> <input type="range" id="kkz-ueberlapp" min="2" max="30" value="12" step="1" oninput="_kkzSet('ueberlapp',this.value)"><span class="vv" id="kkzv-ueberlapp">12</span><span class="vu">%</span></div>
+        <div class="vrow"><label title="Wie viel unten abgeschnitten wird (Standfläche)">Flach unten</label> <input type="range" id="kkz-flach" min="5" max="40" value="18" step="1" oninput="_kkzSet('flach',this.value)"><span class="vv" id="kkzv-flach">18</span><span class="vu">%</span></div>
+        <div class="vrow"><label>Kerzen</label> <input type="range" id="kkz-kerzen" min="1" max="8" value="4" step="1" oninput="_kkzSet('kerzen',this.value)"><span class="vv" id="kkzv-kerzen">4</span></div>
+        <div class="vtbrow" id="kkz-halter-bg" style="display:flex;gap:4px;margin-bottom:7px">
+          <button class="vtb on" data-v="stab" onclick="_kkzStr('halter','stab')">🕯️ Stabkerzen</button>
+          <button class="vtb" data-v="teelicht" onclick="_kkzStr('halter','teelicht')">Teelichter</button>
+        </div>
+        <div id="kkz-stabbox">
+          <div class="vrow"><label>Kerzen-Ø</label> <input type="range" id="kkz-kerzeD" min="10" max="40" value="22" step="0.5" oninput="_kkzSet('kerzeD',this.value)"><span class="vv" id="kkzv-kerzeD">22</span><span class="vu">mm</span></div>
+          <div class="vrow"><label>Tiefe</label> <input type="range" id="kkz-kerzeT" min="8" max="35" value="18" step="1" oninput="_kkzSet('kerzeT',this.value)"><span class="vv" id="kkzv-kerzeT">18</span><span class="vu">mm</span></div>
+        </div>
+        <div class="vtbrow" id="kkz-farbe-bg" style="display:flex;gap:4px;margin-bottom:7px">
+          <button class="vtb on" data-v="#c46a73" onclick="_kkzStr('farbe','#c46a73')">Altrosa</button>
+          <button class="vtb" data-v="#8f9a6a" onclick="_kkzStr('farbe','#8f9a6a')">Salbei</button>
+          <button class="vtb" data-v="#efe6dc" onclick="_kkzStr('farbe','#efe6dc')">Creme</button>
+          <button class="vtb" data-v="#9c2f36" onclick="_kkzStr('farbe','#9c2f36')">Rot</button>
+        </div>
+        <div class="g3info" id="kkz-info"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_kkzReset()">Zurücksetzen</button>
+      <button class="btn" onclick="_kkzClose()">Abbrechen</button>
+      <button class="btn pri" onclick="_kkzCreate()">✓ Erstellen</button>
+    </div>
+  </div>
+</div>
+
 <div id="swa-modal" class="g3dm" onclick="if(event.target===this)_swaClose()">
   <div class="g3box">
     <div class="g3hdr">🔠 Schrift-Aufsteller<span class="vx" onclick="_swaClose()">✕</span></div>
@@ -38477,6 +38513,83 @@ async function _kglCreate(){
   } catch (e) { console.error('Kugel-Anhänger:', e); _progressHide(); notify('Kugel-Anhänger fehlgeschlagen: ' + (e && e.message || e), 'w'); }
 }
 
+// ═══ KUGELKRANZ (🔴 _kkz*, 1.18.394) ═══════════════════════════════════════════════
+// Nach Bild: Adventskranz aus Kugeln im Ring, ineinander verschmolzen, unten flach; in 4 Kugeln Halter für
+// Stabkerzen (oder Teelicht-Mulden). Manifold, mm, Z oben.
+function _kkzBuild(w, p){
+  const M = w.Manifold, tmp = [], k = x => { tmp.push(x); return x; };
+  try {
+    const n = Math.max(6, Math.round(p.anzahl)), rs = p.kugelD / 2, abst = rs * 2 * (1 - p.ueberlapp / 100), R = abst / (2 * Math.sin(Math.PI / n));
+    const zc = rs - rs * p.flach / 100;                                     // Kugelmitte über der Platte (unten flach abgeschnitten)
+    const zt = zc - 0.7071 * rs, rt = 0.7071 * rs;                         // 45°-Tangentenkegel unter jeder Kugel (Tropfenform): unten nichts flacher als 45°
+    const K = []; for (let i = 0; i < n; i++) { const a = i / n * 2 * Math.PI, x = R * Math.cos(a), y = R * Math.sin(a); K.push(k(M.sphere(rs, 64).translate([x, y, zc])));
+      if (zt > 0.05) K.push(k(M.cylinder(zt, rt - zt, rt, 64).translate([x, y, 0]))); }
+    let kranz = k(M.union(K));
+    kranz = k(kranz.trimByPlane([0, 0, 1], 0));
+    const nk = Math.min(n, Math.max(1, Math.round(p.kerzen))), schritt = n / nk, info = { R, n, halter: 0, ok: true };
+    for (let j = 0; j < nk; j++) {
+      const i = Math.round(j * schritt) % n, a = i / n * 2 * Math.PI, x = R * Math.cos(a), y = R * Math.sin(a);
+      const top = zc + rs;
+      if (p.halter === 'teelicht') { const r = p.teeD / 2; kranz = k(kranz.subtract(k(M.cylinder(p.teeT + 1, r, r, 96).translate([x, y, top - p.teeT])))); if (2 * r > 2 * rs * 0.92) info.ok = false; }
+      else { const r = p.kerzeD / 2 + 0.25, t = Math.min(p.kerzeT, top - 3);
+        kranz = k(kranz.subtract(k(M.cylinder(t + 1, r, r, 96).translate([x, y, top - t]))));
+        kranz = k(kranz.subtract(k(M.cylinder(1.2, r + 1, r, 96).translate([x, y, top - 1.2 + 0.01]))));   // Einführfase
+        if (2 * r > 2 * rs * 0.8) info.ok = false; }
+      info.halter++;
+    }
+    info.durchmesser = 2 * (R + rs); info.hoehe = zc + rs;
+    return { kranz: kranz.translate([0, 0, 0]), info };
+  } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
+}
+const _kkzP = { anzahl: 12, kugelD: 50, ueberlapp: 12, flach: 18, kerzen: 4, halter: 'stab', kerzeD: 22, kerzeT: 18, teeD: 39.5, teeT: 17, farbe: '#c46a73' };
+const _KKZ_DEF = { ..._kkzP };
+let _kkzRT = null;
+function _kkzPreviewGeo(){
+  if (!_mfWasm) throw new Error('Manifold lädt noch');
+  const r = _kkzBuild(_mfWasm, _kkzP); _kkzP._i = r.info; setTimeout(_kkzSync, 0);
+  const geo = _mfToGeo(r.kranz).toNonIndexed(); r.kranz.delete(); geo.rotateX(-Math.PI / 2);
+  const n = geo.attributes.position.count, col = new Float32Array(n * 3), c = new THREE.Color(_kkzP.farbe);
+  for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3)); geo.scale(0.1, 0.1, 0.1); geo.computeVertexNormals(); return geo;
+}
+function _kkzOpen(){ document.getElementById('kkz-modal').classList.add('show'); _kkzSync(); _mfInit().then(_kkzBoot).catch(() => notify('Rechenkern konnte nicht geladen werden', 'w')); }
+function _kkzBoot(){ const m = document.getElementById('kkz-modal'); if (!m || !m.classList.contains('show')) return;
+  if (!_gpv['kkz']) _gpvInit('kkz', () => _kkzPreviewGeo()); else { _gpvUpdate('kkz'); if (!_gpv['kkz'].anim) _gpvLoop('kkz'); } }
+function _kkzClose(){ document.getElementById('kkz-modal').classList.remove('show'); _gpvStop('kkz'); }
+function _kkzRepaint(){ if (_kkzRT) clearTimeout(_kkzRT); _kkzRT = setTimeout(() => { _kkzRT = null; if (!_mfWasm) return; if (_gpv['kkz']) _gpvUpdate('kkz'); else _kkzBoot(); }, 220); }
+function _kkzSet(k, v){ _kkzP[k] = parseFloat(v); _kkzSync(); _kkzRepaint(); }
+function _kkzStr(k, v){ _kkzP[k] = v; _kkzSync(); _kkzRepaint(); }
+function _kkzReset(){ Object.assign(_kkzP, _KKZ_DEF); _kkzSync(); _kkzRepaint(); }
+function _kkzSync(){
+  for (const k of ['anzahl', 'kugelD', 'ueberlapp', 'flach', 'kerzen', 'kerzeD', 'kerzeT']) { const s = document.getElementById('kkz-' + k), t = document.getElementById('kkzv-' + k); if (s) s.value = _kkzP[k]; if (t) t.textContent = _kkzP[k]; }
+  const mark = (sel, val) => document.querySelectorAll(sel + ' .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === String(val)));
+  mark('#kkz-halter-bg', _kkzP.halter); mark('#kkz-farbe-bg', _kkzP.farbe);
+  const sb = document.getElementById('kkz-stabbox'); if (sb) sb.style.display = _kkzP.halter === 'stab' ? '' : 'none';
+  const el = document.getElementById('kkz-info'); if (!el) return;
+  const I = _kkzP._i;
+  el.innerHTML = (I ? `Kranz Ø ${Math.round(I.durchmesser)} mm, ${Math.round(I.hoehe)} mm hoch, ${I.n} Kugeln, ${I.halter} ${_kkzP.halter === 'stab' ? 'Kerzenhalter' : 'Teelicht-Mulden'}. ` : '') +
+    (I && !I.ok ? '<br><b style="color:#ffb455">⚠ Die Kerze ist zu dick für die Kugeln – Kugeln größer machen.</b>' : '') +
+    (_kkzP.halter === 'stab' ? `<br>Für Stabkerzen Ø ${_kkzP.kerzeD} mm (LED-Stabkerzen passen meist mit 22 mm), ${_kkzP.kerzeT} mm tief, mit Einführfase.` : '<br>Mulden für LED-Teelichter (Ø 38 mm).') +
+    '<br><b>Druck:</b> liegt flach auf, <b>ohne Stützen</b> – unter jeder Kugel ein unsichtbarer 45°-Ansatz. Mattes PLA in Altrosa, Salbei oder Creme wirkt wie auf dem Foto. Nur LED-Kerzen!';
+}
+async function _kkzCreate(){
+  const p = { ..._kkzP }; delete p._i;
+  _progressShow('Kugelkranz wird gebaut…'); _progressSet(30);
+  try {
+    const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
+    const r = _kkzBuild(w, p);
+    saveUndo();
+    typeCounts['kugelkranz'] = (typeCounts['kugelkranz'] || 0) + 1;
+    const geo = _mfToGeo(r.kranz).toNonIndexed(); r.kranz.delete(); geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1); _moldNormals(geo);
+    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(p.farbe), roughness: 0.8, metalness: 0.02, side: THREE.DoubleSide }));
+    mesh.castShadow = mesh.receiveShadow = true;
+    mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Kugelkranz #' + typeCounts['kugelkranz'], color: p.farbe, isHole: false, fillet: 0, chamfer: 0, displacementPattern: 'keine', kugelkranzParams: p, edgeAngle: 50 };
+    scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
+    selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
+    _progressDone(); notify('Kugelkranz erstellt ✓ flach drucken, ohne Stützen — nur LED-Kerzen', 'ok'); _kkzClose();
+  } catch (e) { console.error('Kugelkranz:', e); _progressHide(); notify('Kugelkranz fehlgeschlagen: ' + (e && e.message || e), 'w'); }
+}
+
 // ═══ ALIGN / MIRROR ═══════════════════════════════════════════════════
 function alignTool() {
   if (!selectedObjs.length) { notify('Objekt wählen', 'w'); return; }
@@ -50646,6 +50759,7 @@ const _STARTERS = [
   {i:'⭐',t:'Stern-Anhänger',d:'Flacher Stern mit Rahmen, senkrechten Lamellen dahinter und Schreibschrift (Merry Christmas, Name …) – bis zu drei Farben, ohne Stützen',run:()=>_kglOpenStern()},
   {i:'🎄',t:'Kugel-Anhänger',d:'Flache Weihnachtskugel mit Rippen-Käfig, Schleife und Öse, Schreibschrift (Frohe Weihnachten, Name …) in zweiter Farbe – ohne Stützen',run:()=>_kglOpen()},
   {i:'⛄',t:'Schneemann',d:'Rillen-Körper, glatter Kopf, Karotten-Nase, gerippte Mütze mit Umschlag und Bommel – Teile je Farbe, stehend ohne Stützen',run:()=>_snmOpen()},
+  {i:'🔴',t:'Kugelkranz',d:'Adventskranz aus Kugeln im Ring, unten flach, mit Haltern für 4 Stabkerzen oder Teelichter – ohne Stützen',run:()=>_kkzOpen()},
   {i:'🔠',t:'Schrift-Aufsteller',d:'Dicke Blockschrift (WEIH/NACH/TEN, FEST, XMAS) gleich breit gestapelt, Schreibschrift-Wort obendrauf in zweiter Farbe – ohne Stützen',run:()=>_swaOpen()},
   {i:'🏠',t:'Lichthaus',d:'Satteldach-Haus mit Lichtschlitzen oder Fenstern, Bodenplatte mit LED-Teelicht-Halter – ohne Stützen',run:()=>_lhsOpen()},
   {i:'🪢',t:'Kordel-Topf',d:'Übertopf, Vase oder Schale aus gedrehten Seilringen, loses Seilende über den Rand – ohne Stützen',run:()=>_kdlOpen()},
@@ -50831,7 +50945,7 @@ function _maybeShowStarter(){
 // 🎄 Rubrik Weihnachten (Volker 9.11.26: „solche Sachen in eine Rubrik Weihnachten schieben, da kommt
 // noch einiges hinterher“). Neue Weihnachts-Generatoren NUR hier eintragen — die Liste speist das
 // Thema auf der Generatoren-Seite und den Block oben im Generator-Menü.
-const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Stern-Anhänger', 'Schneemann', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
+const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Stern-Anhänger', 'Schneemann', 'Kugelkranz', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
   'Dackel-Kerzenhalter', 'Mops-Kerzenhalter', 'Schwein-Kerzenhalter', 'Spaniel-Kerzenhalter', 'Islandpferd-Kerzenhalter'];
 const _GEN_THEMEN = [
   ['🎄 Weihnachten', _GEN_WEIHNACHTEN],
@@ -85758,8 +85872,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.393';
+const VOLME3D_VERSION = '1.18.394';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.394', date:'2026-11-12', changes:[
+    ['🔴','<b>Neu: Kugelkranz</b> (Weihnachten) – Adventskranz aus Kugeln im Ring, ineinander verschmolzen und unten flach, mit Haltern für Stabkerzen (Ø einstellbar, mit Einführfase) oder Teelicht-Mulden. Ein Teil, ohne Stützen'],
+  ]},
   { version:'1.18.393', date:'2026-11-12', changes:[
     ['⭐','<b>Neu: Stern-Anhänger</b> (Weihnachten) – Sternrahmen mit runden Spitzen und Öse, senkrechte Lamellen dahinter (eigene Farbe, flacher), Schreibschrift quer darüber. Steckt im Kugel-Anhänger als zweite Form'],
   ]},
@@ -98552,6 +98669,7 @@ const CMDK = [
   {i:'⭐',g:'Generator',t:'Stern-Anhänger',k:'stern anhänger weihnachtsstern lamellen merry christmas frohe weihnachten name deko wand',run:()=>_kglOpenStern()},
   {i:'🎄',g:'Generator',t:'Kugel-Anhänger',k:'kugel anhänger weihnachtskugel christbaumkugel ornament baumschmuck schleife frohe weihnachten merry christmas name geschenkanhänger',run:()=>_kglOpen()},
   {i:'⛄',g:'Generator',t:'Schneemann',k:'schneemann snowman winter weihnachten mütze bommel karotte nase rillen figur deko',run:()=>_snmOpen()},
+  {i:'🔴',g:'Generator',t:'Kugelkranz',k:'adventskranz kranz kugeln kugelkranz kerzen stabkerze teelicht advent weihnachten bubble',run:()=>_kkzOpen()},
   {i:'🔠',g:'Generator',t:'Schrift-Aufsteller',k:'schrift aufsteller schriftzug frohe weihnachten frohes fest merry xmas blockschrift schreibschrift text deko',run:()=>_swaOpen()},
   {i:'🏠',g:'Generator',t:'Lichthaus',k:'haus lichthaus häuschen windlicht led teelicht lichterkette weihnachten advent winter deko schlitze fenster satteldach giebel',run:()=>_lhsOpen()},
   {i:'🎄',g:'Generator',t:'Weihnachts-Studio',k:'weihnachts studio weihnachten baum tanne mütze nikolausmütze glocke licht lampe teelicht dose anhänger sockel name jahr inschrift stern noel advent deko',run:()=>_wstOpen()},
