@@ -21,7 +21,7 @@ console.log('Bauzeit', Date.now() - t0, 'ms');
 const H = P.margin_b + (P.slots - 1) * P.pitch + P.slot_h + P.margin_t;
 ok(gleich(groesse(turm), [112, 92, H]) && H === 447, `Turm 112 × 92 × ${H} (ein Schacht, 36 Etagen à 12 mm): ` + groesse(turm).join(' × '));
 const sp = groesse(B.stone_print(1));
-ok(gleich(sp, [P.hals + P.griff_t + m.out_w - P.clr, P.in_d + 2 * P.gd - 2 * P.clr, 2 * P.griff_r]), `Tages-Schieber geht ganz durch: ${sp.join(' × ')} (lang × breit × Zapfen-Ø)`);
+ok(gleich(sp, [P.hals + P.griff_t + m.out_w - P.clr, P.in_d + 2 * P.gd - 2 * P.clr, P.griff_h]), `Tages-Schieber geht ganz durch: ${sp.join(' × ')} (lang × breit × Griffhöhe)`);
 const feuerGanz = w.Manifold.union([feuer, B.schneeKante(), B.bogenRing()]);
 ok(gleich(groesse(feuerGanz), [176, 135, 112]), 'Feuerstelle mit Einlagen 176 × 135 × 112: ' + groesse(feuerGanz).join(' × '));
 // Deko: Einlagen überschneiden die Feuerstelle nicht, Flamme/Socken geschlossen und frei
@@ -51,8 +51,8 @@ ok(mb < 0.05, `Blindstopfen: nur die Klemmnoppen drücken gewollt an die Schlitz
 ok(V(turm, an(stein, 5).translate([0, 0, 0.4])) > 1, 'Schieber sitzt satt im Schlitz (0,4 mm höher stößt an)');
 ok(V(an(stein, 7), an(stein, 8)) < 1e-3 && V(an(R(stein), 7), an(stein, 8)) < 1e-3, 'Durchgehende Schieber in benachbarten Etagen (gleiche und Gegenseite) berühren sich nicht');
 ok(V(an(stein, 7), an(R(blind), 7)) > 0.1, 'Gegenprobe: durchgehender Schieber füllt den Gegenschlitz – dort gehört kein Stopfen hin');
-ok(V(an(stein, 7), an(blind, 8)) < 1e-3 && V(an(stein, 7), an(R(blind), 8)) < 1e-3, 'Zapfen und Schieberende stoßen nicht an Stopfen der Etage darüber');
-ok(V(turm, an(stein, 7).translate([0.5, 0, 0])) > 0.1, 'Gegenprobe: 0,5 mm weiter hinein stößt der Zapfen an die Wand (Anschlag)');
+ok(V(an(stein, 7), an(blind, 8)) < 1e-3 && V(an(stein, 7), an(R(blind), 8)) < 1e-3, 'Griffleiste und Schieberende stoßen nicht an Stopfen der Etage darüber');
+ok(V(turm, an(stein, 7).translate([0.5, 0, 0])) > 0.1, 'Gegenprobe: 0,5 mm weiter hinein stößt die Griffleiste an die Wand (Anschlag)');
 ok(V(krone.translate([0, 0, m.tower_h]), an(stein, P.slots - 1)) < 1e-3 && V(krone.translate([0, 0, m.tower_h]), an(R(stein), P.slots - 1)) < 1e-3, 'Griffscheibe in der obersten Etage stößt nicht an die Krone');
 const amTurm = mf => mf.translate([m.tower_x, m.tower_y, P.base_h - m.sock]);
 ok(V(feuer, amTurm(an(stein, 0))) < 1e-3 && V(feuer, amTurm(an(R(stein), 0))) < 1e-3, 'Unterste Griffscheiben stoßen nicht an den Sims');

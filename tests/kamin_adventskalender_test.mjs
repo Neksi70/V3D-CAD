@@ -54,7 +54,7 @@ try {
   const erwartet = ['feuerstelle.stl', 'name.stl', 'feuerstelle_bogenrahmen.stl', 'feuerstelle_schnee.stl', 'flamme.stl', 'flamme_innen.stl', 'turm_1von3.stl', 'turm_3von3.stl', 'kaminkrone.stl', 'kaminkrone_aufsatz.stl', 'blindstopfen.stl', 'tag_01_schieber.stl', 'tag_01_zahl.stl', 'tag_24_schieber.stl', 'tag_24_zahl.stl'];
   ok(ex.namen.length === 60 && erwartet.every(n => ex.namen.includes(n)), `STL-Export: ${ex.namen.length} Dateien (${ex.namen.slice(0, 7).join(', ')} …)`);
   ok(ex.dicht === ex.namen.length, `alle ${ex.dicht}/${ex.namen.length} STL geschlossen (jede Kante 2×) ${(ex.offen || []).join(', ')}`);
-  ok(Object.entries(ex.bb).every(([n, b]) => /name|zahl|bogenrahmen|schnee|innen|weiss/.test(n) || Math.abs(b[3]) < 0.01) && Math.abs(ex.bb['turm_1von3.stl'][2] - 152) < 0.05 && Math.abs(ex.bb['tag_01_schieber.stl'][2] - 11) < 0.05,
+  ok(Object.entries(ex.bb).every(([n, b]) => /name|zahl|bogenrahmen|schnee|innen|weiss/.test(n) || Math.abs(b[3]) < 0.01) && Math.abs(ex.bb['turm_1von3.stl'][2] - 152) < 0.05 && Math.abs(ex.bb['tag_01_schieber.stl'][2] - 9) < 0.05,
      `Druckorientierung: alles auf z = 0 (Name/Zahlen in derselben Lage wie Feuerstelle/Schieber), Turmteil 1 ${ex.bb['turm_1von3.stl'].slice(0, 3).join('×')}, Schieber ${ex.bb['tag_01_schieber.stl'].slice(0, 3).join('×')}, Krone ${ex.bb['kaminkrone.stl'].slice(0, 3).join('×')}`);
   // 3MF mit Druckplatten: Blob abfangen, in Node entpacken
   const hol3mf = dr => p.evaluate(async (dr) => { _kakStr('drucker', dr); let blob = null; const alt = window._saveExport; window._saveExport = async bl => { blob = bl; return { wrote: true, dir: 'Test' }; };
@@ -66,7 +66,7 @@ try {
     const namen = [...cfg.matchAll(/key="plater_name" value="([^"]*)"/g)].map(m => m[1]).join('|');
     const tag1 = cfg.match(/value="tag1"\/>([\s\S]*?)<\/object>/), ext = tag1 ? [...tag1[1].matchAll(/key="extruder" value="(\d+)"/g)].map(m => m[1]).join(',') : '';
     const farb = (ps.filament_colour || []).join(','), model = fflate.strFromU8(z['3D/3dmodel.model']);
-    ok(namen === soll && masch.test(ps.printer_settings_id || '') && ext === '4,4,2' && farb === '#B5563A,#2D4A3E,#D9CFC0,#E8E1D4,#9A8F80,#C8323A,#E8742A,#F6C544,#1F1F1F,#E2B13C' && /<metadata name="Application">BambuStudio-/.test(model) && (ps.wipe_tower_x || []).length === soll.split('|').length,
+    ok(namen === soll && masch.test(ps.printer_settings_id || '') && ext === '4,4,2' && farb === '#B5563A,#E8E1D4,#D9CFC0,#5D7A4F,#9A8F80,#C8323A,#E8742A,#F6C544,#1F1F1F,#E2B13C,#2D4A3E' && /<metadata name="Application">BambuStudio-/.test(model) && (ps.wipe_tower_x || []).length === soll.split('|').length,
        `3MF ${dr}: Platten ${namen.split('|').length} (${namen}), Profil ${ps.printer_settings_id}, Tag 1 Schieber/Zahl Extruder ${ext}`);
   }
   const h2c = await p.evaluate(async () => { _kakStr('drucker', 'h2c'); let files = null; const alt = window._saveExportMany; window._saveExportMany = async f => { files = f; return { wrote: true, dir: 'Test' }; };
