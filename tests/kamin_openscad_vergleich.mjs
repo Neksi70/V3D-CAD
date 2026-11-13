@@ -11,9 +11,10 @@ const B = K.kakBuild(w, { ...K.KAK_DEF, bogen: 0, schnee: 0 }, null);   // ohne 
 let fail = 0; const ok = (c, m) => { console.log((c ? 'OK   ' : 'FAIL ') + m); if (!c) fail++; };
 const docker = spawnSync('docker', ['image', 'inspect', 'openscad/openscad:dev'], { stdio: 'ignore' }).status === 0;
 function scad(part, day = 1) {
-  const out = `${TMP}/${part}_${day}_mt${K.KAK_DEF.margin_t}.stl`;
+  const out = `${TMP}/${part}_${day}_${K.KAK_DEF.margin_t}_${K.KAK_DEF.in_w}x${K.KAK_DEF.in_d}_${K.KAK_DEF.base_w}x${K.KAK_DEF.base_d}.stl`;
   if (fs.existsSync(out) && fs.statSync(out).mtimeMs > fs.statSync(SCAD).mtimeMs) return out;
-  const args = ['-o', out, '-D', `part="${part}"`, '-D', `day=${day}`, '-D', `margin_t=${K.KAK_DEF.margin_t}`, '--export-format', 'binstl'];
+  const D = ['margin_t', 'in_w', 'in_d', 'wall', 'base_w', 'base_d', 'base_h', 'open_w', 'open_h'].flatMap(k2 => ['-D', `${k2}=${K.KAK_DEF[k2]}`]);   // Maße wie unser Standard
+  const args = ['-o', out, '-D', `part="${part}"`, '-D', `day=${day}`, ...D, '--export-format', 'binstl'];
   const r = docker ? spawnSync('docker', ['run', '--rm', '--user', `${process.getuid()}:${process.getgid()}`, '-v', `${SCAD}:/in.scad:ro`, '-v', `${TMP}:${TMP}`, 'openscad/openscad:dev', 'openscad', '--backend', 'manifold', ...args, '/in.scad'], { encoding: 'utf8', timeout: 900000 })
                    : spawnSync('openscad', [...args, SCAD], { encoding: 'utf8', timeout: 1800000 });
   if (!fs.existsSync(out)) throw new Error(`OpenSCAD ${part}: ${(r.stderr || '').slice(-800)}`);

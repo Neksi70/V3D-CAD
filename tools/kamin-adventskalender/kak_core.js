@@ -1,15 +1,15 @@
 // Kamin-Adventskalender — Rechenkern. Feuerstelle, Trichter und Krone wie v3d_kamin_adventskalender.scad;
-// Turm und Schieber nach Volkers Foto (13.11.): Schlitze links UND rechts auf jeder Etage, Tages-Schieber mit runder
-// Griffscheibe + Zahl abwechselnd von rechts (ungerade) und links (gerade), freie Schlitze mit Blindstopfen.
-// Fachhöhe = beim Befüllen wählen (den nächsten Tag einfach ein paar Etagen höher einschieben).
+// Turm und Schieber nach Volkers Fotos (13.11., BRICKLET): zwei Schächte nebeneinander (Trennwand), rechts die ungeraden,
+// links die geraden Tage; Schlitze auf jeder Etage, Tages-Schieber mit Zapfengriff (Zahl auf der Stirnseite), freie Schlitze
+// mit Blindstopfen. Fachhöhe = beim Befüllen wählen (den nächsten Tag einfach ein paar Etagen höher einschieben).
 // Manifold, mm, OpenSCAD-Koordinaten (Z oben).
 // Läuft im Browser (App) und in Node (Test): kakBuild(wasm, p, textFn) — textFn(CS, keep, txt, font, h, cx, yb, maxW) → {cs}
 // (App: _lttText); ohne textFn (Node) entstehen keine Zahlen/Namen.
 const KAK_DEF = {
   tage: 24,
-  /* Schacht */ in_w: 96, in_d: 96, wall: 4, gd: 1.6, pitch: 12, slots: 38, margin_b: 9, margin_t: 24,
-  /* Schieber */ pt: 2.4, slot_h: 3.0, clr: 0.3, num_h: 0.6, griff_r: 10.5, griff_t: 3, hals: 2.5, lippe: 1.2,
-  /* Feuerstelle */ base_w: 176, base_d: 136, base_h: 112, open_w: 112, open_h: 74, open_ch: 20, floor_t: 4, ramp_h: 12, mantel_t: 10, mantel_o: 8,
+  /* Schacht */ in_w: 104, in_d: 84, wall: 4, gd: 1.6, pitch: 12, slots: 36, margin_b: 9, margin_t: 15, zwei: 1,   // in_w = innen gesamt (2 Schächte + Trennwand)
+  /* Schieber */ pt: 2.4, slot_h: 3.0, clr: 0.3, num_h: 0.6, griff_r: 5.5, griff_t: 22, hals: 0, lippe: 1.2,     // Zapfen Ø 11, 22 lang
+  /* Feuerstelle */ base_w: 160, base_d: 124, base_h: 112, open_w: 104, open_h: 74, open_ch: 20, floor_t: 4, ramp_h: 12, mantel_t: 10, mantel_o: 8,
   name_txt: '', name_size: 8,
   /* Deko (Foto) */ bogen: 1, schnee: 1, flamme: 1, socken: '', socke_h: 70, deko_t: 1.6,
   /* Optik */ joint_w: 1.2, joint_d: 0.8, font: 'helvetiker_bold',
@@ -29,13 +29,20 @@ function kakMasse(p) {
   const slot_z = i => p.margin_b + i * p.pitch;
   const tab_h = 2 * p.griff_r;                                              // Höhe der Griffscheibe
   const tower_x = (p.base_w - out_w) / 2, tower_y = (p.base_d - out_d) / 2, sock = 5;
-  const plate_w = p.in_d + 2 * p.gd - 2 * p.clr, plate_l = p.wall + p.in_w - p.clr;   // Schieber quer (Y) × lang (X, durch Wand + Schacht)
+  const schacht_w = p.zwei ? (p.in_w - p.wall) / 2 : p.in_w;               // Breite je Schacht
+  const plate_w = p.in_d + 2 * p.gd - 2 * p.clr, plate_l = p.wall + schacht_w - p.clr;   // Schieber quer (Y) × lang (X, durch Wand + Schacht bis zur Trennwand)
   const tab_z0 = (p.slot_h - p.pt) / 2;
   const fb_w = p.open_w + 18, fb_d = p.base_d - 2 * 8, fb_top = p.floor_t + p.open_h;
   const cap_t = 8;
-  return { out_w, out_d, tower_h, slot_z, tab_h, tower_x, tower_y, sock, plate_w, plate_l, tab_z0, fb_w, fb_d, fb_top, cap_t };
+  return { schacht_w, out_w, out_d, tower_h, slot_z, tab_h, tower_x, tower_y, sock, plate_w, plate_l, tab_z0, fb_w, fb_d, fb_top, cap_t };
 }
 // Beispielbelegung: Tage gleichmäßig über die Schlitze (24/30 = feste Liste der .scad)
+// Etage je Tag (Index = Tag − 1). Zwei Schächte: ungerade Tage rechts, gerade links, je Schacht gleichmäßig verteilt.
+function kakEtagen(tage, slots, zwei) {
+  if (!zwei) return kakBelegung(tage, slots);
+  const nR = Math.ceil(tage / 2), nL = Math.floor(tage / 2), R = kakBelegung(nR, slots), L = kakBelegung(nL, slots);
+  return Array.from({ length: Math.min(tage, 2 * slots) }, (_, i) => i % 2 === 0 ? R[i / 2] : L[(i - 1) / 2]);
+}
 function kakBelegung(tage, slots) {
   const n = Math.max(0, Math.min(tage, slots));
   if (n === 24 && slots === 30) return [0, 1, 2, 4, 5, 6, 8, 9, 10, 11, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 26, 27, 28];
@@ -76,7 +83,8 @@ function kakBuild(w, pIn, textFn, opt) {
     // ── TURM: Schlitze links + rechts auf jeder Etage (durch beide Seitenwände), Führungsnut vorn/hinten, Mauerfugen vorn/hinten ──
     const tower = () => {
       const cut = [cube([p.in_w, p.in_d, tower_h + 2 * eps], [p.wall, p.wall, -eps])];
-      for (let i = 0; i < p.slots; i++) cut.push(cube([out_w + 2, p.in_d + 2 * p.gd, p.slot_h], [-1, p.wall - p.gd, slot_z(i)]));
+      const halb = p.zwei ? [[-1, p.wall + m.schacht_w + 1], [out_w - p.wall - m.schacht_w, out_w + 1]] : [[-1, out_w + 1]];   // Schlitze nicht durch die Trennwand
+      for (let i = 0; i < p.slots; i++) for (const [x0, x1] of halb) cut.push(cube([x1 - x0, p.in_d + 2 * p.gd, p.slot_h], [x0, p.wall - p.gd, slot_z(i)]));
       const reihe = 2 * p.pitch, stein = 36;                                 // Ziegel: 2 Etagen hoch
       for (let r = 0; ; r++) {
         const z = slot_z(0) + p.slot_h / 2 + p.pitch / 2 + r * reihe; if (z + reihe > tower_h - 3) break;
@@ -84,12 +92,14 @@ function kakBuild(w, pIn, textFn, opt) {
         if (z + reihe + reihe > tower_h - 3) continue;
         for (let x = (r % 2 ? stein / 2 : stein) ; x < out_w - 4; x += stein) for (const y of [-eps, out_d - p.joint_d]) cut.push(cube([p.joint_w, p.joint_d + eps, reihe], [x - p.joint_w / 2, y, z]));
       }
-      return k(cube([out_w, out_d, tower_h]).subtract(U(cut)));
+      let t = k(cube([out_w, out_d, tower_h]).subtract(U(cut)));
+      if (p.zwei) t = U([t, cube([p.wall, p.in_d + 2 * eps, tower_h - p.margin_t + 2], [out_w / 2 - p.wall / 2, p.wall - eps, 0])]);   // Trennwand, endet unter dem Kronen-Steckrand
+      return t;
     };
     // ── TAGES-SCHIEBER (links eingeschoben; rechts = um 180° gedreht, gleiches Teil): Platte + Hals + Griffscheibe ──
     // Lage: z = 0 Schlitzunterkante, x = 0 Außenfläche der linken Wand
     const yM = out_d / 2;
-    const scheibe = () => k(k(k(M.cylinder(p.griff_t, p.griff_r, p.griff_r, fein ? 64 : 32)).rotate([0, 90, 0])).translate([-p.hals - p.griff_t, yM, tab_z0 + p.griff_r]));
+    const scheibe = () => k(k(k(M.cylinder(p.griff_t, p.griff_r, p.griff_r, fein ? 48 : 24)).rotate([0, 90, 0])).translate([-p.hals - p.griff_t, yM, tab_z0 + p.griff_r]));   // Zapfengriff (Achse X) bis an die Wand; Platte reicht 1 mm hinein
     const stone_body = (d, with_plate) => {
       if (!with_plate) {                                                     // Blindstopfen: Platte in der Wand + Abdecklippe außen + Klemmnoppen
         const y0 = p.wall - p.gd + p.clr, b = [cube([p.wall - p.clr + p.lippe / 2, plate_w, p.pt], [-p.lippe / 2, y0, tab_z0]), cube([p.lippe, p.in_d + 2 * p.gd + 2, p.slot_h + 1 - tab_z0], [-p.lippe, p.wall - p.gd - 1, tab_z0])];   // Lippe endet an der Wandfläche
@@ -97,7 +107,9 @@ function kakBuild(w, pIn, textFn, opt) {
         return U(b);
       }
       const hb = Math.min(p.griff_r * 1.2, plate_w);
-      return U([cube([plate_l, plate_w, p.pt], [0, p.wall - p.gd + p.clr, tab_z0]), cube([p.hals + 2 * eps, hb, p.pt], [-p.hals - eps, yM - hb / 2, tab_z0]), scheibe()]);
+      const z = [cube([plate_l + 1, plate_w, p.pt], [-1, p.wall - p.gd + p.clr, tab_z0]), scheibe()];
+      if (p.hals > 0) z.push(cube([p.hals + 2 * eps, hb, p.pt], [-p.hals - eps, yM - hb / 2, tab_z0]));
+      return U(z);
     };
     // Text mittig an (cx, cy) in der XY-Ebene; Höhe = Ziffern-/Großbuchstabenhöhe (OpenSCAD size ≈ Versalhöhe)
     const textMitte = (txt, size, cx, cy) => {
@@ -110,7 +122,9 @@ function kakBuild(w, pIn, textFn, opt) {
     };
     // Zahl erhaben auf der Außenseite der Scheibe, lesbar von links: Text-x → −Y, Text-y → +Z, Extrusion → −X
     const stone_number = d => {
-      const txt = String(d), cs = textMitte(txt, p.griff_r * (txt.length > 1 ? 0.85 : 1.05), 0, 0); if (!cs) return null;
+      const txt = String(d), cs = textMitte(txt, p.griff_r * (txt.length > 1 ? 0.8 : 1.1), 0, 0); if (!cs) return null;
+      const bb = cs.bounds(), f = Math.min(1, 1.55 * p.griff_r / Math.max(1e-6, bb.max[0] - bb.min[0]));   // zweistellig: in den Kreis einpassen
+      if (f < 1) return k(k(k(k(cs.scale([f, f])).extrude(p.num_h + eps)).rotate([90, 0, -90])).translate([-p.hals - p.griff_t + eps, yM, tab_z0 + p.griff_r]));
       return k(k(k(cs.extrude(p.num_h + eps)).rotate([90, 0, -90])).translate([-p.hals - p.griff_t + eps, yM, tab_z0 + p.griff_r]));
     };
     const stone_print = d => k(stone_body(d, true).translate([0, 0, -tab_z0]));
@@ -255,11 +269,13 @@ function kakBuild(w, pIn, textFn, opt) {
         const z0 = Z[s], z1 = Z[s + 1];
         let seg = k(t.intersect(cube([out_w + 2, out_d + 2, z1 - z0], [-1, -1, z0])));
         if (s + 1 < Z.length - 1) {                                          // Zunge oben (innen, halbe Wand), Spitze 45°
-          const zunge = U([ring(wh, p.wall, z1 - eps, z1 + hz), hull([ring(wh, p.wall, z1 + hz - eps, z1 + hz), ring(p.wall - 0.01, p.wall, z1 + hz + wh - 0.01, z1 + hz + wh)])]);
+          const spitze = k(hull([ring(wh, p.wall, z1 + hz - eps, z1 + hz), ring(p.wall - 0.01, p.wall, z1 + hz + wh - 0.01, z1 + hz + wh)]).subtract(cube([out_w - 2 * p.wall, out_d - 2 * p.wall, wh + 2], [p.wall, p.wall, z1 + hz - 1])));   // hull füllt sonst den Schacht (Deckel!)
+          const zunge = U([ring(wh, p.wall, z1 - eps, z1 + hz), spitze]);
           seg = U([seg, zunge]);
         }
         if (s > 0) {                                                         // Nut unten: innen halbe Wand + Spiel, Decke 45° (druckt ohne Stütze)
-          const nut = U([ring(wh - c, p.wall + 0.5, z0 - 1, z0 + hz + c), hull([ring(wh - c, p.wall + 0.5, z0 + hz + c - eps, z0 + hz + c), ring(p.wall - 0.01, p.wall + 0.5, z0 + hz + c + wh + c - 0.01, z0 + hz + c + wh + c)])]);
+          const decke = k(hull([ring(wh - c, p.wall + 0.5, z0 + hz + c - eps, z0 + hz + c), ring(p.wall - 0.01, p.wall + 0.5, z0 + hz + c + wh + c - 0.01, z0 + hz + c + wh + c)]).subtract(cube([out_w - 2 * p.wall - 1, out_d - 2 * p.wall - 1, wh + 2 * c + 2], [p.wall + 0.5, p.wall + 0.5, z0 + hz + c - 1])));
+          const nut = U([ring(wh - c, p.wall + 0.5, z0 - 1, z0 + hz + c), decke]);
           seg = k(seg.subtract(nut));
         }
         teile.push({ mf: seg, z0, z1 });
@@ -271,4 +287,4 @@ function kakBuild(w, pIn, textFn, opt) {
   } catch (e) { for (const x of tmp) { try { x.delete(); } catch (e2) {} } throw e; }
 }
 
-if (typeof module !== 'undefined') module.exports = { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakFalzHoehe, kakSegmente, kakBuild };
+if (typeof module !== 'undefined') module.exports = { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakEtagen, kakFalzHoehe, kakSegmente, kakBuild };
