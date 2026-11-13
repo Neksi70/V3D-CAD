@@ -8,12 +8,12 @@ await new Promise(r => setTimeout(r, 1800));
 let fail = 0; const ok = (c, m) => { console.log((c ? 'OK   ' : 'FAIL ') + m); if (!c) fail++; };
 const b = await chromium.launch();
 try {
-  for (const mitHelfer of [true, false]) {
+  for (const [mitHelfer, ping] of [[true, { ok: true, version: 14, slicers: ['bambu'], netDir: '\\\\v3da\\stl', netOk: true, dir: '\\\\v3da\\stl', custom: false }], [true, { ok: true, version: 14, slicers: ['bambu'], libDir: 'C:\\Users\\V3D\\Documents\\Volme3D-STL', dir: 'C:\\Users\\V3D\\Documents\\Volme3D-STL', custom: false }], [false, null]]) {
     const p = await b.newPage(); const errs = []; p.on('pageerror', e => errs.push(e.message)); let collect = 0;
     await p.route('http://127.0.0.1:7777/**', async r => {
       if (!mitHelfer) return r.abort();
       const u = r.request().url();
-      if (u.endsWith('/ping')) return r.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, version: 14, slicers: ['bambu'], netDir: '\\\\v3da\\stl', netOk: true, dir: '\\\\v3da\\stl', custom: false }) });
+      if (u.endsWith('/ping')) return r.fulfill({ contentType: 'application/json', body: JSON.stringify(ping) });
       if (u.endsWith('/collect')) { collect++; return r.fulfill({ contentType: 'application/json', body: '{"ok":true}' }); }
       return r.fulfill({ contentType: 'application/json', body: '{"ok":true}' });
     });
@@ -28,7 +28,7 @@ try {
       await new Promise(z => setTimeout(z, 2200));
       return { dl, dialog, res };
     });
-    if (mitHelfer) ok(r.dl === 1 && r.dialog === 0 && r.res.wrote && /Bibliothek/.test(r.res.dir) && collect === 1, `mit Helfer+Netzordner: Download ${r.dl}, Dialog ${r.dialog}, „${r.res.dir}“, /collect ${collect}×`);
+    if (mitHelfer) ok(r.dl === 1 && r.dialog === 0 && r.res.wrote && /Bibliothek \((stl|Volme3D-STL)\)/.test(r.res.dir) && collect === 1, `mit Helfer (${ping.netDir ? 'Netzordner' : 'lokal'}): Download ${r.dl}, Dialog ${r.dialog}, „${r.res.dir}“, /collect ${collect}×`);
     else ok(r.dialog === 1 && r.res.abgebrochen, `ohne Helfer: Speichern-Dialog wie bisher (Dialog ${r.dialog})`);
     ok(errs.length === 0, 'keine Seitenfehler ' + errs.slice(0, 2).join(' | '));
     await p.close();
