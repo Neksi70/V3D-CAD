@@ -41,7 +41,7 @@ try {
   const ui = await p.evaluate(() => { const c = document.querySelector('#kak-modal .g3ctrl'), sichtbar = [...c.querySelectorAll('input,select,textarea')].filter(e => e.offsetParent && !e.closest('details')).length;
     const ohneTip = [...c.querySelectorAll('input,select')].filter(e => !e.title && !(e.closest('label') && e.closest('label').title)).map(e => e.id); return { sichtbar, ohneTip, info: document.getElementById('kak-info').textContent }; });
   ok(ui.sichtbar <= 9 && ui.ohneTip.length === 0, `Einsteigeransicht ${ui.sichtbar} Felder, Tooltips an allen Feldern ${ui.ohneTip.join(',')}`);
-  ok(/48 Blindstopfen/.test(ui.info) && /Gesamt: 176 × 135/.test(ui.info) && /zwei Schächte/.test(ui.info) && /33,6 mm je Tag/.test(ui.info), 'Zusammenfassung: ' + ui.info.slice(0, 160));
+  ok(/24 Blindstopfen/.test(ui.info) && /Gesamt: 176 × 135/.test(ui.info) && /36 Etagen für 24 Tage/.test(ui.info) && /15,6 mm je Tag/.test(ui.info), 'Zusammenfassung: ' + ui.info.slice(0, 160));
   const gesperrt = await p.evaluate(() => { _kakSet('slots', 10); const r = { sp: document.getElementById('kak-stl').disabled, t: document.getElementById('kak-info').textContent }; _kakSet('slots', 36); return { ...r, frei: !document.getElementById('kak-stl').disabled }; });
   ok(gesperrt.sp && gesperrt.frei && /Mehr Tage/.test(gesperrt.t), 'Tage > Etagen: Hinweis + Export gesperrt, danach wieder frei');
   await p.evaluate(() => _kakStr('name_txt', 'FAMILIE ISKEN'));
@@ -69,7 +69,7 @@ try {
   const hol3mf = dr => p.evaluate(async (dr) => { _kakStr('drucker', dr); let blob = null; const alt = window._saveExport; window._saveExport = async bl => { blob = bl; return { wrote: true, dir: 'Test' }; };
     try { await _kakExport3mf(); } finally { window._saveExport = alt; _kakStr('drucker', 'sv08max'); }
     return blob && await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); }); }, dr);
-  for (const [dr, soll, masch] of [['sv08max', 'Feuerstelle|Deko|Turm|Krone|Blindstopfen|Tages-Schieber', /SV08 MAX/], ['h2c', 'Feuerstelle|Deko|Turm|Krone|Blindstopfen|Tages-Schieber 1|Tages-Schieber 2|Tages-Schieber 3', /H2C/]]) {
+  for (const [dr, soll, masch] of [['sv08max', 'Feuerstelle|Deko|Turm|Krone|Blindstopfen|Tages-Schieber 1|Tages-Schieber 2', /SV08 MAX/], ['h2c', 'Feuerstelle|Deko|Turm|Krone|Blindstopfen|Tages-Schieber 1|Tages-Schieber 2|Tages-Schieber 3|Tages-Schieber 4|Tages-Schieber 5', /H2C/]]) {
     const b64 = await hol3mf(dr); if (!b64) { ok(false, `3MF ${dr}: keine Datei`); continue; }
     const z = fflate.unzipSync(Buffer.from(b64, 'base64')), cfg = fflate.strFromU8(z['Metadata/model_settings.config']), ps = JSON.parse(fflate.strFromU8(z['Metadata/project_settings.config']));
     const namen = [...cfg.matchAll(/key="plater_name" value="([^"]*)"/g)].map(m => m[1]).join('|');
@@ -81,11 +81,11 @@ try {
   const h2c = await p.evaluate(async () => { _kakStr('drucker', 'h2c'); let files = null; const alt = window._saveExportMany; window._saveExportMany = async f => { files = f; return { wrote: true, dir: 'Test' }; };
     try { await _kakExportStl(); } finally { window._saveExportMany = alt; _kakStr('drucker', 'sv08max'); } return files.map(f => f.name).filter(n => /^turm/.test(n)); });
   ok(h2c.length === 2 && h2c[0] === 'turm_1von2.stl', 'H2C: Turm geteilt → ' + h2c.join(', '));
-  const gr = await p.evaluate(async () => { _newCreate(false); const ids = await window._GEN_EXT['kamin-adventskalender'].run({ bauart: 'schieber', oben: 'krone', tage: 12, slots: 16, schacht: 40 }); return { ids: ids.length, n: objects.length }; });
-  ok(gr.ids === 10 && gr.n === 10, `gen.run (12 Tage, 16 Etagen, Schacht 40): ${gr.ids} Teile`);
+  const gr = await p.evaluate(async () => { _newCreate(false); const ids = await window._GEN_EXT['kamin-adventskalender'].run({ bauart: 'schieber', oben: 'krone', tage: 12, slots: 16, schacht: 80 }); return { ids: ids.length, n: objects.length }; });
+  ok(gr.ids === 10 && gr.n === 10, `gen.run (12 Tage, 16 Etagen, Schacht 80): ${gr.ids} Teile`);
   const pr = await p.evaluate(async () => { const r = {};
     const C1 = _kakCheck(_kakParams({ ..._KAK_DEF, bauart: 'schieber', drucker: 'h2c', pitch: 10, slot_h: 3, slots: 40 })); r.falz = C1.fehler.some(f => /Raster zu eng für die Turm-Teilung/.test(f));
-    const C2 = _kakCheck(_kakParams({ ..._KAK_DEF, bauart: 'schieber', schacht: 140 })); r.trichter = C2.fehler.some(f => /Feuerraum/.test(f));
+    const C2 = _kakCheck(_kakParams({ ..._KAK_DEF, bauart: 'schieber', schacht: 160 })); r.trichter = C2.fehler.some(f => /Feuerraum/.test(f));
     try { await window._GEN_EXT['kamin-adventskalender'].run({ tage: 12, gibtsnicht: 1 }); r.fremd = false; } catch (e) { r.fremd = /Unbekannte Parameter/.test(e.message); }
     return r; });
   ok(pr.falz && pr.trichter && pr.fremd, `Prüfungen: Falz bei Raster 10 (H2C) ${pr.falz}, Schacht > Feuerraum ${pr.trichter}, gen.run unbekannter Parameter ${pr.fremd}`);

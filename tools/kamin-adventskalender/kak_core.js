@@ -7,7 +7,7 @@
 // (App: _lttText); ohne textFn (Node) entstehen keine Zahlen/Namen.
 const KAK_DEF = {
   tage: 24,
-  /* Schacht */ in_w: 104, in_d: 84, wall: 4, gd: 1.6, pitch: 12, slots: 36, margin_b: 9, margin_t: 15, zwei: 1,   // in_w = innen gesamt (2 Schächte + Trennwand)
+  /* Schacht */ in_w: 104, in_d: 84, wall: 4, gd: 1.6, pitch: 12, slots: 36, margin_b: 9, margin_t: 15, zwei: 0,   // in_w = innen gesamt; zwei = Trennwand (2 Schächte)
   /* Schieber */ pt: 2.4, slot_h: 3.0, clr: 0.3, num_h: 0.6, griff_r: 5.5, griff_t: 22, hals: 0, lippe: 1.2,     // Zapfen Ø 11, 22 lang
   /* Feuerstelle */ base_w: 160, base_d: 124, base_h: 112, open_w: 104, open_h: 74, open_ch: 20, floor_t: 4, ramp_h: 12, mantel_t: 10, mantel_o: 8,
   name_txt: '', name_size: 8,
@@ -32,7 +32,7 @@ function kakMasse(p) {
   const tab_h = 2 * p.griff_r;                                              // Höhe der Griffscheibe
   const tower_x = (p.base_w - out_w) / 2, tower_y = (p.base_d - out_d) / 2, sock = 5;
   const schacht_w = p.zwei ? (p.in_w - p.wall) / 2 : p.in_w;               // Breite je Schacht
-  const plate_w = p.in_d + 2 * p.gd - 2 * p.clr, plate_l = p.wall + schacht_w - p.clr;   // Schieber quer (Y) × lang (X, durch Wand + Schacht bis zur Trennwand)
+  const plate_w = p.in_d + 2 * p.gd - 2 * p.clr, plate_l = p.zwei ? p.wall + schacht_w - p.clr : 2 * p.wall + p.in_w - p.clr;   // Schieber quer (Y) × lang (X): bis zur Trennwand bzw. ganz durch bis in die Gegenwand
   const tab_z0 = (p.slot_h - p.pt) / 2;
   const fb_w = p.open_w + 18, fb_d = p.base_d - 2 * 8, fb_top = p.floor_t + p.open_h;
   const cap_t = 8;

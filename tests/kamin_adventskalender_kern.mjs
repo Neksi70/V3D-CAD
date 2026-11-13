@@ -19,9 +19,9 @@ const B = K.kakBuild(w, { ...K.KAK_DEF }, null), m = B.m, P = B.p;
 const turm = B.tower(), stein = B.stone_body(1, true), feuer = B.base(), krone = B.cap(), aufsatz = B.cap_top(), blind = B.stone_body(0, false);
 console.log('Bauzeit', Date.now() - t0, 'ms');
 const H = P.margin_b + (P.slots - 1) * P.pitch + P.slot_h + P.margin_t;
-ok(gleich(groesse(turm), [112, 92, H]) && H === 447, `Turm 112 × 92 × ${H} (2 Schächte, 36 Etagen à 12 mm): ` + groesse(turm).join(' × '));
+ok(gleich(groesse(turm), [112, 92, H]) && H === 447, `Turm 112 × 92 × ${H} (ein Schacht, 36 Etagen à 12 mm): ` + groesse(turm).join(' × '));
 const sp = groesse(B.stone_print(1));
-ok(gleich(sp, [P.hals + P.griff_t + P.wall + m.schacht_w - P.clr, P.in_d + 2 * P.gd - 2 * P.clr, 2 * P.griff_r]), `Tages-Schieber ${sp.join(' × ')} (lang × breit × Zapfen-Ø)`);
+ok(gleich(sp, [P.hals + P.griff_t + m.out_w - P.clr, P.in_d + 2 * P.gd - 2 * P.clr, 2 * P.griff_r]), `Tages-Schieber geht ganz durch: ${sp.join(' × ')} (lang × breit × Zapfen-Ø)`);
 const feuerGanz = w.Manifold.union([feuer, B.schneeKante(), B.bogenRing()]);
 ok(gleich(groesse(feuerGanz), [176, 135, 112]), 'Feuerstelle mit Einlagen 176 × 135 × 112: ' + groesse(feuerGanz).join(' × '));
 // Deko: Einlagen überschneiden die Feuerstelle nicht, Flamme/Socken geschlossen und frei
@@ -36,6 +36,11 @@ for (const [n, mf] of [['Turm', turm], ['Schieber', B.stone_print(1)], ['Feuerst
   ok(dicht(mf) && mf.volume() > 0 && mf.decompose().length === 1, `${n} geschlossen, 1 Stück, ${(mf.volume() / 1000).toFixed(1)} cm³, Genus ${mf.genus()}`);
 // Druckorientierung: alles ab z = 0, Platte unten
 ok([B.stone_print(1), B.blank_print()].every(mf => Math.abs(mf.boundingBox().min[2]) < 1e-6), 'Schieber/Stopfen liegen in Drucklage auf z = 0');
+// Variante zwei Schächte (Trennwand): Schieber bis zur Trennwand, rechts + links auf derselben Etage
+{ const B2 = K.kakBuild(w, { ...K.KAK_DEF, zwei: 1 }, null), t2 = B2.tower(), s2 = B2.stone_body(1, true), m2 = B2.m, V2 = (a, b) => w.Manifold.intersection(a, b).volume();
+  const R2 = mf => mf.translate([-m2.out_w / 2, -m2.out_d / 2, 0]).rotate([0, 0, 180]).translate([m2.out_w / 2, m2.out_d / 2, 0]), an2 = (mf, i) => mf.translate([0, 0, m2.slot_z(i)]);
+  ok(V2(t2, an2(s2, 5)) < 1e-3 && V2(t2, an2(R2(s2), 5)) < 1e-3 && V2(an2(s2, 5), an2(R2(s2), 5)) < 1e-3, 'Zwei Schächte: Schieber rechts + links auf derselben Etage, je bis zur Trennwand, kollisionsfrei');
+  B2.aufraeumen(); }
 // Lage im Turm: links = wie gebaut, rechts = 180° um die Turmachse gedreht (gleiches Teil)
 const R = mf => mf.translate([-m.out_w / 2, -m.out_d / 2, 0]).rotate([0, 0, 180]).translate([m.out_w / 2, m.out_d / 2, 0]);
 const an = (mf, i) => mf.translate([0, 0, m.slot_z(i)]), V = (a, b) => w.Manifold.intersection(a, b).volume();
@@ -44,8 +49,9 @@ for (let i = 0; i < P.slots; i++) { for (const mf of [stein, R(stein)]) mx = Mat
 ok(mx < 1e-3, `Schieber links/rechts in allen ${P.slots} Etagen kollisionsfrei mit dem Turm (max ${mx.toExponential(1)} mm³)`);
 ok(mb < 0.05, `Blindstopfen: nur die Klemmnoppen drücken gewollt an die Schlitzdecke (${mb.toFixed(4)} mm³ je Stopfen)`);
 ok(V(turm, an(stein, 5).translate([0, 0, 0.4])) > 1, 'Schieber sitzt satt im Schlitz (0,4 mm höher stößt an)');
-ok(V(an(stein, 7), an(R(blind), 7)) < 1e-3 && V(an(R(stein), 7), an(blind, 7)) < 1e-3 && V(an(stein, 7), an(R(stein), 7)) < 1e-3, 'Schieber rechts + links auf derselben Etage (je eigener Schacht) und Stopfen berühren sich nicht');
-ok(V(an(stein, 7), an(blind, 8)) < 1e-3 && V(an(stein, 7), an(stein, 8)) < 1e-3, 'Zapfen stößt weder an den Stopfen noch an den Schieber direkt darüber (Fach = 1 Etage möglich)');
+ok(V(an(stein, 7), an(stein, 8)) < 1e-3 && V(an(R(stein), 7), an(stein, 8)) < 1e-3, 'Durchgehende Schieber in benachbarten Etagen (gleiche und Gegenseite) berühren sich nicht');
+ok(V(an(stein, 7), an(R(blind), 7)) > 0.1, 'Gegenprobe: durchgehender Schieber füllt den Gegenschlitz – dort gehört kein Stopfen hin');
+ok(V(an(stein, 7), an(blind, 8)) < 1e-3 && V(an(stein, 7), an(R(blind), 8)) < 1e-3, 'Zapfen und Schieberende stoßen nicht an Stopfen der Etage darüber');
 ok(V(turm, an(stein, 7).translate([0.5, 0, 0])) > 0.1, 'Gegenprobe: 0,5 mm weiter hinein stößt der Zapfen an die Wand (Anschlag)');
 ok(V(krone.translate([0, 0, m.tower_h]), an(stein, P.slots - 1)) < 1e-3 && V(krone.translate([0, 0, m.tower_h]), an(R(stein), P.slots - 1)) < 1e-3, 'Griffscheibe in der obersten Etage stößt nicht an die Krone');
 const amTurm = mf => mf.translate([m.tower_x, m.tower_y, P.base_h - m.sock]);
