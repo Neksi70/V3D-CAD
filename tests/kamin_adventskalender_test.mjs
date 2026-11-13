@@ -31,7 +31,7 @@ try {
   await p.evaluate(() => { _kakStr('oben', 'krone'); });
   const ui = await p.evaluate(() => { const c = document.querySelector('#kak-modal .g3ctrl'), sichtbar = [...c.querySelectorAll('input,select,textarea')].filter(e => e.offsetParent && !e.closest('details')).length;
     const ohneTip = [...c.querySelectorAll('input,select')].filter(e => !e.title && !(e.closest('label') && e.closest('label').title)).map(e => e.id); return { sichtbar, ohneTip, info: document.getElementById('kak-info').textContent }; });
-  ok(ui.sichtbar <= 7 && ui.ohneTip.length === 0, `Einsteigeransicht ${ui.sichtbar} Felder, Tooltips an allen Feldern ${ui.ohneTip.join(',')}`);
+  ok(ui.sichtbar <= 8 && ui.ohneTip.length === 0, `Einsteigeransicht ${ui.sichtbar} Felder, Tooltips an allen Feldern ${ui.ohneTip.join(',')}`);
   ok(/24 Blindstopfen/.test(ui.info) && /Gesamt: 176 × 135/.test(ui.info) && /36 Etagen für 24 Tage/.test(ui.info) && /15,6 mm je Tag/.test(ui.info), 'Zusammenfassung: ' + ui.info.slice(0, 160));
   const gesperrt = await p.evaluate(() => { _kakSet('slots', 10); const r = { sp: document.getElementById('kak-stl').disabled, t: document.getElementById('kak-info').textContent }; _kakSet('slots', 36); return { ...r, frei: !document.getElementById('kak-stl').disabled }; });
   ok(gesperrt.sp && gesperrt.frei && /Mehr Tage/.test(gesperrt.t), 'Tage > Etagen: Hinweis + Export gesperrt, danach wieder frei');
@@ -51,11 +51,11 @@ try {
       if ([...E.values()].every(c => c === 2)) out.dicht++; else (out.offen = out.offen || []).push(f.name + ':' + [...E.values()].filter(c => c !== 2).length);
       out.bb[f.name] = [x1 - x0, y1 - y0, z1 - z0].map(v => +v.toFixed(2)).concat([+z0.toFixed(3)]); }
     return out; });
-  const erwartet = ['feuerstelle.stl', 'name.stl', 'feuerstelle_bogenrahmen.stl', 'feuerstelle_schnee.stl', 'flamme.stl', 'flamme_innen.stl', 'turm.stl', 'kaminkrone.stl', 'kaminkrone_aufsatz.stl', 'blindstopfen.stl', 'tag_01_schieber.stl', 'tag_01_zahl.stl', 'tag_24_schieber.stl', 'tag_24_zahl.stl'];
-  ok(ex.namen.length === 58 && erwartet.every(n => ex.namen.includes(n)), `STL-Export: ${ex.namen.length} Dateien (${ex.namen.slice(0, 7).join(', ')} …)`);
+  const erwartet = ['feuerstelle.stl', 'name.stl', 'feuerstelle_bogenrahmen.stl', 'feuerstelle_schnee.stl', 'flamme.stl', 'flamme_innen.stl', 'turm_1von3.stl', 'turm_3von3.stl', 'kaminkrone.stl', 'kaminkrone_aufsatz.stl', 'blindstopfen.stl', 'tag_01_schieber.stl', 'tag_01_zahl.stl', 'tag_24_schieber.stl', 'tag_24_zahl.stl'];
+  ok(ex.namen.length === 60 && erwartet.every(n => ex.namen.includes(n)), `STL-Export: ${ex.namen.length} Dateien (${ex.namen.slice(0, 7).join(', ')} …)`);
   ok(ex.dicht === ex.namen.length, `alle ${ex.dicht}/${ex.namen.length} STL geschlossen (jede Kante 2×) ${(ex.offen || []).join(', ')}`);
-  ok(Object.entries(ex.bb).every(([n, b]) => /name|zahl|bogenrahmen|schnee|innen|weiss/.test(n) || Math.abs(b[3]) < 0.01) && Math.abs(ex.bb['turm.stl'][2] - 447) < 0.05 && Math.abs(ex.bb['tag_01_schieber.stl'][2] - 11) < 0.05,
-     `Druckorientierung: alles auf z = 0 (Name/Zahlen in derselben Lage wie Feuerstelle/Schieber), Turm ${ex.bb['turm.stl'].slice(0, 3).join('×')}, Schieber ${ex.bb['tag_01_schieber.stl'].slice(0, 3).join('×')}, Krone ${ex.bb['kaminkrone.stl'].slice(0, 3).join('×')}`);
+  ok(Object.entries(ex.bb).every(([n, b]) => /name|zahl|bogenrahmen|schnee|innen|weiss/.test(n) || Math.abs(b[3]) < 0.01) && Math.abs(ex.bb['turm_1von3.stl'][2] - 152) < 0.05 && Math.abs(ex.bb['tag_01_schieber.stl'][2] - 11) < 0.05,
+     `Druckorientierung: alles auf z = 0 (Name/Zahlen in derselben Lage wie Feuerstelle/Schieber), Turmteil 1 ${ex.bb['turm_1von3.stl'].slice(0, 3).join('×')}, Schieber ${ex.bb['tag_01_schieber.stl'].slice(0, 3).join('×')}, Krone ${ex.bb['kaminkrone.stl'].slice(0, 3).join('×')}`);
   // 3MF mit Druckplatten: Blob abfangen, in Node entpacken
   const hol3mf = dr => p.evaluate(async (dr) => { _kakStr('drucker', dr); let blob = null; const alt = window._saveExport; window._saveExport = async bl => { blob = bl; return { wrote: true, dir: 'Test' }; };
     try { await _kakExport3mf(); } finally { window._saveExport = alt; _kakStr('drucker', 'sv08max'); }
@@ -71,11 +71,11 @@ try {
   }
   const h2c = await p.evaluate(async () => { _kakStr('drucker', 'h2c'); let files = null; const alt = window._saveExportMany; window._saveExportMany = async f => { files = f; return { wrote: true, dir: 'Test' }; };
     try { await _kakExportStl(); } finally { window._saveExportMany = alt; _kakStr('drucker', 'sv08max'); } return files.map(f => f.name).filter(n => /^turm/.test(n)); });
-  ok(h2c.length === 2 && h2c[0] === 'turm_1von2.stl', 'H2C: Turm geteilt → ' + h2c.join(', '));
+  ok(h2c.length === 3 && h2c[0] === 'turm_1von3.stl', 'Turm in 3 Steckteilen (H2C) → ' + h2c.join(', '));
   const gr = await p.evaluate(async () => { _newCreate(false); const ids = await window._GEN_EXT['kamin-adventskalender'].run({ oben: 'krone', tage: 12, slots: 16, schacht: 80 }); return { ids: ids.length, n: objects.length }; });
   ok(gr.ids === 10 && gr.n === 10, `gen.run (12 Tage, 16 Etagen, Schacht 80): ${gr.ids} Teile`);
   const pr = await p.evaluate(async () => { const r = {};
-    const C1 = _kakCheck(_kakParams({ ..._KAK_DEF, drucker: 'h2c', pitch: 10, slot_h: 3, slots: 40 })); r.falz = C1.fehler.some(f => /Raster zu eng für die Turm-Teilung/.test(f));
+    const C1 = _kakCheck(_kakParams({ ..._KAK_DEF, drucker: 'h2c', pitch: 10, slot_h: 3, slots: 40 })); r.falz = C1.fehler.some(f => /Etagenhöhe zu klein für die Turm-Teilung/.test(f));
     const C2 = _kakCheck(_kakParams({ ..._KAK_DEF, schacht: 160 })); r.trichter = C2.fehler.some(f => /Feuerraum/.test(f));
     try { await window._GEN_EXT['kamin-adventskalender'].run({ tage: 12, gibtsnicht: 1 }); r.fremd = false; } catch (e) { r.fremd = /Unbekannte Parameter/.test(e.message); }
     return r; });

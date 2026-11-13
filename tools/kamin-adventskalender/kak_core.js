@@ -13,7 +13,7 @@ const KAK_DEF = {
   name_txt: '', name_size: 8,
   /* Deko (Foto) */ bogen: 1, schnee: 1, flamme: 1, socken: '', socke_h: 70, deko_t: 1.6,
   /* Optik */ joint_w: 1.2, joint_d: 0.8, font: 'helvetiker_bold',
-  /* Generator */ drucker: 'sv08max', bett: [500, 500, 500], teilen: 1
+  /* Generator */ drucker: 'sv08max', bett: [500, 500, 500], teilen: 1, turm_teile: 3
 };
 const KAK_DRUCKER = {                                                      // Bauraum X × Y × Z (mm)
   sv08max: { name: 'Sovol SV08 Max', bett: [500, 500, 500] },
@@ -53,6 +53,18 @@ function kakBelegung(tage, slots) {
 // Turm-Segmente: Teilung immer mittig zwischen zwei Schlitzen (auf der horizontalen Mauerfuge)
 // Steckfalz-Höhe: Zunge (hz + halbe Wand an 45°) samt Nut-Spiel muss unter den nächsten Schlitz passen → < 1 mm = Raster zu eng zum Teilen
 function kakFalzHoehe(p) { return Math.min(3, (p.pitch - p.slot_h) / 2 - p.wall / 2 - 2 * 0.3 - 0.4); }
+// Turm-Teilung: genau turm_teile Teile (zum Zusammenstecken), Fugen an der Mauerfuge nächst s·H/n;
+// passt ein Teil (+ Falz) nicht in den Bauraum, wird ein Teil mehr genommen. → [0, z1, …, H] oder null
+function kakTurmZ(p, m) {
+  const bedZ = p.teilen && p.bett ? p.bett[2] : Infinity, falz = 5.5, H = m.tower_h;
+  const fugen = Array.from({ length: Math.max(0, p.slots - 1) }, (_, i) => m.slot_z(i) + p.slot_h / 2 + p.pitch / 2);
+  for (let n = Math.max(1, Math.round(p.turm_teile || 1)); n <= 20; n++) {
+    const Z = [0]; for (let s = 1; s < n; s++) { if (!fugen.length) return null; const ziel = H * s / n; Z.push(fugen.reduce((a, b) => Math.abs(b - ziel) < Math.abs(a - ziel) ? b : a)); }
+    Z.push(H);
+    if (Z.every((z, s) => s === 0 || (z > Z[s - 1] && z - Z[s - 1] + (s > 1 ? falz : 0) + (s < n ? falz : 0) <= bedZ))) return Z;
+  }
+  return null;
+}
 function kakSegmente(p, m, zMax) {
   const fuge = i => m.slot_z(i) + p.slot_h / 2 + p.pitch / 2, falz = 5.5, teil = [];
   if (!(zMax > 0) || m.tower_h <= zMax) return [0, m.tower_h];
@@ -259,8 +271,8 @@ function kakBuild(w, pIn, textFn, opt) {
     const cap_print = () => k(k(cap().translate([0, 0, -cap_t])).rotate([180, 0, 0]));
     // ── TURM TEILEN (Steckfalz, stützfrei): unten Zunge innen (halbe Wand, oben 45°), oben passende Nut mit 45°-Decke ──
     const turmTeile = () => {
-      const t = tower(), zMax = p.teilen && p.bett ? p.bett[2] : 0, Z = kakSegmente(p, m, zMax);
-      if (!Z || Z.length <= 2) return { teile: [{ mf: t, z0: 0, z1: tower_h }], ok: !!Z || !zMax, Z: Z || [0, tower_h] };
+      const t = tower(), Z = kakTurmZ(p, m);
+      if (!Z || Z.length <= 2) return { teile: [{ mf: t, z0: 0, z1: tower_h }], ok: !!Z, Z: Z || [0, tower_h] };
       const wh = p.wall / 2, hz = kakFalzHoehe(p), c = 0.3;
       if (hz < 1) return { teile: [{ mf: t, z0: 0, z1: tower_h }], ok: false, Z: [0, tower_h], falz: false };
       const ring = (a, b, z0, z1) => k(cube([out_w - 2 * a, out_d - 2 * a, z1 - z0], [a, a, z0]).subtract(cube([out_w - 2 * b, out_d - 2 * b, z1 - z0 + 2], [b, b, z0 - 1])));
@@ -287,4 +299,4 @@ function kakBuild(w, pIn, textFn, opt) {
   } catch (e) { for (const x of tmp) { try { x.delete(); } catch (e2) {} } throw e; }
 }
 
-if (typeof module !== 'undefined') module.exports = { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakEtagen, kakFalzHoehe, kakSegmente, kakBuild };
+if (typeof module !== 'undefined') module.exports = { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakEtagen, kakTurmZ, kakFalzHoehe, kakSegmente, kakBuild };
