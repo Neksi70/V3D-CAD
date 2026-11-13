@@ -104,5 +104,5 @@ if __name__ == '__main__':
     port = ports[0] if ports else DIENST_PORT
     if DEV and port == DIENST_PORT:
         sys.exit('--dev (ohne Login) ist auf dem Funnel-Port 8821 verboten – nur fuer lokale Tests auf anderem Port.')
-    print(f'[LASER-IDEEN] Testversion auf 127.0.0.1:{port} → {TEST_HTML}', file=sys.stderr)
+    print(f'[KAMIN] Testversion auf 127.0.0.1:{port} → {TEST_HTML}', file=sys.stderr)
     ThreadingHTTPServer(('127.0.0.1', port), TestHandler).serve_forever()
