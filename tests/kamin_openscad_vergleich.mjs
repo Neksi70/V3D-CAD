@@ -11,9 +11,9 @@ const B = K.kakBuild(w, { ...K.KAK_DEF }, null);
 let fail = 0; const ok = (c, m) => { console.log((c ? 'OK   ' : 'FAIL ') + m); if (!c) fail++; };
 const docker = spawnSync('docker', ['image', 'inspect', 'openscad/openscad:dev'], { stdio: 'ignore' }).status === 0;
 function scad(part, day = 1) {
-  const out = `${TMP}/${part}_${day}.stl`;
+  const out = `${TMP}/${part}_${day}_mt${K.KAK_DEF.margin_t}.stl`;
   if (fs.existsSync(out) && fs.statSync(out).mtimeMs > fs.statSync(SCAD).mtimeMs) return out;
-  const args = ['-o', out, '-D', `part="${part}"`, '-D', `day=${day}`, '--export-format', 'binstl'];
+  const args = ['-o', out, '-D', `part="${part}"`, '-D', `day=${day}`, '-D', `margin_t=${K.KAK_DEF.margin_t}`, '--export-format', 'binstl'];
   const r = docker ? spawnSync('docker', ['run', '--rm', '--user', `${process.getuid()}:${process.getgid()}`, '-v', `${SCAD}:/in.scad:ro`, '-v', `${TMP}:${TMP}`, 'openscad/openscad:dev', 'openscad', '--backend', 'manifold', ...args, '/in.scad'], { encoding: 'utf8', timeout: 900000 })
                    : spawnSync('openscad', [...args, SCAD], { encoding: 'utf8', timeout: 1800000 });
   if (!fs.existsSync(out)) throw new Error(`OpenSCAD ${part}: ${(r.stderr || '').slice(-800)}`);
@@ -35,13 +35,10 @@ function vergleich(name, unser, part, day, nurBox) {
   ok(dBox < 0.02 && rel < 0.002, `${name}: Volumen ${(vu / 1000).toFixed(2)} / ${(vs / 1000).toFixed(2)} cm³ (unser/OpenSCAD), nur bei uns ${(nurU).toFixed(1)} mm³, nur in OpenSCAD ${(nurS).toFixed(1)} mm³ (${(rel * 100).toFixed(3)} %), Box ±${dBox.toFixed(3)} mm`);
 }
 const t0 = Date.now();
-vergleich('Turm', B.tower(), 'tower');
+// Turm und Schieber sind seit dem Umbau (Schieber links/rechts, Foto 13.11.) eigene Konstruktion → nur noch Feuerstelle, Krone, Aufsatz gegen die .scad
 vergleich('Feuerstelle (ohne Name)', B.base(), 'base');
-vergleich('Kaminkrone (Drucklage)', B.cap_print(), 'cap');
+vergleich('Kaminkrone (Drucklage, Rand oben ' + K.KAK_DEF.margin_t + ')', B.cap_print(), 'cap');
 vergleich('Kronen-Aufsatz', B.cap_top(), 'cap_top');
-vergleich('Tagesstein 1 (Drucklage)', B.stone_print(1), 'stone', 1);
-vergleich('Tagesstein 2 (Drucklage)', B.stone_print(2), 'stone', 2);
-vergleich('Blindstein (Drucklage)', B.blank_print(), 'blank');
 console.log(`(${((Date.now() - t0) / 1000).toFixed(0)} s, ${docker ? 'OpenSCAD dev + Manifold (Docker)' : '/usr/bin/openscad'})`);
 B.aufraeumen();
-console.log(fail ? `${fail} Abweichungen` : 'alles grün – Kern = OpenSCAD-Vorlage'); process.exit(fail ? 1 : 0);
+console.log(fail ? `${fail} Abweichungen` : 'alles grün – Feuerstelle/Krone = OpenSCAD-Vorlage'); process.exit(fail ? 1 : 0);
