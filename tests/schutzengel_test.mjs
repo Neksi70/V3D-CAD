@@ -1,5 +1,5 @@
 // Schutzengel: Menü (Weihnachten) → Fenster → Vorschau mit Text → Vorlagen → Erstellen (Körper/Flügel/Text,
-// dicht, ohne Überlappung, Text liegt oben drauf) → Streifen + beide Flügel → Undo
+// dicht, ohne Überlappung, Text liegt oben drauf) → Streifen + beide Flügel → Holz-Look (Foto 13.11.) → Undo
 import { chromium } from '/home/v3da/node_modules/playwright/index.mjs';
 import { spawn } from 'child_process';
 const PORT = 8987, SHOTS = process.env.SHOTS || '/tmp';
@@ -73,6 +73,27 @@ try {
   const vSoll = await p.evaluate(async () => { const w = await _mfInit(), r = _sgeBuild(w, { ..._sgeP, druck: 'oben' }, _sgeText), v = r.koerper.volume();
     for (const x of ['koerper', 'fluegel', 'dunkel', 'punkte']) if (r[x]) r[x].delete(); return v; });
   ok(vSoll > 0, 'Erhaben-Bau läuft weiter');
+  // Holz-Look (Foto 13.11.): einfarbig, runde Flügel am Körper, Gravur bzw. Ausschnitt, ein Teil
+  const holz = await p.evaluate(async () => { const w = await _mfInit(), out = {};
+    for (const v of ['h_stern', 'h_streifen', 'h_text', 'h_herz']) { _sgeVorlage(v); const r = _sgeBuild(w, _sgeP, _sgeText), t = _sgeTeile(r);
+      const r0 = _sgeBuild(w, { ..._sgeP, muster: 'glatt', text1: '', text2: '', stern: 0, herzB: 0 }, null), gr = w.Manifold.difference(r0.koerper, r.koerper).volume();
+      const bb = r.koerper.boundingBox(), oben = w.Manifold.difference(r0.koerper, r.koerper).boundingBox(), ms = _sgeMasse(_sgeP), yS = ms.yHals - 0.2 * ms.H;
+      const sb = w.Manifold.intersection(r.koerper, w.Manifold.cube([400, 4, 50]).translate([-200, yS - 2, -10])).boundingBox(), schulter = sb.max[0] - sb.min[0], koerperB = 2 * ms.halbB(yS);
+      out[v] = { teile: t.length, n: r.koerper.decompose().length, gr, genus: r.koerper.genus(), z0: oben.min[2], breit: bb.max[0] - bb.min[0], d: bb.max[2] - bb.min[2], schulter, koerperB };
+      t.forEach(q => q[0].delete()); r0.koerper.delete(); }
+    return out; });
+  for (const [v, o] of Object.entries(holz)) ok(o.teile === 1 && o.n === 1 && o.gr > 50 && Math.abs(o.d - 5) < 1e-3, `Holz „${v}“: 1 Teil, 1 Stück, ${o.gr.toFixed(0)} mm³ graviert/ausgeschnitten, Genus ${o.genus}, Breite ${o.breit.toFixed(0)} mm`);
+  ok(holz.h_stern.genus === holz.h_text.genus + 1 && holz.h_herz.genus === holz.h_text.genus + 1 && holz.h_stern.z0 < 0.01, 'Stern und Herz gehen ganz durch (je ein Loch mehr), Text/Streifen nur von oben');
+  ok(holz.h_streifen.z0 > 4 && holz.h_text.z0 > 4, `Streifen/Schrift ${(5 - holz.h_streifen.z0).toFixed(2)} mm tief von oben eingraviert`);
+  ok(holz.h_stern.schulter > holz.h_stern.koerperB + 20, `Holz-Flügel stehen auf Schulterhöhe seitlich über den Körper (${holz.h_stern.schulter.toFixed(0)} statt ${holz.h_stern.koerperB.toFixed(0)} mm)`);
+  await p.evaluate(() => { _newCreate(false); _sgeOpen(); _sgeVorlage('h_text'); });
+  ok(await p.evaluate(() => document.querySelector('#sge-gravur-bg .vtb.on').dataset.v === 'holz' && document.querySelector('#sge-fluegel-bg .vtb.on').dataset.v === 'holz' && document.getElementById('sge-druck-bg').style.display === 'none' && /Holz-Look/.test(document.getElementById('sge-info').textContent)),
+     'Holz-Vorlage: Ausführung + Flügel markiert, Druckart ausgeblendet, Info erklärt Holz-Look');
+  const rH = await bauen();
+  ok(rH.teile.length === 1 && rH.teile[0].shells === 1 && Math.abs(rH.teile[0].minY) < 1e-3 && Math.abs(rH.teile[0].maxY - 5) < 0.01, 'Holz erstellen: ein Teil auf der Platte, 5 mm dick: ' + rH.teile.map(t => t.name).join(', '));
+  await p.evaluate(() => { _sgeOpen(); _sgeVorlage('text'); });
+  ok(await p.evaluate(() => _sgeP.gravur === 'farbig' && _sgeP.herzB === 0 && document.getElementById('sge-druck-bg').style.display !== 'none'), 'zurück zur farbigen Vorlage: Ausführung farbig, Druckart wieder da');
+  await p.evaluate(() => { _sgeClose(); _newCreate(false); });
   await p.evaluate(() => { _sgeStr('druck', 'oben'); });
   await p.evaluate(() => { selectObjs([]); fitToObjects(objects); }); await p.waitForTimeout(500);
   await p.evaluate(() => undo());

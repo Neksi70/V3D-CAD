@@ -2,6 +2,8 @@
 // Teile: Körper (Kopf + Kegel, Aufhängeloch, Pünktchen/Stern), Flügel (Fähnchen mit Herz,
 // eigene Farbe), Dunkel (Streifen + Text, erhaben oben drauf → Farbwechsel nur bei z = Dicke).
 // p.druck 'glatt': Text/Streifen/Punkte bündig eingelegt (Tiefe p.tiefe), Schauseite wird auf die Platte gelegt (App dreht).
+// p.gravur 'holz' (Volker 13.11., Foto Holz-Anhänger): einfarbig – Flügel gehören zum Körper, Text + Streifen graviert,
+// Stern/Herz auf der Brust ausgeschnitten (durchgehend). p.herzB = Herz auf der Brust (farbig: erhaben).
 // textFn(CS, keep, txt, font, h, cx, yb, maxW) → {cs} (App: _lttText) — in Node null.
 function _sgeZufall(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 function _sgeMasse(p) {
@@ -87,6 +89,9 @@ function _sgeBuild(w, p, textFn) {
         teile.push([...bz(...AU, 30), ...bz([0.2, -0.72], [0.1, -0.35], [-0.3, 0.0], [-0.3, 0.4], 18), ...bz([-0.3, 0.4], [-0.25, 0.85], [-0.05, 1.02], [0.14, 1.0], 14)]);
         const pk = t => { const u = 1 - t; return [0, 1].map(d => u*u*u*AU[0][d] + 3*u*u*t*AU[1][d] + 3*u*t*t*AU[2][d] + t*t*t*AU[3][d]); };
         for (const f of [0.18, 0.36, 0.54]) { const L = []; for (let t = 0.06; t <= 0.85; t += 0.03) { const a = pk(t); L.push([a[0] - f * 0.5 * Math.sin(Math.PI * Math.min(1, t * 1.1)), a[1] + f * 0.05]); } linien.push(L); }
+      } else if (stil === 'holz') {                                         // Holz-Anhänger: runder Flügel an der Schulter, unten schräg zum Körper
+        S = 0.27 * H; yS = yHals - 0.2 * H;
+        teile.push([[-0.4, 0.3], ...bz([-0.1, 0.4], [0.3, 0.52], [0.66, 0.42], [0.72, 0.08], 26), ...bz([0.72, 0.08], [0.76, -0.24], [0.5, -0.5], [0.1, -0.62], 22), [-0.4, -0.55]]);
       } else if (stil === 'schwung') {                                      // Bild 3: drei Sichel-Striche, spitz nach außen oben
         S = 0.32 * H;
         for (const [o0, o1, u0, u1, T] of [[[-0.3, 0.16], [0.55, 0.34], [-0.3, -0.02], [0.6, 0.06], [1.0, 0.58]], [[-0.3, -0.08], [0.45, 0.05], [-0.3, -0.21], [0.5, -0.15], [0.8, 0.22]], [[-0.3, -0.27], [0.35, -0.17], [-0.3, -0.38], [0.4, -0.35], [0.6, -0.05]]])
@@ -106,27 +111,38 @@ function _sgeBuild(w, p, textFn) {
       }
       return fl3;
     };
+    const herz2D = (hx, hy, s) => k(CS.union([k(CS.circle(s * 0.62, 32).translate([hx - s * 0.5, hy + s * 0.25])), k(CS.circle(s * 0.62, 32).translate([hx + s * 0.5, hy + s * 0.25])),
+      k(new CS([[[hx - s * 1.08, hy + s * 0.05], [hx + s * 1.08, hy + s * 0.05], [hx, hy - s * 1.15]]], 'NonZero'))]));
+    const holz = p.gravur === 'holz';
     const eStil = p.engel === 1 || p.engel === true ? 'federn' : p.engel;
     if (eStil === 'federn') { fluegel.push(k(engel(1))); fluegel.push(k(engel(-1))); }
     else if (eStil) { fluegel.push(k(stilFl(eStil, 1))); fluegel.push(k(stilFl(eStil, -1))); }
     if (p.fluegel === 'rechts' || p.fluegel === 'beide') fluegel.push(k(fahne(1)));
     if (p.fluegel === 'links' || p.fluegel === 'beide') fluegel.push(k(fahne(-1)));
     let fl = fluegel.length ? k(M.difference(k(M.union(fluegel)), koerper)) : null;   // im Körper steckender Teil gehört zum Körper
+    let umriss = u;                                                           // Fläche für Gravur/Streifen (Holz: inkl. Flügel)
+    if (holz && fl) { koerper = k(M.union(koerper, fl)); umriss = k(k(koerper.project()).offset(0, 'Round')); fl = null; }   // einfarbig: Flügel = Körper
     // ── Dunkel: Text + Streifen (erhaben auf der Oberseite) ──
-    const glatt = p.druck === 'glatt', tE = Math.min(p.tiefe || 0.6, d - 1);     // glatt: Einlage-Tiefe von oben
+    const glatt = p.druck === 'glatt' && !holz, tE = Math.min(p.tiefe || 0.6, d - 1);     // glatt: Einlage-Tiefe von oben; Holz = immer Gravur oben
+    const gravur = [];                                                        // Holz: Rillen/Schrift von oben eingraviert
     const dunkel = [], hR = p.relief, sperr = [];                            // sperr = Rechtecke ohne Pünktchen
     const innen = k(u.offset(-2.2, 'Round'));
     if (textFn && (p.text1 || p.text2)) {
-      let yb = H * 0.09;
+      let yb = holz ? H * 0.2 : H * 0.09;                                     // Holz: Schrift mitten aufs Kleid (Foto)
       const zeile = (txt, font, h) => {
         if (!txt || !(h > 0)) return;
         const r = textFn(CS, k, txt, font, h, 0, yb, 2 * halbB(yb + h) - 8);
+        if (r && r.cs && holz) { gravur.push(k(k(k(r.cs.intersect(innen)).extrude(tE + 0.01)).translate([0, 0, d - tE]))); yb += r.h + h * 0.25; return; }
         if (r && r.cs) { dunkel.push(k(k(r.cs.intersect(innen)).extrude(glatt ? tE : hR).translate([0, 0, glatt ? d - tE : d - 0.01]))); sperr.push([-halbB(yb) , yb - 2, halbB(yb), yb + r.h + 2]); yb += r.h + h * 0.25; }
       };
       zeile(p.text2, p.font2, p.h2);                                          // untere Zeile zuerst (Schreibschrift)
       zeile(p.text1, p.font1, p.h1);
     }
-    if (p.muster === 'streifen') {
+    if (p.muster === 'streifen' && holz) {                                  // Holz: gleichmäßige waagerechte Rillen über Kleid und Flügel, Rand bleibt stehen
+      const n = Math.max(1, Math.round(p.streifen)), y0 = H * 0.05, y1 = yHals - rk * 0.15, fl2 = k(umriss.offset(-1.8, 'Round')), bars = [];
+      for (let i = 0; i < n; i++) { const y = y0 + (y1 - y0) * (i + 0.5) / n; bars.push(k(CS.square([4 * H, Math.min(1.6, (y1 - y0) / n * 0.4)], false).translate([-2 * H, y - 0.8]))); }
+      gravur.push(k(k(k(k(CS.union(bars)).intersect(fl2)).extrude(tE + 0.01)).translate([0, 0, d - tE])));
+    } else if (p.muster === 'streifen') {
       const n = Math.max(1, Math.round(p.streifen)), y0 = H * 0.06, y1 = yHals - rk * 0.3;
       for (let i = 0; i < n; i++) {
         const y = y0 + (y1 - y0) * (i + 0.5) / n + (rnd() - 0.5) * (y1 - y0) / n * 0.25, t = 1 + rnd() * 1.6, a = (rnd() - 0.5) * 7;
@@ -138,7 +154,7 @@ function _sgeBuild(w, p, textFn) {
     let dk = dunkel.length ? k(M.union(dunkel)) : null;
     // ── Pünktchen + Stern (Körperfarbe) ──
     const auf = [];
-    if (p.muster === 'punkte') {
+    if (p.muster === 'punkte' && !holz) {
       const flaeche = u.area(), n = Math.round(flaeche * p.punkte / 1000);
       const ib = innen.bounds();
       let gesetzt = 0; const pkt = [];
@@ -149,6 +165,7 @@ function _sgeBuild(w, p, textFn) {
         if (sperr.some(r => x > r[0] && x < r[2] && y > r[1] && y < r[3])) continue;
         if (p.oese > 0 && x * x + (y - lochY) ** 2 < (oeseR + 2) ** 2) continue;
         if (p.stern && x * x + (y - H * 0.6) ** 2 < 64) continue;
+        if (p.herzB && x * x + (y - H * 0.6) ** 2 < 64) continue;
         const r = 0.9 + rnd() * 0.7;                                          // Fuß-Ø 1,8–3,2 mm: ≥ 4 Düsenbahnen, sonst schmieren die Mini-Inseln (Druck 11.11.)
         if (pkt.some(q => (q[0] - x) ** 2 + (q[1] - y) ** 2 < (q[2] + r + 1.2) ** 2)) continue;   // Abstand, keine Klumpen
         pkt.push([x, y, r]);
@@ -156,16 +173,24 @@ function _sgeBuild(w, p, textFn) {
                        : k(M.cylinder(hR + 0.05, r, r * 0.6, 24).translate([x, y, d - 0.05]))); gesetzt++;   // flacher Kegelstumpf, Höhe = Relief (3 Schichten à 0,2)
       }
     }
+    const brustY = holz ? yHals - 0.11 * H : H * 0.6;                          // Holz: Motiv oben auf der Brust (Foto)
+    if (p.herzB) {
+      const hz = herz2D(0, brustY, H * 0.06);
+      if (holz) gravur.push(k(k(hz.extrude(d + 2)).translate([0, 0, -1])));   // ausgeschnitten
+      else auf.push(glatt ? k(k(hz.extrude(tE)).translate([0, 0, d - tE])) : k(k(hz.extrude(hR + 0.2)).translate([0, 0, d - 0.01])));
+    }
     if (p.stern) {
       const sR = H * 0.055, pts = [];
-      for (let i = 0; i < 10; i++) { const a = Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? sR * 0.45 : sR; pts.push([r * Math.cos(a), H * 0.6 + r * Math.sin(a)]); }
-      auf.push(glatt ? k(k(new CS([pts])).extrude(tE).translate([0, 0, d - tE])) : k(k(new CS([pts])).extrude(hR + 0.2).translate([0, 0, d - 0.01])));
+      for (let i = 0; i < 10; i++) { const a = Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? sR * 0.45 : sR; pts.push([r * Math.cos(a), brustY + r * Math.sin(a)]); }
+      if (holz) gravur.push(k(k(k(new CS([pts])).extrude(d + 2)).translate([0, 0, -1])));   // ausgeschnitten
+      else auf.push(glatt ? k(k(new CS([pts])).extrude(tE).translate([0, 0, d - tE])) : k(k(new CS([pts])).extrude(hR + 0.2).translate([0, 0, d - 0.01])));
     }
     let pk = null;
     if (glatt) {                                                              // Einlagen: aus dem Körper schneiden, Punkte/Stern als eigenes Teil (Gold)
       if (auf.length) { pk = k(M.union(auf)); if (dk) pk = k(M.difference(pk, dk)); koerper = k(M.difference(koerper, pk)); }
     } else if (auf.length) koerper = k(M.union(koerper, k(M.union(auf))));
     if (dk) koerper = k(M.difference(koerper, dk));
+    if (gravur.length) koerper = k(M.difference(koerper, k(M.union(gravur))));
     // Rückseite (z = 0) mit Struktur — beim Glatt-Druck ist sie die große oberste Fläche; Glätten krümelte dort und
     // zeigte das Füllmuster (Druck 12.11.). 'auto' = beim Glatt-Druck Leinen, sonst glatt (liegt dann auf der Platte).
     const rueck = (p.rueck || 'auto') === 'auto' ? (glatt ? 'leinen' : 'glatt') : p.rueck;
