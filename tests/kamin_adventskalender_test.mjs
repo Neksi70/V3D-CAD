@@ -33,14 +33,14 @@ try {
       for (let t = 0; t < n; t++) { const o = 84 + t * 50 + 12, v = [key(o), key(o + 12), key(o + 24)]; for (let j = 0; j < 3; j++) { const a = v[j], c = v[(j + 1) % 3], kk = a < c ? a + '|' + c : c + '|' + a; E.set(kk, (E.get(kk) || 0) + 1); } }
       if (![...E.values()].every(c => c === 2)) r.offen.push(f.name); }
     _kakStr('socken', ''); _newCreate(false); return r; });
-  ok(st.bauart === 'stapel' && /Ringe: 12 × 14 mm/.test(st.info) && /24 Bodenkarten/.test(st.info) && st.felder <= 8, `Stapel ist Standard: ${st.felder} Felder, Info „${st.info.slice(0, 90)}…“`);
-  ok(['Kamin Ringe #1', 'Kamin Bodenkarten #1', 'Kamin Zahlen #1', 'Kamin Socken #1'].every(n => st.szene.includes(n)), 'Stapel in Szene: ' + st.szene.join(', '));
-  ok(['sockelring.stl', 'ring_14mm.stl', 'ring_48mm.stl', 'karte_01.stl', 'karte_01_zahl.stl', 'karte_24.stl', 'socke_1.stl'].every(n => st.namen.includes(n)) && st.offen.length === 0,
+  ok(st.bauart === 'stapel' && /Ringe: 12 × 14 mm/.test(st.info) && /24 Bodenkarten/.test(st.info) && st.felder <= 9, `Stapel ist Standard: ${st.felder} Felder, Info „${st.info.slice(0, 90)}…“`);
+  ok(['Kamin Ringe #1', 'Kamin Bodenkarten #1', 'Kamin Zahlen #1', 'Kamin Socken #1', 'Kamin Weihnachtsmann Hose #1', 'Kamin Weihnachtsmann Schnalle #1'].every(n => st.szene.includes(n)), 'Stapel in Szene: ' + st.szene.join(', '));
+  ok(['sockelring.stl', 'ring_14mm.stl', 'ring_48mm.stl', 'karte_01.stl', 'karte_01_zahl.stl', 'karte_24.stl', 'socke_1.stl', 'weihnachtsmann_hose.stl', 'weihnachtsmann_schnalle.stl'].every(n => st.namen.includes(n)) && st.offen.length === 0,
      `Stapel-Export: ${st.namen.length} Dateien, alle geschlossen ${st.offen.join(',')}`);
-  await p.evaluate(() => { _kakStr('bauart', 'schieber'); });
+  await p.evaluate(() => { _kakStr('bauart', 'schieber'); _kakStr('oben', 'krone'); });
   const ui = await p.evaluate(() => { const c = document.querySelector('#kak-modal .g3ctrl'), sichtbar = [...c.querySelectorAll('input,select,textarea')].filter(e => e.offsetParent && !e.closest('details')).length;
     const ohneTip = [...c.querySelectorAll('input,select')].filter(e => !e.title && !(e.closest('label') && e.closest('label').title)).map(e => e.id); return { sichtbar, ohneTip, info: document.getElementById('kak-info').textContent }; });
-  ok(ui.sichtbar <= 8 && ui.ohneTip.length === 0, `Einsteigeransicht ${ui.sichtbar} Felder, Tooltips an allen Feldern ${ui.ohneTip.join(',')}`);
+  ok(ui.sichtbar <= 9 && ui.ohneTip.length === 0, `Einsteigeransicht ${ui.sichtbar} Felder, Tooltips an allen Feldern ${ui.ohneTip.join(',')}`);
   ok(/48 Blindstopfen/.test(ui.info) && /Gesamt: 176 × 135/.test(ui.info) && /zwei Schächte/.test(ui.info) && /33,6 mm je Tag/.test(ui.info), 'Zusammenfassung: ' + ui.info.slice(0, 160));
   const gesperrt = await p.evaluate(() => { _kakSet('slots', 10); const r = { sp: document.getElementById('kak-stl').disabled, t: document.getElementById('kak-info').textContent }; _kakSet('slots', 36); return { ...r, frei: !document.getElementById('kak-stl').disabled }; });
   ok(gesperrt.sp && gesperrt.frei && /Mehr Tage/.test(gesperrt.t), 'Tage > Etagen: Hinweis + Export gesperrt, danach wieder frei');
@@ -75,13 +75,13 @@ try {
     const namen = [...cfg.matchAll(/key="plater_name" value="([^"]*)"/g)].map(m => m[1]).join('|');
     const tag1 = cfg.match(/value="tag1"\/>([\s\S]*?)<\/object>/), ext = tag1 ? [...tag1[1].matchAll(/key="extruder" value="(\d+)"/g)].map(m => m[1]).join(',') : '';
     const farb = (ps.filament_colour || []).join(','), model = fflate.strFromU8(z['3D/3dmodel.model']);
-    ok(namen === soll && masch.test(ps.printer_settings_id || '') && ext === '4,4,2' && farb === '#B5563A,#2D4A3E,#D9CFC0,#E8E1D4,#9A8F80,#C8323A,#E8742A,#F6C544' && /<metadata name="Application">BambuStudio-/.test(model) && (ps.wipe_tower_x || []).length === soll.split('|').length,
+    ok(namen === soll && masch.test(ps.printer_settings_id || '') && ext === '4,4,2' && farb === '#B5563A,#2D4A3E,#D9CFC0,#E8E1D4,#9A8F80,#C8323A,#E8742A,#F6C544,#1F1F1F,#E2B13C' && /<metadata name="Application">BambuStudio-/.test(model) && (ps.wipe_tower_x || []).length === soll.split('|').length,
        `3MF ${dr}: Platten ${namen.split('|').length} (${namen}), Profil ${ps.printer_settings_id}, Tag 1 Schieber/Zahl Extruder ${ext}`);
   }
   const h2c = await p.evaluate(async () => { _kakStr('drucker', 'h2c'); let files = null; const alt = window._saveExportMany; window._saveExportMany = async f => { files = f; return { wrote: true, dir: 'Test' }; };
     try { await _kakExportStl(); } finally { window._saveExportMany = alt; _kakStr('drucker', 'sv08max'); } return files.map(f => f.name).filter(n => /^turm/.test(n)); });
   ok(h2c.length === 2 && h2c[0] === 'turm_1von2.stl', 'H2C: Turm geteilt → ' + h2c.join(', '));
-  const gr = await p.evaluate(async () => { _newCreate(false); const ids = await window._GEN_EXT['kamin-adventskalender'].run({ bauart: 'schieber', tage: 12, slots: 16, schacht: 40 }); return { ids: ids.length, n: objects.length }; });
+  const gr = await p.evaluate(async () => { _newCreate(false); const ids = await window._GEN_EXT['kamin-adventskalender'].run({ bauart: 'schieber', oben: 'krone', tage: 12, slots: 16, schacht: 40 }); return { ids: ids.length, n: objects.length }; });
   ok(gr.ids === 10 && gr.n === 10, `gen.run (12 Tage, 16 Etagen, Schacht 40): ${gr.ids} Teile`);
   const pr = await p.evaluate(async () => { const r = {};
     const C1 = _kakCheck(_kakParams({ ..._KAK_DEF, bauart: 'schieber', drucker: 'h2c', pitch: 10, slot_h: 3, slots: 40 })); r.falz = C1.fehler.some(f => /Raster zu eng für die Turm-Teilung/.test(f));

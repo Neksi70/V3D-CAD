@@ -6040,6 +6040,7 @@ Patrick</textarea>
       <canvas id="kak-canvas" width="200" height="320"></canvas>
       <div class="g3ctrl">
         <div class="vrow"><label title="Schieber-Turm: fester Turm, Tages-Schieber seitlich (BRICKLET). Stapel-Ringe: Turm aus Mauer-Ringen, zwischen den Ringen je eine Bodenkarte mit Zahl – jeder Ring so hoch wie sein Inhalt">Bauart</label> <select class="lb-sel" id="kak-bauart" style="flex:1;min-width:0" title="Schieber-Turm oder Stapel-Ringe" onchange="_kakStr('bauart',this.value)"><option value="stapel">Stapel-Ringe mit Bodenkarten</option><option value="schieber">Schieber-Turm (zwei Schächte)</option></select></div>
+        <div class="vrow"><label title="Was oben auf den Schornstein kommt">Oben drauf</label> <select class="lb-sel" id="kak-oben" style="flex:1;min-width:0" title="Was oben auf den Schornstein kommt" onchange="_kakStr('oben',this.value)"><option value="santa">Weihnachtsmann kopfüber</option><option value="krone">Kaminkrone</option></select></div>
         <div class="vrow" id="kak-row-tage"><label title="Anzahl Tage = nummerierte Schieber 1 … n, abwechselnd von rechts (ungerade) und links (gerade)">Tage</label> <input type="range" id="kak-tage" min="1" max="31" value="24" step="1" title="Anzahl Tage = nummerierte Schieber 1 … n, abwechselnd von rechts (ungerade) und links (gerade)" oninput="_kakSet('tage',this.value)"><span class="vv" id="kakv-tage">24</span><span class="vu"></span></div>
         <div class="vrow kak-nur-stapel" id="kak-row-st_innen"><label title="Lichte Weite der Ringe innen (quadratisch) – ein Ü-Ei braucht etwa 65 mm">Innenmaß</label> <input type="range" id="kak-st_innen" min="40" max="150" value="80" step="1" title="Lichte Weite der Ringe innen (quadratisch) – ein Ü-Ei braucht etwa 65 mm" oninput="_kakSet('st_innen',this.value)"><span class="vv" id="kakv-st_innen">80</span><span class="vu">mm</span></div>
         <div class="vrow kak-nur-stapel" id="kak-row-ringe" title="Wie viele Ringe welcher Höhe? Flache Ringe füllen bis zur Anzahl Tage auf"><label title="Wie viele Ringe welcher Höhe? Flache Ringe füllen bis zur Anzahl Tage auf">Ringe</label>
@@ -37941,10 +37942,91 @@ function kakBuild(w, pIn, textFn, opt) {
 }
 
 if (typeof module !== 'undefined') module.exports = { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakEtagen, kakRinge, kakFalzHoehe, kakSegmente, kakBuild };
+// ── Aufsatz Weihnachtsmann (1:1 aus tools/kamin-adventskalender/kak_santa.js) ──
+// Kamin-Adventskalender — Aufsatz „Weihnachtsmann steckt kopfüber im Schornstein“ (nach Volkers Video, 13.11.).
+// Nur der Unterkörper: weißer Pelzsaum auf dem Rand, schwarzer Gürtel mit goldener Schnalle, rote Hüfte, zwei Beine
+// nach oben (links weit gespreizt, Knie leicht gebeugt), weiße Pelz-Stulpen, schwarze Stiefel mit Sohle oben.
+// Manifold, mm, Z oben. kakSanta(w, s, opt) → { teile: [{ name, hex, mf }], lage, masse }
+//   s = { in_w, in_d, out_w, out_d, steck }  Schacht innen, Turm außen, Stecktiefe (Standard 10)
+//   Teile in DRUCKLAGE (Stopfen unten auf z = 0, stützfrei bis auf ~4 mm Überstand des Saums über dem Stopfen).
+//   lage(mf): Drucklage → Einbaulage (Ursprung = Mitte der Schachtöffnung oben, z = 0 = Oberkante Rand).
+//   opt.vorschau: gröberes Raster. Rote Figur als Distanzfeld (levelSet), Saum/Gürtel/Stulpen/Stiefel als Körper.
+function kakSanta(w, s, opt) {
+  const M = w.Manifold, CS = w.CrossSection, tmp = [], k = x => { tmp.push(x); return x; };
+  const o = opt || {}, fein = !o.vorschau;
+  const steck = s.steck == null ? 10 : s.steck, spiel = 0.4;
+  const W = Math.min(s.out_w, s.out_d), H = 1.2 * s.out_w;                  // Höhe über dem Rand ≈ 1,2 × Turmbreite
+  const hF = Math.max(4, W * 0.05), hB = Math.max(6, W * 0.11);             // Pelzsaum, Gürtel (Band um die Hüfte)
+  const bx = s.out_w - 9, by = s.out_d - 9, z0 = hF + hB, hx = bx - 3, hy = by - 3;   // Gürtel- / Hüftgrundriss, Hüfte ab z0 (Gürtel steht 1,5 mm über)
+  const rl = W * 0.145, rc = rl * 1.3, rb = rl * 1.22, lc = rl * 0.75, lb = rl * 1.35;   // Bein, Stulpe, Stiefel (kräftig wie im Video)
+  try {
+    const rr = (bw, bd, r) => { r = Math.min(r, bw / 2 - 0.1, bd / 2 - 0.1);    // abgerundetes Rechteck um (0,0)
+      return k(k(k(CS.square([bw - 2 * r, bd - 2 * r], true)).offset(r, 'Round', 2, fein ? 32 : 16))); };
+    // Beine (x-z-Ebene, je etwas vor/zurück): Hüfte → Knie → Knöchel; Neigung ≤ 40° gegen die Senkrechte (stützfrei)
+    const beine = [
+      { y: 6, h: [bx * 0.2, 6, z0 + H * 0.2], kn: [bx * 0.27, 6, z0 + H * 0.42], a: [bx * 0.21, 6, z0 + H * 0.60] },      // rechts fast senkrecht
+      { y: -6, h: [-bx * 0.18, -6, z0 + H * 0.18], kn: [-bx * 0.40, -6, z0 + H * 0.37], a: [-bx * 0.55, -6, z0 + H * 0.53] }   // links gespreizt
+    ];
+    for (const b of beine) { const d = [b.a[0] - b.kn[0], b.a[2] - b.kn[2]], L = Math.hypot(d[0], d[1]); b.dir = [d[0] / L, d[1] / L]; b.th = Math.atan2(d[0], d[1]) * 180 / Math.PI; }
+    // ── Distanzfeld Rot: Hüfte (Ellipsoid ab Gürtel) + Beine (Kapseln), weich verschmolzen ──
+    const cap = (x, y, z, a, b, r) => { const bxx = b[0] - a[0], byy = b[1] - a[1], bz = b[2] - a[2], px = x - a[0], py = y - a[1], pz = z - a[2];
+      const t = Math.max(0, Math.min(1, (px * bxx + py * byy + pz * bz) / (bxx * bxx + byy * byy + bz * bz)));
+      return Math.hypot(px - bxx * t, py - byy * t, pz - bz * t) - r; };
+    const ell = (x, y, z, c, r) => { const px = (x - c[0]) / r[0], py = (y - c[1]) / r[1], pz = (z - c[2]) / r[2];
+      const k0 = Math.hypot(px, py, pz), k1 = Math.hypot(px / r[0], py / r[1], pz / r[2]); return k1 > 1e-9 ? k0 * (k0 - 1) / k1 : -Math.min(...r); };
+    const smin = (a, b, kk) => { const h = Math.max(kk - Math.abs(a - b), 0) / kk; return Math.min(a, b) - h * h * kk * 0.25; };
+    const rbox = (x, y, z, c, hs, r) => { const qx = Math.abs(x - c[0]) - hs[0] + r, qy = Math.abs(y - c[1]) - hs[1] + r, qz = Math.abs(z - c[2]) - hs[2] + r;
+      return Math.hypot(Math.max(qx, 0), Math.max(qy, 0), Math.max(qz, 0)) + Math.min(Math.max(qx, qy, qz), 0) - r; };
+    const hz = H * 0.2, hrund = Math.min(hx, hy) * 0.32;                     // Hüfte: senkrechte Seiten im Gürtel, oben kräftig gerundet
+    const rot = (x, y, z) => {
+      let d = rbox(x, y, z, [0, 0, z0], [hx / 2, hy / 2, hz], hrund);
+      d = smin(d, ell(x, y, z, [hx * 0.2, 0, z0 + hz * 0.75], [hx * 0.3, hy * 0.42, hz * 0.55]), 8);   // Pobacken
+      d = smin(d, ell(x, y, z, [-hx * 0.2, 0, z0 + hz * 0.75], [hx * 0.3, hy * 0.42, hz * 0.55]), 8);
+      for (const b of beine) { d = smin(d, cap(x, y, z, b.h, b.kn, rl * 1.1), rl * 1.0); d = smin(d, cap(x, y, z, b.kn, b.a, rl), rl * 0.6); }
+      return d;
+    };
+    const e = fein ? Math.max(0.8, W / 85) : Math.max(1.5, W / 45);
+    const bb = [-s.out_w, -s.out_d, z0 - 2 * hz, s.out_w, s.out_d, z0 + H + 10];
+    let roh = k(M.levelSet(p => -rot(p[0], p[1], p[2]), { min: [bb[0], bb[1], bb[2]], max: [bb[3], bb[4], bb[5]] }, e, 0));
+    { const st = roh.decompose(); if (st.length > 1) { const v = st.map(m => m.volume()), mx = Math.max(...v); roh = k(M.union(st.filter((m, i) => v[i] >= mx * 0.01))); } st.forEach(m => tmp.push(m)); }
+    // ── Stulpen (weiß, unten 45° angesetzt) + Stiefel (schwarz, Sohle oben) entlang der Unterschenkelachse ──
+    const langs = (mf, b, t0) => k(k(mf.rotate([0, b.th, 0])).translate([b.a[0] + b.dir[0] * t0, b.y, b.a[2] + b.dir[1] * t0]));
+    const zyl = (l, r, r2) => k(M.cylinder(l, r, r2 == null ? r : r2, fein ? 48 : 24));
+    const stulpen = [], stiefel = [];
+    for (const b of beine) {
+      const neig = Math.abs(b.th), kegel = (rc - rl * 1.02) / Math.tan(Math.max(12, 45 - neig) * Math.PI / 180);   // Unterkante: Kegel so flach, dass auch beim schrägen Bein ≤ 45° überhängt
+      stulpen.push(langs(k(M.union([zyl(kegel, rl * 1.02, rc), k(zyl(lc, rc).translate([0, 0, kegel]))])), b, -kegel * 0.6));
+      const st = k(M.union([zyl(lb - 3, rb), k(zyl(3, rb * 1.04, rb * 1.04).translate([0, 0, lb - 3]))]));   // Schaft + Sohle (minimal breiter, oben)
+      stiefel.push(langs(st, b, -kegel * 0.6 + kegel + lc - 0.3));   // 0,3 mm in die Stulpe, unten abgezogen → exakt gemeinsame Fläche
+    }
+    const stulpe = k(M.union(stulpen)), stiefelU = k(k(M.union(stiefel)).subtract(stulpe));
+    // ── Saum (weiß) mit Stopfen, Gürtel (schwarz), Schnalle (gold) ──
+    const pw = s.in_w - 2 * spiel, pd = s.in_d - 2 * spiel;
+    const stopfen = k(k(rr(pw, pd, 3).extrude(steck + 0.5)).translate([0, 0, -steck]));
+    const saum = k(M.hull([k(k(rr(s.out_w - 2, s.out_d - 2, 6).extrude(hF - 1.5))), k(k(rr(s.out_w - 5, s.out_d - 5, 4.5).extrude(1.5)).translate([0, 0, hF - 1.5]))]));
+    const weiss = k(M.union([stopfen, saum, stulpe]));
+    const guertel = k(k(rr(bx, by, hrund * 0.6).extrude(hB)).translate([0, 0, hF]));
+    const sw = Math.min(bx * 0.24, 24), sh = hB - 1.2, sp = 1.6;
+    const schnalle = k(k(k(k(rr(sw, sh, 1.2).subtract(rr(sw * 0.5, sh * 0.42, 0.6))).extrude(sp)).rotate([90, 0, 0])).translate([bx * 0.16, -by / 2 + 0.02, hF + 0.6 + sh / 2]));   // vorn, etwas seitlich (wie im Video)
+    const schwarz = k(M.union([guertel, stiefelU]));
+    // Rot: nur über dem Gürtel, ohne Stulpen/Stiefel
+    const oben = k(k(M.cube([4 * s.out_w, 4 * s.out_d, 2 * H + 50], true)).translate([0, 0, z0 + H + 25]));
+    let rotK = k(k(roh.intersect(oben)).subtract(k(M.union([stulpe, stiefelU]))));
+    { const st = rotK.decompose(); st.forEach(m => tmp.push(m)); const v = st.map(m => m.volume()), mx = Math.max(...v); if (st.length > 1) rotK = k(M.union(st.filter((m, i) => v[i] >= mx * 0.02))); }   // Randsplitter an Stulpen weg
+    const gold = k(schnalle.subtract(guertel));
+    const druck = mf => mf.translate([0, 0, steck]);
+    const teile = [{ name: 'Weihnachtsmann Hose', hex: '#c8323a', mf: druck(rotK) }, { name: 'Weihnachtsmann Pelz', hex: '#f4f1ea', mf: druck(weiss) },
+      { name: 'Weihnachtsmann Gürtel + Stiefel', hex: '#1f1f1f', mf: druck(schwarz) }, { name: 'Weihnachtsmann Schnalle', hex: '#e2b13c', mf: druck(gold) }];
+    const box = M.union(teile.map(t => t.mf)), bbx = box.boundingBox(); box.delete();
+    return { teile, lage: mf => mf.translate([0, 0, -steck]), masse: { hoehe_ueber_rand: bbx.max[2] - steck, gesamt: [bbx.max[0] - bbx.min[0], bbx.max[1] - bbx.min[1], bbx.max[2] - bbx.min[2]], steck, spiel, saum_h: hF, guertel_h: hB } };
+  } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
+}
+if (typeof module !== 'undefined') module.exports = { kakSanta };
+if (typeof globalThis !== 'undefined') globalThis.kakSanta = kakSanta;
 
-const _kakP = { ...KAK_DEF, schacht: 50, bauart: 'stapel', ring_h: KAK_DEF.ring_h.slice(), ring_n: KAK_DEF.ring_n.slice() };
+const _kakP = { ...KAK_DEF, schacht: 50, bauart: 'stapel', oben: 'santa', ring_h: KAK_DEF.ring_h.slice(), ring_n: KAK_DEF.ring_n.slice() };
 const _KAK_DEF = { ..._kakP };
-const _KAK_FARBE = { feuer: '#b5563a', turm: '#b5563a', krone: '#d9cfc0', stein: '#e8e1d4', zahl: '#2d4a3e', blind: '#9a8f80', name: '#2d4a3e', weiss: '#e8e1d4', rot: '#c8323a', orange: '#e8742a', gelb: '#f6c544' };   // weiß = Schieber-Farbe (ein Filament weniger)
+const _KAK_FARBE = { schwarz: '#1f1f1f', gold: '#e2b13c', feuer: '#b5563a', turm: '#b5563a', krone: '#d9cfc0', stein: '#e8e1d4', zahl: '#2d4a3e', blind: '#9a8f80', name: '#2d4a3e', weiss: '#e8e1d4', rot: '#c8323a', orange: '#e8742a', gelb: '#f6c544' };   // weiß = Schieber-Farbe (ein Filament weniger)
 let _kakRT = null;
 // Tooltips + Grenzen je Parameter (alle Maße mm) — einfache Ansicht ≤ 6 Felder, Rest unter „Erweitert“
 const _KAK_FELDER = {
@@ -38021,6 +38103,15 @@ function _kakCheck(p){
   return { m, fehler, hinweise, Z: Z || [0, m.tower_h], used, blind: Math.max(0, 2 * p.slots - Math.min(p.tage, 2 * p.slots)), fach, hoehe, lichte, lvRiegel, lvFerrero, lvEi, frei, eier, proTag, schaechte, jeSchacht,
     breite: p.base_w + 2 * p.mantel_o, tiefe: p.base_d + p.mantel_o + 3 };
 }
+// Weihnachtsmann je Schachtmaß nur einmal rechnen (fein ≈ 8 s); Farben auf die Kamin-Filamente gelegt
+let _kakSantaC = null;
+function _kakSanta(w, p, m, vorschau){
+  const key = [p.in_w, p.in_d, m.out_w, m.out_d, vorschau ? 1 : 0].join('|');
+  if (!_kakSantaC || _kakSantaC.key !== key) { if (_kakSantaC) for (const t of _kakSantaC.S.teile) { try { t.mf.delete(); } catch (e) {} }
+    _kakSantaC = { key, S: kakSanta(w, { in_w: p.in_w, in_d: p.in_d, out_w: m.out_w, out_d: m.out_d, steck: 10 }, { vorschau }) }; }
+  const farbe = { '#c8323a': _KAK_FARBE.rot, '#f4f1ea': _KAK_FARBE.weiss, '#1f1f1f': _KAK_FARBE.schwarz, '#e2b13c': _KAK_FARBE.gold };
+  return { teile: _kakSantaC.S.teile.map(t => ({ name: t.name, hex: farbe[t.hex.toLowerCase()] || t.hex, mf: t.mf })), lage: _kakSantaC.S.lage };
+}
 // Zusammenbau (OpenSCAD-Koordinaten) → Teile je Farbe: [{ mf, hex, name }]
 function _kakZusammenbau(w, p, vorschau){
   const B = kakBuild(w, p, _kakText, { vorschau }), m = B.m, k = B.k, M = w.Manifold;
@@ -38049,7 +38140,8 @@ function _kakZusammenbau(w, p, vorschau){
       }
     }
     const U = a => !a.length ? null : a.length === 1 ? a[0] : k(M.union(a));
-    const kr = T(B.cap(), [m.tower_x, m.tower_y, zTop]), auf = T(B.cap_top(), [m.tower_x + 6, m.tower_y + 6, zTop + m.cap_t]);
+    const santa = p.oben === 'santa', kr = santa ? null : T(B.cap(), [m.tower_x, m.tower_y, zTop]), auf = santa ? null : T(B.cap_top(), [m.tower_x + 6, m.tower_y + 6, zTop + m.cap_t]);
+    const oben = santa ? _kakSanta(w, p, m, vorschau).teile.map(t => ({ ...t, mf: T(_kakSantaC.S.lage(t.mf), [m.tower_x + m.out_w / 2, m.tower_y + m.out_d / 2, zTop]) })) : [];
     const name = B.nameplate_text(), deko = [];
     if (p.bogen) deko.push({ mf: B.bogenRing(), hex: _KAK_FARBE.weiss, name: 'Bogenrahmen' });
     if (p.schnee) deko.push({ mf: B.schneeKante(), hex: _KAK_FARBE.weiss, name: 'Schnee' });
@@ -38059,7 +38151,7 @@ function _kakZusammenbau(w, p, vorschau){
     if (sr.length) deko.push({ mf: k(M.union(sr)), hex: _KAK_FARBE.rot, name: 'Socken' }, { mf: k(M.union(sw)), hex: _KAK_FARBE.weiss, name: 'Socken weiß' });
     if (st.length) deko.push({ mf: k(M.union(st)), hex: _KAK_FARBE.weiss, name: 'Socken-Namen' });
     const teile = [{ mf: B.base(), hex: _KAK_FARBE.feuer, name: 'Feuerstelle' }, ...deko, { mf: C.stapel ? turmMf : T(B.tower()), hex: _KAK_FARBE.turm, name: C.stapel ? 'Ringe' : 'Turm' },
-      { mf: U([kr, auf]), hex: _KAK_FARBE.krone, name: 'Kaminkrone' }, { mf: U(steine), hex: _KAK_FARBE.stein, name: 'Tages-Schieber' }, { mf: U(karten), hex: _KAK_FARBE.stein, name: 'Bodenkarten' },
+      ...(santa ? oben : [{ mf: U([kr, auf]), hex: _KAK_FARBE.krone, name: 'Kaminkrone' }]), { mf: U(steine), hex: _KAK_FARBE.stein, name: 'Tages-Schieber' }, { mf: U(karten), hex: _KAK_FARBE.stein, name: 'Bodenkarten' },
       { mf: U(zahlen), hex: _KAK_FARBE.zahl, name: 'Zahlen' }, { mf: U(blinde), hex: _KAK_FARBE.blind, name: 'Blindstopfen' }, { mf: name, hex: _KAK_FARBE.name, name: 'Name' }].filter(t => t.mf);
     return teile.map(t => ({ ...t, mf: t.mf.translate([0, 0, 0]) }));
   } finally { B.aufraeumen(); }
@@ -38091,8 +38183,13 @@ function _kakDruckteile(w, p){
     const TT = B.turmTeile(), n = TT.teile.length;
     TT.teile.forEach((s, i) => out.push({ datei: n === 1 ? 'turm.stl' : `turm_${i + 1}von${n}.stl`, mf: boden(s.mf), hex: _KAK_FARBE.turm, gruppe: 'turm' + i }));
     }
+    if (p.oben === 'santa') { const S = _kakSanta(w, p, m, false), sb = S.teile[0].mf.boundingBox(); let x0 = 1e9, y0 = 1e9; for (const t of S.teile) { const b = t.mf.boundingBox(); x0 = Math.min(x0, b.min[0]); y0 = Math.min(y0, b.min[1]); }
+      const dat = ['weihnachtsmann_hose', 'weihnachtsmann_pelz', 'weihnachtsmann_schwarz', 'weihnachtsmann_schnalle'];
+      S.teile.forEach((t, i) => out.push({ datei: (dat[i] || 'weihnachtsmann_' + i) + '.stl', mf: t.mf.translate([-x0, -y0, 0]), hex: t.hex, gruppe: 'santa' }));
+    } else {
     out.push({ datei: 'kaminkrone.stl', mf: boden(B.cap_print()), hex: _KAK_FARBE.krone, gruppe: 'krone' });
     out.push({ datei: 'kaminkrone_aufsatz.stl', mf: boden(B.cap_top()), hex: _KAK_FARBE.krone, gruppe: 'aufsatz' });
+    }
     if (C.blind > 0) out.push({ datei: 'blindstopfen.stl', mf: boden(B.blank_print()), hex: _KAK_FARBE.blind, gruppe: 'blind', anzahl: C.blind });
     for (let d = 1; d <= (C.stapel ? 0 : Math.min(p.tage, p.slots)); d++) {
       const st = B.stone_print(d), sb = st.boundingBox(), dx = -sb.min[0], dy = -sb.min[1], dd = String(d).padStart(2, '0');
@@ -38132,6 +38229,7 @@ function _kakSync(tippen){
   for (const k of [...Object.keys(_KAK_FELDER), 'bettX', 'bettY', 'bettZ']) { const s = document.getElementById('kak-' + k), t = document.getElementById('kakv-' + k); if (s && document.activeElement !== s) s.value = _kakP[k] ?? ''; if (t) t.textContent = String(_kakP[k]).replace('.', ','); }
   if (!tippen) { for (const k of ['name_txt', 'socken']) { const e = document.getElementById('kak-' + k); if (e) e.value = _kakP[k] || ''; } }
   for (const k of ['bogen', 'schnee', 'flamme']) { const e = document.getElementById('kak-' + k); if (e) e.checked = !!_kakP[k]; }
+  { const o = document.getElementById('kak-oben'); if (o) o.value = _kakP.oben || 'krone'; }
   { const st = _kakP.bauart === 'stapel', b = document.getElementById('kak-bauart'); if (b) b.value = _kakP.bauart;
     document.querySelectorAll('#kak-modal .kak-nur-stapel').forEach(e => e.style.display = st ? '' : 'none');
     document.querySelectorAll('#kak-modal .kak-nur-schieber').forEach(e => e.style.display = st ? 'none' : '');
@@ -38153,13 +38251,13 @@ function _kakSync(tippen){
     el.innerHTML = kopf + `<b>Gesamt:</b> ${z(C.breite)} × ${z(C.tiefe)} × ${z(C.hoehe)} mm · Ringturm ${z(C.m.out_w)} × ${z(C.m.out_d)} × ${z(C.turmH)} mm` +
       `<br><b>Ringe:</b> ${liste}` +
       `<br><b>Teile:</b> ${nT} Dateien – Sockelring, Ringe je Höhe (Anzahl drucken), ${C.ringe.folge.length} Bodenkarten (+ Zahl)` +
-      `<br><b>Befüllen:</b> Sockelring in die Feuerstelle, Karte 1 drauf (Lasche links), Inhalt drauflegen, passenden Ring aufsetzen, Karte 2 (Lasche rechts), Inhalt, Ring … zum Schluss die Krone. Ab dem 1. Dezember unten die Karte ziehen – der Inhalt fällt in die Feuerstelle.` +
+      `<br><b>Befüllen:</b> Sockelring in die Feuerstelle, Karte 1 drauf (Lasche links), Inhalt drauflegen, passenden Ring aufsetzen, Karte 2 (Lasche rechts), Inhalt, Ring … zum Schluss ${p.oben === 'santa' ? 'den Weihnachtsmann' : 'die Krone'}. Ab dem 1. Dezember unten die Karte ziehen – der Inhalt fällt in die Feuerstelle.` +
       `<br><b>Druck:</b> Ringe stehend, Karten flach (Zahl als zweite Farbe), alles stützfrei.`;
   } else el.innerHTML = kopf +
     `<b>Gesamt:</b> ${z(C.breite)} × ${z(C.tiefe)} × ${z(C.hoehe)} mm · Turm ${z(C.m.out_w)} × ${z(C.m.out_d)} × ${z(C.m.tower_h)} mm${seg > 1 ? ` (${seg} Segmente)` : ''}` +
     `<br><b>Teile:</b> ${nTeile} Dateien – ${Math.min(p.tage, p.slots)} Tages-Schieber (+ Zahl), <b>${C.blind} Blindstopfen</b> (eine Datei, ${C.blind}× drucken)` +
     `<br><b>Fächer:</b> ${C.schaechte === 2 ? `zwei Schächte (rechts ungerade, links gerade Tage), je ${p.slots} Etagen für ${C.jeSchacht} Tage` : `${p.slots} Etagen für ${p.tage} Tage`} – im Schnitt ${z(C.proTag)} Etagen ≈ <b>${z(C.proTag * p.pitch - p.pt)} mm</b> je Tag. Eine Etage = ${z(p.pitch)} mm: Riegel ${C.lvRiegel}, Ferrero Rocher ${C.lvFerrero}, Ü-Ei ${C.lvEi} Etagen` +
-    `<br><b>Befüllen:</b> Krone abnehmen, von unten nach oben: ${C.schaechte === 2 ? 'rechts Schieber 1 unten, Inhalt von oben einwerfen, Schieber 3 so viele Etagen höher, wie der Inhalt braucht …; links genauso mit 2, 4, 6 …' : 'Schieber 1 rechts unten, Inhalt einwerfen, Schieber 2 links so viele Etagen höher, wie der Inhalt braucht …'} Freie Schlitze mit Blindstopfen schließen.` +
+    `<br><b>Befüllen:</b> ${p.oben === 'santa' ? 'Weihnachtsmann' : 'Krone'} abnehmen, von unten nach oben: ${C.schaechte === 2 ? 'rechts Schieber 1 unten, Inhalt von oben einwerfen, Schieber 3 so viele Etagen höher, wie der Inhalt braucht …; links genauso mit 2, 4, 6 …' : 'Schieber 1 rechts unten, Inhalt einwerfen, Schieber 2 links so viele Etagen höher, wie der Inhalt braucht …'} Freie Schlitze mit Blindstopfen schließen.` +
     `<br><b>Druck:</b> alle Teile stützfrei in der exportierten Lage (Schieber liegen flach, Zapfen liegt; Krone kopfüber). Zahlen, Namen, Bogenrahmen und Schnee als zweite Farbe; Flamme und Socken flach drucken und einkleben.`;
   const sperr = C.fehler.length > 0;
   for (const id of ['kak-szene', 'kak-stl', 'kak-3mf']) { const b = document.getElementById(id); if (b) b.disabled = sperr; }
@@ -38374,7 +38472,7 @@ function _kakPlatten(teile, bett, opt = {}){
   const platten = []; let pl = null, cx = 0, cy = 0, zeileH = 0;
   const neu = name => { pl = { name, teile: [] }; platten.push(pl); cx = xa + rand; cy = rand; zeileH = 0; };
   const stoesst = (w, d) => S && cx < S[2] && cx + w > S[0] && cy < S[3] && cy + d > S[1];
-  const art = g => /^feuer/.test(g) ? 'Feuerstelle' : /^(flamme|socke)/.test(g) ? 'Deko' : /^ring/.test(g) ? 'Ringe' : /^karte/.test(g) ? 'Bodenkarten' : /^turm/.test(g) ? 'Turm' : /^tag/.test(g) ? 'Tages-Schieber' : /^blind/.test(g) ? 'Blindstopfen' : 'Krone';   // je Platte möglichst eine Farbe (kein Turm nötig)
+  const art = g => /^feuer/.test(g) ? 'Feuerstelle' : /^(flamme|socke)/.test(g) ? 'Deko' : /^santa/.test(g) ? 'Weihnachtsmann' : /^ring/.test(g) ? 'Ringe' : /^karte/.test(g) ? 'Bodenkarten' : /^turm/.test(g) ? 'Turm' : /^tag/.test(g) ? 'Tages-Schieber' : /^blind/.test(g) ? 'Blindstopfen' : 'Krone';   // je Platte möglichst eine Farbe (kein Turm nötig)
   let letzte = null;
   for (const G of gruppen) {
     const a = art(G.g);
@@ -38405,7 +38503,7 @@ async function _kakExport3mf(){
     let wahl = { ..._b3Wahl(), ...(PROFIL[p.drucker] || {}) }, eigenesProfil = !!PROFIL[p.drucker];
     try { await _b3ProfLaden(wahl); } catch (e) { eigenesProfil = false; }
     const prof = eigenesProfil && _b3Prof(wahl); if (!prof || !prof.drucker || !prof.drucker[wahl.machine]) { wahl = _b3Wahl(); eigenesProfil = false; await _b3ProfLaden(wahl); }   // K3/benutzerdefiniert: Profilwahl des 3MF-Exports, Bett vom Kamin
-    const farben = [_KAK_FARBE.feuer, _KAK_FARBE.zahl, _KAK_FARBE.krone, _KAK_FARBE.stein, _KAK_FARBE.blind, _KAK_FARBE.rot, _KAK_FARBE.orange, _KAK_FARBE.gelb].map(h => h.toUpperCase());
+    const farben = [_KAK_FARBE.feuer, _KAK_FARBE.zahl, _KAK_FARBE.krone, _KAK_FARBE.stein, _KAK_FARBE.blind, _KAK_FARBE.rot, _KAK_FARBE.orange, _KAK_FARBE.gelb, _KAK_FARBE.schwarz, _KAK_FARBE.gold].map(h => h.toUpperCase());
     const proj = _bbsProjekt(wahl, farben, []);
     const ORCA_STD = { filament_is_support: '0', filament_long_retractions_when_cut: 'nil', filament_retraction_distances_when_cut: 'nil', filament_scarf_seam_type: 'none', filament_scarf_height: '10%', filament_scarf_gap: '0%', filament_scarf_length: '10', filament_shrink: '100%' };
     if (proj && !_b3IstBambu(wahl)) for (const [k, v] of Object.entries(ORCA_STD)) if (!(k in proj.settings)) proj.settings[k] = [v];   // fehlen in manchen Orca-Herstellerprofilen (Creality) → Orca bricht ab
@@ -38447,7 +38545,7 @@ async function _kakExport3mf(){
     { k: 'socken', label: 'Namen auf den Socken (max. 2, Komma)', type: 'text', maxlen: 30, default: '' }, { k: 'name_txt', label: 'Name auf dem Sims', type: 'text', maxlen: 30, default: '' }, { k: 'drucker', label: 'Drucker', type: 'wahl', options: Object.keys(KAK_DRUCKER), default: 'sv08max' },
     ...Object.entries(_KAK_FELDER).filter(([k]) => !['tage', 'schacht', 'pitch', 'slots'].includes(k)).map(([k, g]) => ({ k, label: g[3], type: 'range', min: g[0], max: g[1], step: g[2], unit: 'mm', default: KAK_DEF[k] }))],
   async run(q, center){
-    const erlaubt = new Set([...this.params.map(x => x.k), 'in_d', 'font', 'teilen', 'zwei', 'bauart', 'st_innen', 'ring_n', 'ring_h', 'bogen', 'schnee', 'flamme', 'bettX', 'bettY', 'bettZ']), fremd = Object.keys(q).filter(k => !erlaubt.has(k));
+    const erlaubt = new Set([...this.params.map(x => x.k), 'in_d', 'font', 'teilen', 'zwei', 'bauart', 'oben', 'st_innen', 'ring_n', 'ring_h', 'bogen', 'schnee', 'flamme', 'bettX', 'bettY', 'bettZ']), fremd = Object.keys(q).filter(k => !erlaubt.has(k));
     if (fremd.length) throw new Error('Unbekannte Parameter: ' + fremd.join(', ') + ' (erlaubt: ' + [...erlaubt].join(', ') + ')');
     if (q.drucker != null && !KAK_DRUCKER[q.drucker]) throw new Error('drucker muss einer von ' + Object.keys(KAK_DRUCKER).join(', ') + ' sein');
     if (q.bauart != null && !['stapel', 'schieber'].includes(q.bauart)) throw new Error('bauart muss „stapel“ oder „schieber“ sein');
