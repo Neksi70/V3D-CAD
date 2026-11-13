@@ -5,14 +5,14 @@ import { chromium } from '/home/v3da/node_modules/playwright/index.mjs';
 import { spawn } from 'child_process';
 import * as fflate from '/home/v3da/node_modules/fflate/esm/index.mjs';
 const PORT = 18821;
-const srv = spawn('python3', ['kamin-test-server.py', String(PORT), '--dev'], { cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'ignore', 'inherit'] });
+const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'ignore', 'inherit'] });
 await new Promise(r => setTimeout(r, 1800));
 let fail = 0; const ok = (c, m) => { console.log((c ? 'OK   ' : 'FAIL ') + m); if (!c) fail++; };
 const b = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'] });
 try {
   const p = await b.newPage({ viewport: { width: 1400, height: 900 } });
   const errs = []; p.on('pageerror', e => errs.push(e.message));
-  await p.goto(`http://127.0.0.1:${PORT}/volme3d-test-kamin.html`);
+  await p.goto(`http://127.0.0.1:${PORT}/volme3d.html`);
   await p.waitForFunction(() => typeof _kakOpen === 'function' && typeof objects !== 'undefined', null, { timeout: 60000 });
   await p.evaluate(() => { try { hideStarter(); } catch (e) {} _newCreate(false); });
   await p.click('#gen-dd-btn');
