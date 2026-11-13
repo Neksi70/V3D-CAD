@@ -1,8 +1,9 @@
 // Kamin-Adventskalender (🧱 _kak*) im Browser gegen den Testserver (--dev):
 // Menü → Vorschau → Prüfungen (Tage > Schlitze sperrt) → In Szene (Teile je Farbe) → STL-Export (Dateiliste, dicht)
-// → H2C teilt den Turm → gen.run über _GEN_EXT → Undo
+// → 3MF mit Druckplatten (SV08 Max/Orca-Profil, H2C/Bambu-Profil) → H2C teilt den Turm → gen.run über _GEN_EXT → Undo
 import { chromium } from '/home/v3da/node_modules/playwright/index.mjs';
 import { spawn } from 'child_process';
+import * as fflate from '/home/v3da/node_modules/fflate/esm/index.mjs';
 const PORT = 18821;
 const srv = spawn('python3', ['kamin-test-server.py', String(PORT), '--dev'], { cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'ignore', 'inherit'] });
 await new Promise(r => setTimeout(r, 1800));
@@ -48,6 +49,19 @@ try {
   ok(ex.dicht === ex.namen.length, `alle ${ex.dicht}/${ex.namen.length} STL geschlossen (jede Kante 2×)`);
   ok(Object.entries(ex.bb).every(([n, b]) => /name|zahl/.test(n) || Math.abs(b[3]) < 0.01) && Math.abs(ex.bb['turm.stl'][2] - 430) < 0.05 && Math.abs(ex.bb['tag_01_stein.stl'][2] - 12.8) < 0.05,
      `Druckorientierung: alles auf z = 0 (Name/Zahlen in derselben Lage wie Feuerstelle/Stein), Turm ${ex.bb['turm.stl'].slice(0, 3).join('×')}, Stein ${ex.bb['tag_01_stein.stl'].slice(0, 3).join('×')}, Krone ${ex.bb['kaminkrone.stl'].slice(0, 3).join('×')}`);
+  // 3MF mit Druckplatten: Blob abfangen, in Node entpacken
+  const hol3mf = dr => p.evaluate(async (dr) => { _kakStr('drucker', dr); let blob = null; const alt = window._saveExport; window._saveExport = async bl => { blob = bl; return { wrote: true, dir: 'Test' }; };
+    try { await _kakExport3mf(); } finally { window._saveExport = alt; _kakStr('drucker', 'sv08max'); }
+    return blob && await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); }); }, dr);
+  for (const [dr, soll, masch] of [['sv08max', 'Feuerstelle|Turm|Krone|Blindsteine|Tagessteine 1|Tagessteine 2', /SV08 MAX/], ['h2c', 'Feuerstelle|Turm|Krone|Blindsteine|Tagessteine 1|Tagessteine 2|Tagessteine 3|Tagessteine 4|Tagessteine 5|Tagessteine 6', /H2C/]]) {
+    const b64 = await hol3mf(dr); if (!b64) { ok(false, `3MF ${dr}: keine Datei`); continue; }
+    const z = fflate.unzipSync(Buffer.from(b64, 'base64')), cfg = fflate.strFromU8(z['Metadata/model_settings.config']), ps = JSON.parse(fflate.strFromU8(z['Metadata/project_settings.config']));
+    const namen = [...cfg.matchAll(/key="plater_name" value="([^"]*)"/g)].map(m => m[1]).join('|');
+    const tag1 = cfg.match(/value="tag1"\/>([\s\S]*?)<\/object>/), ext = tag1 ? [...tag1[1].matchAll(/key="extruder" value="(\d+)"/g)].map(m => m[1]).join(',') : '';
+    const farb = (ps.filament_colour || []).join(','), model = fflate.strFromU8(z['3D/3dmodel.model']);
+    ok(namen === soll && masch.test(ps.printer_settings_id || '') && ext === '4,4,2' && farb === '#B5563A,#2D4A3E,#D9CFC0,#E8E1D4,#9A8F80' && /<metadata name="Application">BambuStudio-/.test(model) && (ps.wipe_tower_x || []).length === soll.split('|').length,
+       `3MF ${dr}: Platten ${namen.split('|').length} (${namen}), Profil ${ps.printer_settings_id}, Tag 1 Stein/Zahl Extruder ${ext}`);
+  }
   const h2c = await p.evaluate(async () => { _kakStr('drucker', 'h2c'); let files = null; const alt = window._saveExportMany; window._saveExportMany = async f => { files = f; return { wrote: true, dir: 'Test' }; };
     try { await _kakExportStl(); } finally { window._saveExportMany = alt; _kakStr('drucker', 'sv08max'); } return files.map(f => f.name).filter(n => /^turm/.test(n)); });
   ok(h2c.length === 2 && h2c[0] === 'turm_1von2.stl', 'H2C: Turm geteilt → ' + h2c.join(', '));

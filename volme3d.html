@@ -37894,8 +37894,232 @@ async function _kakExportStl(){
     notify(`🧱 ${files.length} STL-Teile ${res && res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓ (Stein und Zahl je Tag in derselben Lage – im Slicer als ein Objekt laden)`, 'ok', 9000);
   } catch (e) { console.error('Kamin-Export:', e); _progressHide(); notify('Export fehlgeschlagen: ' + (e && e.message || e), 'w'); }
 }
+// ── 3MF mit mehreren Druckplatten: 1:1 aus tools/kamin-adventskalender/kak_3mf.js ──
+// Kamin-Adventskalender — 3MF mit MEHREREN Druckplatten in einer Datei (Bambu Studio / OrcaSlicer).
+// Läuft im Browser (globales fflate) und in Node (opt.fflate = require('fflate')).
+//
+// kak3mfMehrplatten(platten, opt) → Uint8Array (ZIP)
+//   platten: [{ name, teile: [{ name, hex: '#rrggbb', gruppe?, vert: Float32Array (x,y,z mm, Z oben), tri: Uint32Array }] }]
+//            Teile liegen in Plattenkoordinaten (0…bettX, 0…bettY, z ≥ 0).
+//   opt.bett     [X, Y, Z] — Druckbereich des Zieldruckers (Prüfung „ragt heraus“; Plattenabstand, falls kein Profil).
+//                Plattenabstand = printable_area aus opt.projectSettings, wenn vorhanden (so rechnet Bambu).
+//   opt.app      Application-Kennung, Standard 'BambuStudio-02.08.02.61' (macht die Datei zum Bambu-Projekt).
+//   opt.projectSettings  Objekt → Metadata/project_settings.config (JSON). PFLICHT für mehrere Platten:
+//                · ohne Application = „fremde“ 3MF → Bambu-CLI: nur Platte 1, Rest „unprintable area“; Orca-GUI: nur Geometrie
+//                · Application ohne project_settings → Bambu-CLI 02.08 stürzt ab (SIGSEGV, liest printer_settings_id),
+//                  Orca/Bambu-GUI fallen auf „nur Geometrie“ zurück (keine Platten).
+//                In der App: _bbsProjekt(…).settings (vollständig, inkl. filament_extruder_variant/self_index für die GUI).
+//                Dem CLI allein reichen 5 Schlüssel (printer_settings_id, print_settings_id, filament_settings_id,
+//                nozzle_diameter, printable_height) — für die GUI nicht verwenden.
+//   opt.titel    Titel-Metadaten.
+//
+// Plattenraster wie Bambu/Orca (PartPlate.cpp: compute_shape_position / compute_colum_count / LOGICAL_PART_PLATE_GAP=1/5):
+//   Spalten = round(sqrt(n)), +1 falls sqrt(n) > round  (= ceil(sqrt(n)));  Platte i: Spalte i % cols, Zeile floor(i / cols)
+//   Ursprung = (Spalte · X · 1,2 ; −Zeile · Y · 1,2). Welche Platte ein Objekt hat, entscheidet Bambu nach der LAGE
+//   (load_from_3mf_structure: „we will rebuild later“); die <plate>-Blöcke liefern Anzahl + Namen.
+(function (root) {
+  const GAP = 1 / 5;
+  function kakPlattenSpalten(n) {
+    const v = Math.sqrt(n), r = Math.round(v);
+    return v > r ? r + 1 : r;
+  }
+  // Plattengröße fürs Raster = printable_area des Druckerprofils (Bambu: m_plate_width/m_plate_depth),
+  // NICHT ein „sicherer“ Teilbereich (H2C: 330 × 320, auch wenn nur 300 breit für beide Düsen erreichbar ist)
+  function kakRasterBett(opt) {
+    const pa = opt.projectSettings && opt.projectSettings.printable_area;
+    if (Array.isArray(pa) && pa.length >= 3) {
+      const pts = pa.map(s => String(s).split('x').map(Number));
+      const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+      const w = Math.max(...xs) - Math.min(...xs), d = Math.max(...ys) - Math.min(...ys);
+      if (w > 0 && d > 0) return [w, d];
+    }
+    return opt.bett || [256, 256, 256];
+  }
+  function kakPlattenUrsprung(i, n, bett) {
+    const cols = kakPlattenSpalten(n);
+    return [(i % cols) * bett[0] * (1 + GAP), -Math.floor(i / cols) * bett[1] * (1 + GAP)];
+  }
+
+  function kak3mfMehrplatten(platten, opt = {}) {
+    const ff = opt.fflate || (typeof fflate !== 'undefined' ? fflate : null);
+    if (!ff) throw new Error('fflate fehlt (Browser: global, Node: opt.fflate)');
+    if (!Array.isArray(platten) || !platten.length) throw new Error('keine Platten');
+    if (platten.length > 36) throw new Error('Mehr als 36 Platten — Bambu-Grenze (MAX_PLATE_COUNT)');
+    const warnungen0 = [];
+    const bett = opt.bett || [256, 256, 256];                     // für die Prüfung „ragt aus dem Bett“
+    const raster = kakRasterBett(opt);                            // für den Plattenabstand
+    if (opt.bett && (Math.abs(raster[0] - bett[0]) > 0.01 || Math.abs(raster[1] - bett[1]) > 0.01))
+      warnungen0.push(`Plattenraster nach Druckerprofil ${raster[0]} × ${raster[1]} mm (opt.bett ${bett[0]} × ${bett[1]})`);
+    const app = opt.app === undefined ? 'BambuStudio-02.08.02.61' : opt.app;
+    const xEsc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const zahl = v => { const s = v.toFixed(4); return s.indexOf('.') < 0 ? s : s.replace(/0+$/, '').replace(/\.$/, '').replace(/^-0$/, '0'); };
+
+    const farben = new Map();                                     // HEX → Extruder (1-basiert), Reihenfolge des Auftretens
+    const extruderVon = hex => {
+      const h = String(hex || '#cccccc').replace('#', '').toUpperCase();
+      if (!farben.has(h)) {
+        if (farben.size >= 16) throw new Error('Mehr als 16 Farben/Filamente — Slicer-Grenze');
+        farben.set(h, farben.size + 1);
+      }
+      return farben.get(h);
+    };
+    for (const h of opt.farben || []) extruderVon(h);             // feste Reihenfolge = filament_colour der Projekt-Einstellungen
+
+    const n = platten.length;
+    let nextId = 1;
+    const objXml = [], itemXml = [], cfgObj = [], cfgPlate = [];
+    const warnungen = warnungen0;
+
+    platten.forEach((pl, pi) => {
+      // Teile zu Objekten bündeln: gleiche gruppe = ein Objekt, ohne gruppe = eigenes Objekt
+      const objekte = [], proGruppe = new Map();
+      (pl.teile || []).forEach(t => {
+        if (!t || !t.vert || !t.tri || !t.tri.length) return;
+        if (t.gruppe != null && t.gruppe !== '') {
+          const key = String(t.gruppe);
+          if (!proGruppe.has(key)) { const o = { name: key, teile: [] }; proGruppe.set(key, o); objekte.push(o); }
+          proGruppe.get(key).teile.push(t);
+        } else objekte.push({ name: t.name || ('Teil ' + (objekte.length + 1)), teile: [t] });
+      });
+      const [ox, oy] = kakPlattenUrsprung(pi, n, raster);
+      const inst = [];
+      objekte.forEach(o => {
+        // Objekt-Mitte (XY) als Bezugspunkt: Netze relativ dazu, Item-Transform setzt es an die Stelle auf der Platte
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, z0 = Infinity;
+        o.teile.forEach(t => { const v = t.vert; for (let k = 0; k < v.length; k += 3) {
+          if (v[k] < x0) x0 = v[k]; if (v[k] > x1) x1 = v[k]; if (v[k + 1] < y0) y0 = v[k + 1]; if (v[k + 1] > y1) y1 = v[k + 1]; if (v[k + 2] < z0) z0 = v[k + 2]; } });
+        if (x0 < -0.01 || y0 < -0.01 || x1 > bett[0] + 0.01 || y1 > bett[1] + 0.01 || z0 < -0.01)
+          warnungen.push(`Platte ${pi + 1} „${o.name}“ ragt aus dem Bett (${zahl(x0)}…${zahl(x1)} × ${zahl(y0)}…${zahl(y1)}, z ${zahl(z0)})`);
+        const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+        const comp = [], parts = [];
+        let ersterExt = 0;
+        o.teile.forEach(t => {
+          const id = nextId++, v = t.vert, tri = t.tri;
+          const vs = new Array(v.length / 3), ts = new Array(tri.length / 3);
+          for (let k = 0, j = 0; k < v.length; k += 3, j++) vs[j] = `<vertex x="${zahl(v[k] - cx)}" y="${zahl(v[k + 1] - cy)}" z="${zahl(v[k + 2])}"/>`;
+          for (let k = 0, j = 0; k < tri.length; k += 3, j++) ts[j] = `<triangle v1="${tri[k]}" v2="${tri[k + 1]}" v3="${tri[k + 2]}"/>`;
+          objXml.push(`  <object id="${id}" type="model"><mesh><vertices>${vs.join('')}</vertices><triangles>${ts.join('')}</triangles></mesh></object>`);
+          comp.push(`<component objectid="${id}" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>`);
+          const ext = extruderVon(t.hex); if (!ersterExt) ersterExt = ext;
+          parts.push(`  <part id="${id}" subtype="normal_part"><metadata key="name" value="${xEsc(t.name || ('Teil ' + id))}"/><metadata key="extruder" value="${ext}"/></part>`);
+        });
+        const asm = nextId++;
+        objXml.push(`  <object id="${asm}" type="model"><components>${comp.join('')}</components></object>`);
+        itemXml.push(`  <item objectid="${asm}" transform="1 0 0 0 1 0 0 0 1 ${zahl(ox + cx)} ${zahl(oy + cy)} 0" printable="1"/>`);
+        cfgObj.push(` <object id="${asm}">\n  <metadata key="name" value="${xEsc(o.name)}"/>\n  <metadata key="extruder" value="${ersterExt}"/>\n${parts.join('\n')}\n </object>`);
+        inst.push(`  <model_instance>\n   <metadata key="object_id" value="${asm}"/>\n   <metadata key="instance_id" value="0"/>\n   <metadata key="identify_id" value="${asm}"/>\n  </model_instance>`);
+      });
+      cfgPlate.push(` <plate>\n  <metadata key="plater_id" value="${pi + 1}"/>\n  <metadata key="plater_name" value="${xEsc(pl.name || '')}"/>\n  <metadata key="locked" value="false"/>\n${inst.join('\n')}\n </plate>`);
+    });
+    if (!itemXml.length) throw new Error('keine Teile mit Geometrie');
+
+    const model = `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021">
+${app ? ` <metadata name="Application">${xEsc(app)}</metadata>\n <metadata name="BambuStudio:3mfVersion">1</metadata>\n` : ''} <metadata name="Title">${xEsc(opt.titel || 'Kamin-Adventskalender')}</metadata>
+ <metadata name="Designer">V3D CAD</metadata>
+ <resources>
+${objXml.join('\n')}
+ </resources>
+ <build>
+${itemXml.join('\n')}
+ </build>
+</model>`;
+    const cfg = `<?xml version="1.0" encoding="UTF-8"?>\n<config>\n${cfgObj.join('\n')}\n${cfgPlate.join('\n')}\n</config>\n`;
+    const ct = `<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/xml"/><Default Extension="xml" ContentType="application/xml"/></Types>`;
+    const rels = `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`;
+    const u8 = s => ff.strToU8(s);
+    const dateien = {
+      '[Content_Types].xml': u8(ct),
+      '_rels/.rels': u8(rels),
+      '3D/3dmodel.model': u8(model),
+      'Metadata/model_settings.config': u8(cfg),
+    };
+    if (opt.projectSettings) dateien['Metadata/project_settings.config'] = u8(JSON.stringify(opt.projectSettings, null, 4));
+    const zip = ff.zipSync(dateien, { level: 6 });
+    // Zusatzinfos ohne die Rückgabe (Uint8Array) zu ändern
+    zip.legende = [...farben.entries()].map(([h, e]) => e + '=#' + h);
+    zip.warnungen = warnungen;
+    return zip;
+  }
+
+  const api = { kak3mfMehrplatten, kakPlattenUrsprung, kakPlattenSpalten, kakRasterBett };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else Object.assign(root, api);
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+// Druckteile auf Platten verteilen: Gruppen (Stein + Zahl, Feuerstelle + Name) bleiben zusammen, Regal-Packer je Bett.
+// Reihenfolge: Feuerstelle, Turm(-Segmente), Krone + Aufsatz, Blindsteine, Tagessteine. → [{ name, teile: [{ name, hex, gruppe, mf }] }]
+function _kakPlatten(teile, bett, opt = {}){
+  const rand = 5, abst = 6, grp = new Map(), xa = opt.x0 || 0, xb = opt.x1 || bett[0], S = opt.sperr;   // xa…xb: Bereich beider Düsen (H2C 25…325); S: Reinigungsturm-Ecke [x0,y0,x1,y1]
+  for (const t of teile) { const n = t.anzahl || 1;
+    for (let i = 0; i < n; i++) { const g = t.gruppe + (n > 1 ? '#' + i : ''); if (!grp.has(g)) grp.set(g, []); grp.get(g).push({ ...t, name: t.datei.replace(/\.stl$/, '') + (n > 1 ? '_' + (i + 1) : ''), kopie: i > 0 }); } }
+  const gruppen = [...grp.entries()].map(([g, ts]) => { let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (const t of ts) { const b = t.mf.boundingBox(); x0 = Math.min(x0, b.min[0]); y0 = Math.min(y0, b.min[1]); x1 = Math.max(x1, b.max[0]); y1 = Math.max(y1, b.max[1]); }
+    return { g, ts, x0, y0, w: x1 - x0, d: y1 - y0 }; });
+  const platten = []; let pl = null, cx = 0, cy = 0, zeileH = 0;
+  const neu = name => { pl = { name, teile: [] }; platten.push(pl); cx = xa + rand; cy = rand; zeileH = 0; };
+  const stoesst = (w, d) => S && cx < S[2] && cx + w > S[0] && cy < S[3] && cy + d > S[1];
+  const art = g => /^feuer/.test(g) ? 'Feuerstelle' : /^turm/.test(g) ? 'Turm' : /^tag/.test(g) ? 'Tagessteine' : /^blind/.test(g) ? 'Blindsteine' : 'Krone';   // je Platte möglichst eine Farbe (kein Turm nötig)
+  let letzte = null;
+  for (const G of gruppen) {
+    const a = art(G.g);
+    if (G.w > xb - xa - 2 * rand || G.d > bett[1] - 2 * rand) throw new Error(`„${G.ts[0].name}“ (${G.w.toFixed(0)} × ${G.d.toFixed(0)} mm) passt nicht aufs Bett`);
+    if (!pl || a !== letzte) neu(a);
+    for (let v = 0; v < 3; v++) {
+      if (cx + G.w > xb - rand || stoesst(G.w, G.d)) { cx = xa + rand; cy += zeileH + abst; zeileH = 0; }
+      if (cy + G.d > bett[1] - rand) neu(a);
+      if (!stoesst(G.w, G.d)) break;
+    }
+    for (const t of G.ts) pl.teile.push({ name: t.name, hex: t.hex, gruppe: G.g, mf: t.mf, dx: cx - G.x0, dy: cy - G.y0 });
+    cx += G.w + abst; zeileH = Math.max(zeileH, G.d); letzte = a;
+  }
+  const anz = {}, nr = {}; for (const q of platten) anz[q.name] = (anz[q.name] || 0) + 1;
+  for (const q of platten) if (anz[q.name] > 1) { nr[q.name] = (nr[q.name] || 0) + 1; q.name += ' ' + nr[q.name]; }   // Tagessteine 1 … n
+  return platten;
+}
 async function _kakExport3mf(){
-  notify('3MF mit Druckplatten folgt im nächsten Schritt – bis dahin „⬇ STL-Teile“', 'w');
+  const p = _kakParams(_kakP), C = _kakCheck(p); if (C.fehler.length) { notify(C.fehler[0], 'w'); return; }
+  if (typeof kak3mfMehrplatten !== 'function') { notify('3MF-Export ist noch nicht eingebaut – bitte „⬇ STL-Teile“', 'w'); return; }
+  _progressShow('3MF mit Druckplatten wird gebaut…'); _progressSet(10); _progressCreep(90, 0.6);
+  const zuLoeschen = [];
+  try {
+    // Projekt-Einstellungen (Pflicht für mehrere Platten): Profilwahl des 3MF-Exports; beim H2C dessen Profil
+    const PROFIL = { h2c: { slicer: 'bambu', vendor: 'BBL', machine: 'Bambu Lab H2C 0.4 nozzle' }, sv08max: { slicer: 'orca', vendor: 'Sovol', machine: 'Sovol SV08 MAX 0.4 nozzle' },
+      k3: { slicer: 'orca', vendor: 'Creality', machine: 'Creality K2 0.4 nozzle', hinweis: 'K3 noch ohne Orca-Profil → K2-Profil (gleiches Bett 260³), im Slicer auf K3 umstellen' } };
+    let wahl = { ..._b3Wahl(), ...(PROFIL[p.drucker] || {}) }, eigenesProfil = !!PROFIL[p.drucker];
+    try { await _b3ProfLaden(wahl); } catch (e) { eigenesProfil = false; }
+    const prof = eigenesProfil && _b3Prof(wahl); if (!prof || !prof.drucker || !prof.drucker[wahl.machine]) { wahl = _b3Wahl(); eigenesProfil = false; await _b3ProfLaden(wahl); }   // K3/benutzerdefiniert: Profilwahl des 3MF-Exports, Bett vom Kamin
+    const farben = [_KAK_FARBE.feuer, _KAK_FARBE.zahl, _KAK_FARBE.krone, _KAK_FARBE.stein, _KAK_FARBE.blind].map(h => h.toUpperCase());
+    const proj = _bbsProjekt(wahl, farben, []);
+    const ORCA_STD = { filament_is_support: '0', filament_long_retractions_when_cut: 'nil', filament_retraction_distances_when_cut: 'nil', filament_scarf_seam_type: 'none', filament_scarf_height: '10%', filament_scarf_gap: '0%', filament_scarf_length: '10', filament_shrink: '100%' };
+    if (proj && !_b3IstBambu(wahl)) for (const [k, v] of Object.entries(ORCA_STD)) if (!(k in proj.settings)) proj.settings[k] = [v];   // fehlen in manchen Orca-Herstellerprofilen (Creality) → Orca bricht ab
+    if (proj && proj.settings.retraction_distances_when_cut != null) { const r = proj.settings.retraction_distances_when_cut, f = v => String(Math.min(18, Math.max(10, +v || 18))); proj.settings.retraction_distances_when_cut = Array.isArray(r) ? r.map(f) : f(r); }   // Orca-Prüfung 10…18 (Creality-K2-Profil: 30)
+    if (proj) for (const [k, v] of Object.entries(proj.settings)) if (/^filament_/.test(k) && Array.isArray(v) && v.length === 1) proj.settings[k] = Array(farben.length).fill(v[0]);   // Orca: je Filament ein Wert (Creality: filament_is_support)
+    if (!proj) throw new Error('Slicer-Profile fehlen – bitte einmal „⬇ 3MF“ im Export-Menü öffnen, Drucker wählen und erneut versuchen');
+    const pa = String((proj.settings.printable_area || []).join(',')).match(/\d+(\.\d+)?/g)?.map(Number) || [];
+    const profB = pa.length >= 8 ? [Math.max(pa[0], pa[2], pa[4], pa[6]), Math.max(pa[1], pa[3], pa[5], pa[7])] : p.bett;
+    const bettPack = eigenesProfil ? [Math.min(p.bett[0], profB[0]), Math.min(p.bett[1], profB[1]), p.bett[2]] : p.bett.slice();
+    if (!eigenesProfil) { const [bx, by, bz] = bettPack; proj.settings.printable_area = ['0x0', bx + 'x0', bx + 'x' + by, '0x' + by]; proj.settings.printable_height = String(bz); }   // Plattenraster = Kamin-Bett
+    const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
+    const teile = _kakDruckteile(w, p); zuLoeschen.push(...teile.map(t => t.mf));
+    // gemeinsamer Bereich aller Düsen (H2C: links 0…325, rechts 25…330) + Ecke hinten rechts für den Reinigungsturm
+    const xs = (proj.settings.extruder_printable_area || []).map(a => String(a).match(/\d+(\.\d+)?/g).map(Number).filter((_, i) => i % 2 === 0));
+    const x0 = eigenesProfil && xs.length ? Math.max(...xs.map(v => Math.min(...v))) : 0, x1 = eigenesProfil && xs.length ? Math.min(bettPack[0], ...xs.map(v => Math.max(...v))) : bettPack[0];
+    const tw = +proj.settings.prime_tower_width || 60, tx = x1 - tw - 15, ty = bettPack[1] - 75;
+    const roh = _kakPlatten(teile, bettPack, { x0, x1, sperr: [tx - 8, ty - 12, x1, bettPack[1]] });
+    proj.settings.wipe_tower_x = roh.map(() => String(tx)); proj.settings.wipe_tower_y = roh.map(() => String(ty));
+    const platten = roh.map(P => ({ name: P.name, teile: P.teile.map(t => { const me = t.mf.getMesh(), np = me.numProp, V = me.vertProperties, n = V.length / np, vert = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) { vert[i * 3] = V[i * np] + t.dx; vert[i * 3 + 1] = V[i * np + 1] + t.dy; vert[i * 3 + 2] = V[i * np + 2]; }
+      return { name: t.name, hex: t.hex, gruppe: t.gruppe, vert, tri: new Uint32Array(me.triVerts) }; }) }));
+    const bytes = kak3mfMehrplatten(platten, { bett: bettPack, fflate: window.fflate, titel: 'Kamin-Adventskalender', projectSettings: proj.settings, farben, app: proj.settings.version ? 'BambuStudio-' + proj.settings.version : undefined });
+    _progressDone();
+    const res = await _saveExport(new Blob([bytes], { type: 'model/3mf' }), 'kamin_adventskalender.3mf');
+    if (res && res.abgebrochen) return;
+    notify(`🧱 3MF mit ${platten.length} Druckplatten ${res && res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓ (${platten.map(q => q.name).join(', ')}) – Profil ${wahl.machine}${eigenesProfil && PROFIL[p.drucker].hinweis ? ' (' + PROFIL[p.drucker].hinweis + ')' : ''}${eigenesProfil ? '' : ' (Bett ' + bettPack.slice(0, 2).join(' × ') + ' mm – Drucker im Slicer wählen)'}, Zahlen/Name als eigene Farbe`, 'ok', 10000);
+  } catch (e) { console.error('Kamin-3MF:', e); _progressHide(); notify('3MF fehlgeschlagen: ' + (e && e.message || e), 'w'); }
+  finally { for (const m of zuLoeschen) { try { m.delete(); } catch (e) {} } }
 }
 // Claude-Steuerung: gen.list / gen.run mit id „kamin-adventskalender“
 (window._GEN_EXT || (window._GEN_EXT = {}))['kamin-adventskalender'] = {
