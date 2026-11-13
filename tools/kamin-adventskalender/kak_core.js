@@ -8,7 +8,7 @@
 const KAK_DEF = {
   tage: 24,
   /* Schacht */ in_w: 104, in_d: 84, wall: 4, gd: 1.6, pitch: 12, slots: 36, margin_b: 9, margin_t: 15, zwei: 0,   // in_w = innen gesamt; zwei = Trennwand (2 Schächte)
-  /* Schieber */ pt: 2.4, slot_h: 3.0, clr: 0.3, num_h: 0.6, griff_h: 9, griff_b: 14, griff_t: 28, hals: 0, lippe: 1.2,     // Griffleiste 28 lang × 14 breit × 9 hoch (BRICKLET)
+  /* Schieber */ pt: 2.4, slot_h: 3.0, clr: 0.3, num_h: 0.6, griff_h: 9, griff_b: 0, griff_t: 10, hals: 0, lippe: 1.2,     // Griffleiste über die ganze Seite (griff_b 0 = Turmtiefe), 10 vor, 9 hoch
   /* Feuerstelle */ base_w: 160, base_d: 124, base_h: 112, open_w: 104, open_h: 74, open_ch: 20, floor_t: 4, ramp_h: 12, mantel_t: 10, mantel_o: 8,
   name_txt: '', name_size: 8,
   /* Deko (Foto) */ bogen: 1, schnee: 1, flamme: 1, socken: '', socke_h: 70, deko_t: 1.6,
@@ -111,9 +111,11 @@ function kakBuild(w, pIn, textFn, opt) {
     // ── TAGES-SCHIEBER (links eingeschoben; rechts = um 180° gedreht, gleiches Teil): Platte + Griffleiste mit runder Spitze ──
     // Lage: z = 0 Schlitzunterkante, x = 0 Außenfläche der linken Wand
     const yM = out_d / 2;
-    const scheibe = () => {                                                  // Griffleiste: unten bündig mit der Platte, Spitze rund (Draufsicht)
-      const r = p.griff_b / 2, x0 = -p.hals - p.griff_t;
-      return hull([cube([p.griff_t - r, p.griff_b, p.griff_h], [x0 + r, yM - r, tab_z0]), k(k(M.cylinder(p.griff_h, r, r, fein ? 48 : 24)).translate([x0 + r, yM, tab_z0]))]);
+    const griffB = () => p.griff_b > 0 ? Math.min(p.griff_b, out_d) : out_d;   // 0 = ganze Seitenfläche
+    const scheibe = () => {                                                  // Griffleiste vor der Seitenwand, unten bündig mit der Platte, Außenkanten rund
+      const b = griffB(), r = Math.min(p.griff_t / 2, 3), x0 = -p.hals - p.griff_t, y0 = yM - b / 2;
+      const zyl = y => k(k(M.cylinder(p.griff_h, r, r, fein ? 32 : 16)).translate([x0 + r, y, tab_z0]));
+      return hull([cube([p.griff_t - r, b, p.griff_h], [x0 + r, y0, tab_z0]), zyl(y0 + r), zyl(y0 + b - r)]);
     };
     const stone_body = (d, with_plate) => {
       if (!with_plate) {                                                     // Blindstopfen: Platte in der Wand + Abdecklippe außen + Klemmnoppen
@@ -121,7 +123,7 @@ function kakBuild(w, pIn, textFn, opt) {
         for (const y of [y0 + 8, y0 + plate_w - 8]) b.push(k(k(k(M.sphere(0.7, fein ? 24 : 12)).scale([1, 1, 0.5])).translate([(p.wall - p.clr) / 2, y, tab_z0 + p.pt])));
         return U(b);
       }
-      const hb = Math.min(p.griff_b, plate_w);
+      const hb = Math.min(griffB(), plate_w);
       const z = [cube([plate_l + 1, plate_w, p.pt], [-1, p.wall - p.gd + p.clr, tab_z0]), scheibe()];
       if (p.hals > 0) z.push(cube([p.hals + 2 * eps, hb, p.pt], [-p.hals - eps, yM - hb / 2, tab_z0]));
       return U(z);
@@ -137,12 +139,9 @@ function kakBuild(w, pIn, textFn, opt) {
     };
     // Zahl erhaben auf der Außenseite der Scheibe, lesbar von links: Text-x → −Y, Text-y → +Z, Extrusion → −X
     const stone_number = d => {
-      const txt = String(d), cs = textMitte(txt, p.griff_h * 0.6, 0, 0); if (!cs) return null;   // weiße Zahl auf beiden Seiten der Leiste (von vorn lesbar, egal welche Seite)
-      const bb = cs.bounds(), f = Math.min(1, (p.griff_t - p.griff_b / 2 - 2) / Math.max(1e-6, bb.max[0] - bb.min[0])), c = k(k(cs.scale([f, f])).extrude(p.num_h + eps));
-      const xm = -p.hals - p.griff_t / 2 - p.griff_b / 4, zm = tab_z0 + p.griff_h / 2;
-      const vorn = k(k(c.rotate([90, 0, 0])).translate([xm, yM - p.griff_b / 2 + eps, zm]));       // −Y: von vorn lesbar (links eingeschoben)
-      const hinten = k(k(c.rotate([90, 0, 180])).translate([xm, yM + p.griff_b / 2 - eps, zm]));   // +Y: nach der 180°-Drehung vorn (rechts eingeschoben)
-      return U([vorn, hinten]);
+      const txt = String(d), cs = textMitte(txt, p.griff_h * 0.65, 0, 0); if (!cs) return null;   // weiße Zahl groß auf der Außenseite der Leiste, lesbar von der Seite
+      const bb = cs.bounds(), f = Math.min(1, (griffB() - 8) / Math.max(1e-6, bb.max[0] - bb.min[0]));
+      return k(k(k(k(cs.scale([f, f])).extrude(p.num_h + eps)).rotate([90, 0, -90])).translate([-p.hals - p.griff_t + eps, yM, tab_z0 + p.griff_h / 2]));   // Text-x → −Y, Extrusion → −X (nach außen)
     };
     const stone_print = d => k(stone_body(d, true).translate([0, 0, -tab_z0]));
     const number_print = d => { const n = stone_number(d); return n ? k(n.translate([0, 0, -tab_z0])) : null; };

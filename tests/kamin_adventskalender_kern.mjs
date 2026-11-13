@@ -21,7 +21,7 @@ console.log('Bauzeit', Date.now() - t0, 'ms');
 const H = P.margin_b + (P.slots - 1) * P.pitch + P.slot_h + P.margin_t;
 ok(gleich(groesse(turm), [112, 92, H]) && H === 447, `Turm 112 × 92 × ${H} (ein Schacht, 36 Etagen à 12 mm): ` + groesse(turm).join(' × '));
 const sp = groesse(B.stone_print(1));
-ok(gleich(sp, [P.hals + P.griff_t + m.out_w - P.clr, P.in_d + 2 * P.gd - 2 * P.clr, P.griff_h]), `Tages-Schieber geht ganz durch: ${sp.join(' × ')} (lang × breit × Griffhöhe)`);
+ok(gleich(sp, [P.hals + P.griff_t + m.out_w - P.clr, m.out_d, P.griff_h]), `Tages-Schieber geht ganz durch: ${sp.join(' × ')} (lang × Leiste über die ganze Turmtiefe × Griffhöhe)`);
 const feuerGanz = w.Manifold.union([feuer, B.schneeKante(), B.bogenRing()]);
 ok(gleich(groesse(feuerGanz), [176, 135, 112]), 'Feuerstelle mit Einlagen 176 × 135 × 112: ' + groesse(feuerGanz).join(' × '));
 // Deko: Einlagen überschneiden die Feuerstelle nicht, Flamme/Socken geschlossen und frei
