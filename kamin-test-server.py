@@ -82,6 +82,7 @@ class TestHandler(vs.Handler):
             except OSError:
                 self.send_error(404)
                 return
+            data = data.replace(b"const VOLME3D_VERSION = '", b"const VOLME3D_VERSION = 'TEST Kamin \xc2\xb7 ", 1)   # Versionsschild: Testversion sofort erkennbar
             if DEV:   # nur fuer Headless-Tests: ohne Login/Firebase (wie volme3d_server --dev)
                 data = data.replace(b'const USE_FIREBASE = true;', b'const USE_FIREBASE = false;')
             self.send_response(200)
