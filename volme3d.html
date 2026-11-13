@@ -46467,6 +46467,17 @@ async function _saveExportMany(files) {
       notify('Ordner-Zugriff nicht erteilt — wird heruntergeladen', 'w');
     }
   }
+  // Druck-Helfer mit Netzordner: ohne Dialog über Downloads speichern – der Helfer schiebt es in den Netzordner.
+  // (Volker 13.11.: der Dialog merkte sich lokal Dokumente\Volme3D-STL → Dateien kamen nie im Netzordner an)
+  if (!_outDirHandle) {
+    const netz = await _helperNetzZiel();
+    if (netz) {
+      files.forEach((f, i) => (i === 0 ? _downloadBlob(f.blob, f.name) : setTimeout(() => _downloadBlob(f.blob, f.name), i * 250)));
+      files.forEach(f => _nutzungExport(f.name));
+      setTimeout(() => { try { fetch(STLLIB_HELPER + '/collect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"move":true}' }).catch(() => {}); } catch (e) {} }, 1500 + files.length * 250);   // gleich einsammeln statt bis zu 30 s warten
+      return { wrote: true, ok: files.length, err: 0, dir: 'deine Bibliothek (Netzordner)', bibliothek: netz };
+    }
+  }
   // Kein fester Ausgabeordner: vorher fragen, wohin (Volker 11.11. „bevor ich speichere, wählen wohin“)
   if (!_outDirHandle && _frageOrt()) {
     const r = await _saveFrageOrt(files);
@@ -46481,6 +46492,18 @@ async function _saveExport(blob, filename) { return _saveExportMany([{ blob, nam
 // „Speichern unter“ als Standard: eine Datei → Datei-Dialog (Ort + Name), mehrere → Ordner-Dialog.
 // Abschaltbar im Export-Menü (localStorage v3dFrageOrt = '0'). Rückgabe null = Dialog ging nicht → Download.
 function _frageOrt() { return localStorage.getItem('v3dFrageOrt') !== '0'; }
+// Netzordner des Druck-Helfers (ab v14), wenn eingetragen und erreichbar – sonst null. Kurz gemerkt, kurze Frist.
+let _helperNetzC = { at: 0, dir: null };
+async function _helperNetzZiel() {
+  if (Date.now() - _helperNetzC.at < 30000) return _helperNetzC.dir;
+  let dir = null;
+  try {
+    const ac = new AbortController(), t = setTimeout(() => ac.abort(), 900);
+    const j = await (await fetch(STLLIB_HELPER + '/ping', { cache: 'no-store', signal: ac.signal })).json(); clearTimeout(t);
+    if (j && j.ok && j.netDir && j.netOk && !j.custom) dir = j.netDir;
+  } catch (e) {}
+  _helperNetzC = { at: Date.now(), dir }; return dir;
+}
 function _frageOrtToggle() {
   localStorage.setItem('v3dFrageOrt', _frageOrt() ? '0' : '1');
   _updateOutDirBtn();
@@ -87503,8 +87526,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.402';
+const VOLME3D_VERSION = '1.18.403';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.403', date:'2026-11-13', changes:[
+    ['📚','<b>Exporte landen wieder in deiner Bibliothek:</b> Läuft der Druck-Helfer mit Netzordner, speichert V3D CAD ohne Nachfrage über den Download-Ordner – der Helfer schiebt die Datei sofort in den Netzordner. Vorher merkte sich der Speichern-Dialog einen lokalen Ordner, und die Dateien kamen dort nie an. Ohne Helfer fragt der Dialog wie bisher.']
+  ] },
   { version:'1.18.402', date:'2026-11-13', changes:[
     ['😇','<b>Schutzengel: Holz-Look.</b> Vier neue Vorlagen nach dem Foto der Holz-Anhänger – 🪵 <b>Stern</b>, <b>Streifen</b>, <b>Kleiner Schutzengel</b> und <b>Herz</b>. Einfarbig: runde Flügel an der Schulter gehören zum Körper, Schrift und Streifen sind eingraviert, Stern bzw. Herz auf der Brust ganz ausgeschnitten. Dazu neue Flügelform <b>Holz</b>, Schalter <b>🎨 Farbig / 🪵 Holz-Look</b> und <b>♥ Herz</b> auf der Brust (farbig erhaben).']
   ]},
