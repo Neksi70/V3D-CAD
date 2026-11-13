@@ -5,7 +5,7 @@
 import Module from '/home/v3da/node_modules/manifold-3d/manifold.js';
 import fs from 'fs';
 const w = await Module(); w.setup();
-const K = new Function('module', fs.readFileSync(new URL('../tools/kamin-adventskalender/kak_core.js', import.meta.url), 'utf8') + '; return { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakEtagen, kakFalzHoehe, kakSegmente, kakBuild };')(undefined);
+const K = new Function('module', fs.readFileSync(new URL('../tools/kamin-adventskalender/kak_core.js', import.meta.url), 'utf8') + '; return { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakEtagen, kakRinge, kakFalzHoehe, kakSegmente, kakBuild };')(undefined);
 let fail = 0; const ok = (c, m) => { console.log((c ? 'OK   ' : 'FAIL ') + m); if (!c) fail++; };
 const groesse = mf => { const b = mf.boundingBox(); return [0, 1, 2].map(i => +(b.max[i] - b.min[i]).toFixed(2)); };
 const gleich = (a, b, t = 0.05) => a.every((v, i) => Math.abs(v - b[i]) <= t);
@@ -71,5 +71,20 @@ for (const dr of ['h2c', 'k3']) {
      `${K.KAK_DRUCKER[dr].name}: ${T.teile.length} Segmente ${hs.join(' / ')} mm ≤ ${bett[2]}, Teilung auf Mauerfuge, Falz kollisionsfrei`);
   B2.aufraeumen();
 }
+// ── Stapel-Bauweise: Ringe + Karten ──
+{ const S = K.kakBuild(w, { ...K.KAK_DEF, bauart: 'stapel', zwei: 0, in_w: 80, in_d: 80 }, null), sm = S.m, V2 = (a, b) => w.Manifold.intersection(a, b).volume();
+  const R2 = mf => mf.translate([-sm.out_w / 2, -sm.out_d / 2, 0]).rotate([0, 0, 180]).translate([sm.out_w / 2, sm.out_d / 2, 0]);
+  const so = S.st_sockel(), karte = S.st_karte(), kt = S.st_kt;
+  for (const h of K.KAK_DEF.ring_h) { const r = S.st_ring(h); ok(dicht(r) && r.decompose().length === 1 && gleich(groesse(r), [88, 88, h]), `Ring ${h} mm geschlossen, 1 Stück, 88 × 88`); }
+  ok(dicht(karte) && karte.decompose().length === 1, `Bodenkarte geschlossen (${groesse(karte).join(' × ')})`);
+  // Stapel Sockel → Karte 1 (links) → Ring 26 → Karte 2 (rechts) → Ring 48 → Karte 3 → Ring 14
+  let z = so.boundingBox().max[2], mx = 0; const teile = [so]; const hs = [26, 48, 14];
+  hs.forEach((h, i) => { const kk = (i % 2 ? R2(karte) : karte).translate([0, 0, z - kt]), r = S.st_ring(h).translate([0, 0, z]);
+    for (const t of teile) mx = Math.max(mx, V2(kk, t), V2(r, t)); mx = Math.max(mx, V2(kk, r)); teile.push(kk, r); z += h; });
+  ok(mx < 1e-3, `Stapel aus Sockel, 3 Karten (links/rechts) und 3 Ringen kollisionsfrei (max ${mx.toExponential(1)} mm³)`);
+  ok(V2(karte.translate([0.6, 0, so.boundingBox().max[2] - kt]), so) > 1 && V2(karte.translate([0, 0.6, so.boundingBox().max[2] - kt]), so) > 1, 'Karte sitzt in der Tasche (0,6 mm seitlich stößt an) – hält die Ringe in Lage');
+  const r = K.kakRinge({ ...K.KAK_DEF }); ok(r.folge.length === 24 && r.N.join() === '12,6,4,2' && r.summe === 556, `Ringfolge 24 Tage: ${r.N.join('/')} → ${r.summe} mm`);
+  const fl = K.kakRinge({ ...K.KAK_DEF, ring_n: [0, 10, 10, 10] }); ok(fl.zuViel, 'Mehr Ringe als Tage wird erkannt');
+  S.aufraeumen(); }
 B.aufraeumen();
 console.log(fail ? `\n${fail} FEHLER` : '\nalles grün'); process.exit(fail ? 1 : 0);

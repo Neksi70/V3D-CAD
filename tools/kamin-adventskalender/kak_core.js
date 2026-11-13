@@ -11,6 +11,8 @@ const KAK_DEF = {
   /* Schieber */ pt: 2.4, slot_h: 3.0, clr: 0.3, num_h: 0.6, griff_r: 5.5, griff_t: 22, hals: 0, lippe: 1.2,     // Zapfen Ø 11, 22 lang
   /* Feuerstelle */ base_w: 160, base_d: 124, base_h: 112, open_w: 104, open_h: 74, open_ch: 20, floor_t: 4, ramp_h: 12, mantel_t: 10, mantel_o: 8,
   name_txt: '', name_size: 8,
+  /* Stapel-Bauweise (Video): Mauer-Ringe + Bodenkarten */ bauart: 'schieber', st_innen: 80, karte_t: 1.0, lasche_b: 16, lasche_l: 16, cap_steck: 8,
+  ring_h: [14, 26, 34, 48], ring_n: [0, 6, 4, 2],                          // Ringhöhen (flach = Rest, mittel/Lindor, hoch/Ferrero, Ü-Ei) und Anzahl
   /* Deko (Foto) */ bogen: 1, schnee: 1, flamme: 1, socken: '', socke_h: 70, deko_t: 1.6,
   /* Optik */ joint_w: 1.2, joint_d: 0.8, font: 'helvetiker_bold',
   /* Generator */ drucker: 'sv08max', bett: [500, 500, 500], teilen: 1
@@ -42,6 +44,14 @@ function kakEtagen(tage, slots, zwei) {
   if (!zwei) return kakBelegung(tage, slots);
   const nR = Math.ceil(tage / 2), nL = Math.floor(tage / 2), R = kakBelegung(nR, slots), L = kakBelegung(nL, slots);
   return Array.from({ length: Math.min(tage, 2 * slots) }, (_, i) => i % 2 === 0 ? R[i / 2] : L[(i - 1) / 2]);
+}
+// Stapel: Ringhöhe je Tag aus den Anzahlen (flache Ringe füllen auf), große Ringe gleichmäßig verteilt
+function kakRinge(p) {
+  const n = Math.max(0, Math.round(p.tage)), H = p.ring_h.slice(0, 4), N = p.ring_n.slice(0, 4).map(x => Math.max(0, Math.round(+x || 0)));
+  N[0] = Math.max(0, n - N[1] - N[2] - N[3]);                               // flache Ringe = Rest
+  const folge = [], gesetzt = [0, 0, 0, 0], ges = N.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < Math.min(n, ges); i++) { let best = -1, bw = -1e9; for (let t = 0; t < 4; t++) { if (gesetzt[t] >= N[t]) continue; const w = N[t] * (i + 1) / ges - gesetzt[t]; if (w > bw) { bw = w; best = t; } } gesetzt[best]++; folge.push(H[best]); }
+  return { folge, N, summe: folge.reduce((a, b) => a + b, 0), zuViel: ges > n };
 }
 function kakBelegung(tage, slots) {
   const n = Math.max(0, Math.min(tage, slots));
@@ -210,10 +220,10 @@ function kakBuild(w, pIn, textFn, opt) {
         return k(k(k(CS.square([b[0] - a[0] - 2 * r, b[1] - a[1] - 2 * r], false).translate([a[0] + r, a[1] + r])).offset(r, 'Round', 2, 24))); };
       const schild = R(...P(-21, -8), ...P(21, 8), 4 * s);
       const bein = R(...P(-12, -4), ...P(12, -42), 3 * s), fuss = R(...P(-12, -36), ...P(27, -56), 9 * s);
-      const rot = k(k(k(CS.union([schild, bein, fuss])).offset(-2 * s, 'Round')).offset(2 * s, 'Round'));
+      const rot = k(k(k(k(CS.union([schild, bein, fuss])).offset(-2 * s, 'Round')).offset(2 * s, 'Round')).simplify(0.02));   // simplify: keine fast gleichen Punkte (STL)
       const sockeOhneSchild = k(CS.union([bein, fuss]));
       const weiss = k(k(CS.union([R(...P(-14, -10), ...P(14, -19), 2 * s), k(CS.circle(7.5 * s, 32).translate(P(-11, -50))), k(CS.circle(8 * s, 32).translate(P(26, -46)))])).intersect(k(sockeOhneSchild.offset(-1.2 * s, 'Round'))));
-      const weissAll = k(CS.union([weiss, R(...P(-14, -10), ...P(14, -19), 2 * s)]));   // Umschlag darf etwas überstehen
+      const weissAll = k(k(CS.union([weiss, R(...P(-14, -10), ...P(14, -19), 2 * s)])).simplify(0.02));   // Umschlag darf etwas überstehen
       let txt = null;
       if (name && textFn) { const tw = textMitte(name, 7 * s, 0, 0); if (tw) { const bb = tw.bounds(), f = Math.min(1, 34 * s / (bb.max[0] - bb.min[0])); txt = k(k(k(tw.scale([f, f])).extrude(p.num_h)).translate([0, 0, 3])); } }
       return { rot: k(rot.extrude(3)), weiss: k(k(weissAll.extrude(p.num_h)).translate([0, 0, 3])), text: txt };
@@ -248,7 +258,7 @@ function kakBuild(w, pIn, textFn, opt) {
     };
     // ── KAMINKRONE ──
     const cap = () => {
-      const plug = p.margin_t - 3;
+      const plug = p.bauart === 'stapel' ? p.cap_steck : p.margin_t - 3;
       const rand = k(cube([p.in_w - 0.7, p.in_d - 0.7, plug + eps]).subtract(cube([p.in_w - 4.7, p.in_d - 4.7, plug + 3 * eps], [2, 2, -eps])));
       return U([k(rand.translate([p.wall + 0.35, p.wall + 0.35, -plug])), hull([cube([out_w, out_d, eps]), cube([out_w + 12, out_d + 12, cap_t - 6], [-6, -6, 6])])]);
     };
@@ -282,9 +292,37 @@ function kakBuild(w, pIn, textFn, opt) {
       }
       return { teile, ok: true, Z };
     };
-    return { m, p, oeffnung2D, bogenRing, schneeKante, flamme_print, flamme_lage, flammeH, sockenNamen, socke_print, socke_lage, tower, stone_body, stone_number, stone_print, number_print, blank_print, base, nameplate_text, cap, cap_top, cap_print, turmTeile, tmp, k,
+    // ── STAPEL-BAUWEISE: Ring (z 0 … h), oben und unten Kartentasche (je 0,6 mm, innere halbe Wand), Laschen-Nut links + rechts ──
+    const kt = (p.karte_t + 0.2) / 2, kSpiel = 0.3, kIn = p.in_w + p.wall, kTief = p.in_d + p.wall;   // Kartenfläche = Schacht + halbe Wand je Seite
+    const tasche = (z0, h) => [cube([kIn + 2 * kSpiel, kTief + 2 * kSpiel, h], [p.wall / 2 - kSpiel, p.wall / 2 - kSpiel, z0]),
+      ...[-1, out_w - p.wall / 2 - 1].map(x => cube([p.wall / 2 + 2, p.lasche_b + 2 * kSpiel + 1, h], [x, out_d / 2 - (p.lasche_b + 1) / 2 - kSpiel, z0]))];
+    const st_ring = (h, unten = true) => {
+      const cut = [cube([p.in_w, p.in_d, h + 2], [p.wall, p.wall, -1]), ...tasche(h - kt, kt + 1)];
+      if (unten) cut.push(...tasche(-1, kt + 1));
+      const reihe = 12, stein = 30;                                           // Ziegelfugen ringsum
+      for (let r = 0, z = 6; z < h - 3; r++, z += reihe) {
+        cut.push(k(cube([out_w + 2, out_d + 2, p.joint_w], [-1, -1, z - p.joint_w / 2]).subtract(cube([out_w - 2 * p.joint_d, out_d - 2 * p.joint_d, p.joint_w + 2], [p.joint_d, p.joint_d, z - 2]))));
+        const z1 = Math.min(z + reihe, h - 2), off = r % 2 ? stein / 2 : 0;
+        for (let x = stein / 2 + off; x < out_w - 3; x += stein) for (const y of [-eps, out_d - p.joint_d]) cut.push(cube([p.joint_w, p.joint_d + eps, z1 - z], [x - p.joint_w / 2, y, z]));
+        for (let y = stein / 2 + off; y < out_d - 3; y += stein) for (const x of [-eps, out_w - p.joint_d]) cut.push(cube([p.joint_d + eps, p.joint_w, z1 - z], [x, y - p.joint_w / 2, z]));
+      }
+      return k(cube([out_w, out_d, h]).subtract(U(cut)));
+    };
+    const st_sockel = () => st_ring(sock + 4, false);                         // steckt in der Sims-Aufnahme, oben Tasche für Karte 1
+    const st_karte = () => {                                                  // Lasche links (x < 0); rechts = 180° gedreht
+      const a = cube([kIn, kTief, p.karte_t], [p.wall / 2, p.wall / 2, 0]);
+      const l = cube([p.lasche_l + p.wall / 2 + 1, p.lasche_b, p.karte_t], [-p.lasche_l, out_d / 2 - p.lasche_b / 2, 0]);
+      const rund = k(k(M.cylinder(p.karte_t, p.lasche_b / 2, p.lasche_b / 2, 32)).translate([-p.lasche_l, out_d / 2, 0]));
+      return U([a, l, rund]);
+    };
+    const st_karte_zahl = d => {
+      const txt = String(d), cs = textMitte(txt, p.lasche_b * 0.55, 0, 0); if (!cs) return null;
+      const bb = cs.bounds(), f = Math.min(1, (p.lasche_l + 2) / Math.max(1e-6, bb.max[0] - bb.min[0]));
+      return k(k(k(k(cs.scale([f, f])).extrude(p.num_h)).rotate([0, 0, -90])).translate([-p.lasche_l * 0.55, out_d / 2, p.karte_t]));   // auf der Lasche, lesbar von außen
+    };
+    return { m, p, st_ring, st_sockel, st_karte, st_karte_zahl, st_kt: kt, oeffnung2D, bogenRing, schneeKante, flamme_print, flamme_lage, flammeH, sockenNamen, socke_print, socke_lage, tower, stone_body, stone_number, stone_print, number_print, blank_print, base, nameplate_text, cap, cap_top, cap_print, turmTeile, tmp, k,
       aufraeumen: () => { for (const x of tmp) { try { x.delete(); } catch (e) {} } tmp.length = 0; } };
   } catch (e) { for (const x of tmp) { try { x.delete(); } catch (e2) {} } throw e; }
 }
 
-if (typeof module !== 'undefined') module.exports = { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakEtagen, kakFalzHoehe, kakSegmente, kakBuild };
+if (typeof module !== 'undefined') module.exports = { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakEtagen, kakRinge, kakFalzHoehe, kakSegmente, kakBuild };
