@@ -22,7 +22,16 @@ const H = P.margin_b + (P.slots - 1) * P.pitch + P.slot_h + P.margin_t;
 ok(gleich(groesse(turm), [104, 104, H]) && H === 480, `Turm 104 × 104 × ${H} (38 Etagen à 12 mm): ` + groesse(turm).join(' × '));
 const sp = groesse(B.stone_print(1));
 ok(gleich(sp, [P.hals + P.griff_t + P.wall + P.in_w - P.clr, P.in_d + 2 * P.gd - 2 * P.clr, 2 * P.griff_r]), `Tages-Schieber ${sp.join(' × ')} (lang × breit × Scheibe)`);
-ok(gleich(groesse(feuer), [192, 147, 112]), 'Feuerstelle 192 × 147 × 112: ' + groesse(feuer).join(' × '));
+const feuerGanz = w.Manifold.union([feuer, B.schneeKante(), B.bogenRing()]);
+ok(gleich(groesse(feuerGanz), [192, 147, 112]), 'Feuerstelle mit Einlagen 192 × 147 × 112: ' + groesse(feuerGanz).join(' × '));
+// Deko: Einlagen überschneiden die Feuerstelle nicht, Flamme/Socken geschlossen und frei
+{ const bog = B.bogenRing(), sch = B.schneeKante(), F = B.flamme_print(), V2 = (a, b) => w.Manifold.intersection(a, b).volume();
+  ok(V2(feuer, bog) < 1e-3 && V2(feuer, sch) < 1e-3 && bog.volume() > 1000 && sch.volume() > 1000, `Bogenrahmen (${bog.volume().toFixed(0)} mm³) und Schnee (${sch.volume().toFixed(0)} mm³) als Einlage ohne Überschneidung`);
+  const fl = B.flamme_lage(F.aussen), fb = fl.boundingBox();
+  ok(dicht(F.aussen) && dicht(F.innen) && V2(feuer, fl) < 1e-3 && fb.max[2] < m.fb_top, `Flamme geschlossen, steht frei an der Rückwand (Oberkante ${fb.max[2].toFixed(1)} < Feuerraum ${m.fb_top})`);
+  for (const L of [true, false]) { const S = B.socke_print('', L), sl = B.socke_lage(S.rot, L);
+    ok(dicht(S.rot) && S.rot.decompose().length === 1 && V2(feuer, sl) < 1e-3 && V2(feuer, sl.translate([0, 0.1, 0])) > 0.1, `Socke ${L ? 'links' : 'rechts'}: 1 Stück, liegt an der Simsfront an (0,1 mm weiter stößt an)`); }
+}
 for (const [n, mf] of [['Turm', turm], ['Schieber', B.stone_print(1)], ['Feuerstelle', feuer], ['Krone', B.cap_print()], ['Aufsatz', aufsatz], ['Blindstopfen', B.blank_print()]])
   ok(dicht(mf) && mf.volume() > 0 && mf.decompose().length === 1, `${n} geschlossen, 1 Stück, ${(mf.volume() / 1000).toFixed(1)} cm³, Genus ${mf.genus()}`);
 // Druckorientierung: alles ab z = 0, Platte unten

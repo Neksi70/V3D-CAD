@@ -7,7 +7,7 @@ const SCAD = process.env.HOME + '/v3d-generatoren/kamin-adventskalender/v3d_kami
 fs.mkdirSync(TMP, { recursive: true });
 const w = await Module(); w.setup();
 const K = new Function('module', fs.readFileSync(new URL('../tools/kamin-adventskalender/kak_core.js', import.meta.url), 'utf8') + '; return { KAK_DEF, kakBuild };')(undefined);
-const B = K.kakBuild(w, { ...K.KAK_DEF }, null);
+const B = K.kakBuild(w, { ...K.KAK_DEF, bogen: 0, schnee: 0 }, null);   // ohne Deko = Form der Vorlage
 let fail = 0; const ok = (c, m) => { console.log((c ? 'OK   ' : 'FAIL ') + m); if (!c) fail++; };
 const docker = spawnSync('docker', ['image', 'inspect', 'openscad/openscad:dev'], { stdio: 'ignore' }).status === 0;
 function scad(part, day = 1) {

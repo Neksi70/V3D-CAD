@@ -11,6 +11,7 @@ const KAK_DEF = {
   /* Schieber */ pt: 2.4, slot_h: 3.0, clr: 0.3, num_h: 0.6, griff_r: 10.5, griff_t: 3, hals: 2.5, lippe: 1.2,
   /* Feuerstelle */ base_w: 176, base_d: 136, base_h: 112, open_w: 112, open_h: 74, open_ch: 20, floor_t: 4, ramp_h: 12, mantel_t: 10, mantel_o: 8,
   name_txt: '', name_size: 8,
+  /* Deko (Foto) */ bogen: 1, schnee: 1, flamme: 1, socken: '', socke_h: 70, deko_t: 1.6,
   /* Optik */ joint_w: 1.2, joint_d: 0.8, font: 'helvetiker_bold',
   /* Generator */ drucker: 'sv08max', bett: [500, 500, 500], teilen: 1
 };
@@ -128,7 +129,85 @@ function kakBuild(w, pIn, textFn, opt) {
       }
       return c;
     };
+    // Kaminöffnung in (x, −Höhe): .scad = Rechteck mit 45°-Fasen; Deko „Rundbogen“ = Korbbogen (Ellipse, Stich ≤ halbe Höhe)
+    const oeffnung2D = () => {
+      const ow = p.open_w, oh = p.open_h, oc = p.open_ch;
+      if (!p.bogen) return k(new CS([[[-ow / 2, 0], [-ow / 2, -(oh - oc)], [-ow / 2 + oc, -oh], [ow / 2 - oc, -oh], [ow / 2, -(oh - oc)], [ow / 2, 0]]], 'NonZero'));
+      const stich = Math.min(ow / 2, oh * 0.5), hs = oh - stich, pts = [[ow / 2, 0], [ow / 2, -hs]];
+      for (let i = 1; i < 48; i++) { const t = Math.PI * i / 48; pts.push([ow / 2 * Math.cos(t), -(hs + stich * Math.sin(t))]); }
+      pts.push([-ow / 2, -hs], [-ow / 2, 0]);
+      return k(new CS([pts], 'NonZero'));
+    };
+    let baseRoh = null;
     const base = () => {
+      if (!baseRoh) baseRoh = base0();
+      const ein = [p.bogen && bogenRing(), p.schnee && schneeKante()].filter(Boolean);
+      return ein.length ? k(baseRoh.subtract(U(ein))) : baseRoh;
+    };
+    // ── DEKO als Einlage (gleiche Lage, zweite Farbe, Maße bleiben): heller Bogenrahmen, Schneekante mit Tropfen ──
+    const bogenRing = () => {
+      if (!baseRoh) baseRoh = base0();
+      const ar = oeffnung2D(), aussen = k(k(ar.offset(9, 'Round', 2, 32)).intersect(k(CS.square([p.open_w + 40, p.open_h + 40], false).translate([-(p.open_w + 40) / 2, -(p.open_h + 40)]))));
+      let ring = k(aussen.subtract(ar));
+      const stich = Math.min(p.open_w / 2, p.open_h * 0.5), hs = p.open_h - stich, fugen = [];   // Fugen: radial im Bogen, waagerecht in den Pfeilern
+      for (let i = 1; i < 9; i++) {                                         // radiale Fuge an der Ellipse (Richtung = Normale)
+        const t = Math.PI * i / 9, a2 = p.open_w / 2, fx = a2 * Math.cos(t), fy = -(hs + stich * Math.sin(t)), w = Math.atan2(-Math.sin(t) / stich, Math.cos(t) / a2) * 180 / Math.PI;
+        fugen.push(k(k(k(CS.square([16, p.joint_w], false).translate([-2, -p.joint_w / 2])).rotate(w)).translate([fx, fy])));
+      }
+      for (let z = 14; z < hs - 4; z += 14) for (const sx of [-1, 1]) fugen.push(k(CS.square([12, p.joint_w], false).translate([sx > 0 ? p.open_w / 2 - 1 : -p.open_w / 2 - 11, -z - p.joint_w / 2])));
+      if (fugen.length) ring = k(ring.subtract(k(CS.union(fugen))));
+      if (!baseGlatt) baseGlatt = base0(false);                              // ohne Mauerfugen: der weiße Rahmen hat nur seine eigenen Bogenfugen
+      return k(k(k(k(k(ring.extrude(p.deko_t + 1)).rotate([-90, 0, 0])).translate([p.base_w / 2, -1, p.floor_t]))).intersect(baseGlatt));
+    };
+    const schneeKante = () => {
+      if (!baseRoh) baseRoh = base0();
+      const t = p.deko_t, top = p.base_h, mo = p.mantel_o, tief = [0.55, 0.85, 0.4, 0.7, 0.5, 0.9, 0.45, 0.75];
+      const tropfen = (laenge, frei) => {                                     // 2D-Band (u längs, v nach unten) mit Tropfen
+        const L = [k(CS.square([laenge, t + 0.6], false).translate([0, -(t + 0.6)]))];
+        for (let i = 0, u = 7; u < laenge - 5; i++, u += 11 + (i % 3) * 3) {
+          if (frei && u > frei[0] && u < frei[1]) continue;
+          const w = 5 + (i % 2) * 2, d = Math.min(p.mantel_t - 2, 2 + (p.mantel_t - 3) * tief[i % tief.length]);
+          L.push(k(CS.square([w, d - w / 2], false).translate([u - w / 2, -(d - w / 2)])), k(CS.circle(w / 2, 24).translate([u, -(d - w / 2)])));
+        }
+        return k(CS.union(L));
+      };
+      const breit = p.base_w + 2 * mo, nb = p.name_txt ? [breit / 2 - p.name_txt.length * p.name_size * 0.45, breit / 2 + p.name_txt.length * p.name_size * 0.45] : null;
+      const vorn = k(k(k(tropfen(breit, nb).extrude(t + 1)).rotate([90, 0, 0])).translate([-mo, -mo + t, top]));     // (u,v,w) → (u, −w, v)
+      const seite = sx => k(k(k(k(tropfen(p.base_d + mo, null).extrude(t + 1)).rotate([90, 0, 90])).translate([0, 0, 0])).translate([sx < 0 ? -mo - 1 : p.base_w + mo - t, -mo, top]));
+      const deckel = cube([breit + 2, p.base_d + mo + 2, t], [-mo - 1, -mo - 1, top - t]);
+      return k(k(U([vorn, seite(-1), seite(1), deckel])).intersect(baseRoh));
+    };
+    // Flamme (flach drucken, orange + gelb erhaben) → zum Einkleben an die Rückwand der Feuerstelle
+    const flamme2D = () => {
+      const tr = (x, y, r, tx, ty) => k(k(CS.hull([k(CS.circle(r, 32).translate([x, y])), k(CS.circle(0.8, 12).translate([tx, ty]))])));
+      const a = k(CS.union([tr(0, 14, 14, 3, 60), tr(-13, 10, 9, -21, 41), tr(14, 11, 10, 23, 45)]));
+      return { aussen: a, innen: k(k(a.offset(-5, 'Round')).translate([0, -1])) };
+    };
+    const flammeH = () => Math.max(20, Math.min(p.open_h - p.ramp_h - 6, p.open_h * 0.72));
+    const flamme_print = () => { const F = flamme2D(), b = F.aussen.bounds(), s = flammeH() / (b.max[1] - b.min[1]);
+      const sc = c => k(k(c.translate([0, -b.min[1]])).scale([s, s]));
+      return { aussen: k(sc(F.aussen).extrude(2)), innen: k(k(sc(F.innen).extrude(p.num_h)).translate([0, 0, 2])) }; };
+    const flamme_lage = mf => k(k(mf.rotate([90, 0, 0])).translate([p.base_w / 2, (p.base_d + fb_d) / 2 - 0.2, p.floor_t + p.ramp_h]));   // Gesicht nach vorn, an der Rückwand
+    // Socke mit Namensschild (flach drucken: rot, weiß erhaben + Name erhaben) → vorn an die Simsecken kleben
+    const sockenNamen = () => String(p.socken || '').split(/[,;\n]/).map(x => x.trim()).filter(Boolean).slice(0, 2);
+    const socke_print = (name, links) => {
+      const s = p.socke_h / 70, m = links ? -1 : 1, P = (x, y) => [m * x * s, y * s];
+      const R = (x0, y0, x1, y1, r) => { const a = [Math.min(x0, x1), Math.min(y0, y1)], b = [Math.max(x0, x1), Math.max(y0, y1)];
+        return k(k(k(CS.square([b[0] - a[0] - 2 * r, b[1] - a[1] - 2 * r], false).translate([a[0] + r, a[1] + r])).offset(r, 'Round', 2, 24))); };
+      const schild = R(...P(-21, -8), ...P(21, 8), 4 * s);
+      const bein = R(...P(-12, -4), ...P(12, -42), 3 * s), fuss = R(...P(-12, -36), ...P(27, -56), 9 * s);
+      const rot = k(k(k(CS.union([schild, bein, fuss])).offset(-2 * s, 'Round')).offset(2 * s, 'Round'));
+      const sockeOhneSchild = k(CS.union([bein, fuss]));
+      const weiss = k(k(CS.union([R(...P(-14, -10), ...P(14, -19), 2 * s), k(CS.circle(7.5 * s, 32).translate(P(-11, -50))), k(CS.circle(8 * s, 32).translate(P(26, -46)))])).intersect(k(sockeOhneSchild.offset(-1.2 * s, 'Round'))));
+      const weissAll = k(CS.union([weiss, R(...P(-14, -10), ...P(14, -19), 2 * s)]));   // Umschlag darf etwas überstehen
+      let txt = null;
+      if (name && textFn) { const tw = textMitte(name, 7 * s, 0, 0); if (tw) { const bb = tw.bounds(), f = Math.min(1, 34 * s / (bb.max[0] - bb.min[0])); txt = k(k(k(tw.scale([f, f])).extrude(p.num_h)).translate([0, 0, 3])); } }
+      return { rot: k(rot.extrude(3)), weiss: k(k(weissAll.extrude(p.num_h)).translate([0, 0, 3])), text: txt };
+    };
+    const socke_lage = (mf, links) => { const x = links ? 26 : p.base_w - 26;
+      return k(k(mf.rotate([90, 0, 0])).translate([x, -p.mantel_o - 0.05, p.base_h - p.mantel_t / 2 + 2])); };   // Rückseite an der Simsfront
+    let baseGlatt = null;
+    const base0 = (fugen = true) => {
       const body_h = p.base_h - p.mantel_t;
       const koerper = U([hull([cube([p.base_w + 6, p.base_d + 6, 4], [-3, -3, 0]), cube([p.base_w, p.base_d, eps], [0, 0, 7])]),
         cube([p.base_w, p.base_d, body_h]),
@@ -139,10 +218,9 @@ function kakBuild(w, pIn, textFn, opt) {
         cube([p.in_w, p.in_d, p.base_h], [sx, sy, fb_top]),
         cube([out_w + 0.6, out_d + 0.6, sock + eps], [tower_x - 0.3, tower_y - 0.3, p.base_h - sock])];
       // Kaminöffnung: translate([base_w/2,-20,floor_t]) rotate([-90,0,0]) linear_extrude(40) polygon(…): (x,y,z) → (x, z, −y)
-      const ow = p.open_w, oh = p.open_h, oc = p.open_ch;
-      const pol = k(new CS([[[-ow / 2, 0], [-ow / 2, -(oh - oc)], [-ow / 2 + oc, -oh], [ow / 2 - oc, -oh], [ow / 2, -(oh - oc)], [ow / 2, 0]]], 'NonZero'));
+      const pol = oeffnung2D();
       cut.push(k(k(k(pol.extrude(40)).rotate([-90, 0, 0])).translate([p.base_w / 2, -20, p.floor_t])));
-      cut.push(...base_joints(body_h));
+      if (fugen) cut.push(...base_joints(body_h));
       let b = k(koerper.subtract(U(cut)));
       // Rampe: rotate([90,0,90]) linear_extrude(fb_w) polygon: (px,py,ez) → (ez, px, py)
       const rp = k(new CS([[[0, 0], [fb_d, 0], [fb_d, p.ramp_h], [fb_d * 0.25, 0]]], 'NonZero'));   // wie .scad (Fläche = Dreieck ab 25 %)
@@ -188,7 +266,7 @@ function kakBuild(w, pIn, textFn, opt) {
       }
       return { teile, ok: true, Z };
     };
-    return { m, p, tower, stone_body, stone_number, stone_print, number_print, blank_print, base, nameplate_text, cap, cap_top, cap_print, turmTeile, tmp, k,
+    return { m, p, oeffnung2D, bogenRing, schneeKante, flamme_print, flamme_lage, flammeH, sockenNamen, socke_print, socke_lage, tower, stone_body, stone_number, stone_print, number_print, blank_print, base, nameplate_text, cap, cap_top, cap_print, turmTeile, tmp, k,
       aufraeumen: () => { for (const x of tmp) { try { x.delete(); } catch (e) {} } tmp.length = 0; } };
   } catch (e) { for (const x of tmp) { try { x.delete(); } catch (e2) {} } throw e; }
 }
