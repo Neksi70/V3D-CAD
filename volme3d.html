@@ -37569,6 +37569,8 @@ function kakBelegung(tage, slots) {
   return used;
 }
 // Turm-Segmente: Teilung immer mittig zwischen zwei Schlitzen (auf der horizontalen Mauerfuge)
+// Steckfalz-Höhe: Zunge (hz + halbe Wand an 45°) samt Nut-Spiel muss unter den nächsten Schlitz passen → < 1 mm = Raster zu eng zum Teilen
+function kakFalzHoehe(p) { return Math.min(3, (p.pitch - p.slot_h) / 2 - p.wall / 2 - 2 * 0.3 - 0.4); }
 function kakSegmente(p, m, zMax) {
   const fuge = i => m.slot_z(i) + p.slot_h / 2 + p.pitch / 2, falz = 5.5, teil = [];
   if (!(zMax > 0) || m.tower_h <= zMax) return [0, m.tower_h];
@@ -37700,7 +37702,8 @@ function kakBuild(w, pIn, textFn, opt) {
     const turmTeile = () => {
       const t = tower(), zMax = p.teilen && p.bett ? p.bett[2] : 0, Z = kakSegmente(p, m, zMax);
       if (!Z || Z.length <= 2) return { teile: [{ mf: t, z0: 0, z1: tower_h }], ok: !!Z || !zMax, Z: Z || [0, tower_h] };
-      const wh = p.wall / 2, hz = 3, c = 0.3;
+      const wh = p.wall / 2, hz = kakFalzHoehe(p), c = 0.3;
+      if (hz < 1) return { teile: [{ mf: t, z0: 0, z1: tower_h }], ok: false, Z: [0, tower_h], falz: false };
       const ring = (a, b, z0, z1) => k(cube([out_w - 2 * a, out_d - 2 * a, z1 - z0], [a, a, z0]).subtract(cube([out_w - 2 * b, out_d - 2 * b, z1 - z0 + 2], [b, b, z0 - 1])));
       const teile = [];
       for (let s = 0; s + 1 < Z.length; s++) {
@@ -37723,7 +37726,7 @@ function kakBuild(w, pIn, textFn, opt) {
   } catch (e) { for (const x of tmp) { try { x.delete(); } catch (e2) {} } throw e; }
 }
 
-if (typeof module !== 'undefined') module.exports = { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakSegmente, kakBuild };
+if (typeof module !== 'undefined') module.exports = { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakFalzHoehe, kakSegmente, kakBuild };
 
 const _kakP = { ...KAK_DEF, schacht: 96, erweitert: 0 };
 const _KAK_DEF = { ..._kakP };
@@ -37746,9 +37749,12 @@ const _KAK_FELDER = {
   ramp_h: [0, 30, 1, 'Bodenrampe hinten höher – Süßes rutscht nach vorn'], mantel_t: [6, 20, 1, 'Simsstärke'], mantel_o: [3, 15, 1, 'Sims-Überstand vorn/seitlich'],
   name_size: [4, 16, 0.5, 'Schrifthöhe des Namens auf dem Sims']
 };
-function _kakFont(k){ const ck = '_threeFont_' + k;
-  if (!window[ck]) try { _npLoadFont(k, () => { const m = document.getElementById('kak-modal'); if (m && m.classList.contains('show')) _kakRepaint(); }); } catch (e) {}
+function _kakFont(k){ const ck = '_threeFont_' + k; _kakFont.laedt = _kakFont.laedt || {};
+  if (!window[ck] && !_kakFont.laedt[k]) try { _kakFont.laedt[k] = 1; _npLoadFont(k, () => { _kakFont.laedt[k] = 0; const m = document.getElementById('kak-modal'); if (m && m.classList.contains('show')) _kakRepaint(); }); } catch (e) {}
   return window[ck] || null; }
+// vor Szene/Export/gen.run: Schrift muss da sein, sonst fehlen Zahlen und Name still
+async function _kakFontBereit(k){ _kakFont(k); for (let i = 0; i < 200 && !window['_threeFont_' + k]; i++) await new Promise(r => setTimeout(r, 50));
+  if (!window['_threeFont_' + k]) throw new Error('Schrift für Zahlen/Name konnte nicht geladen werden (offline?) – bitte erneut versuchen'); }
 function _kakText(CS, keep, txt, fk, h, cx, yb, maxW){ if (!_kakFont(fk)) return null; try { return _lttText(CS, keep, txt, fk, h, cx, yb, maxW); } catch (e) { return null; } }
 function _kakBett(p){ return p.drucker === 'frei' ? [p.bettX || 300, p.bettY || 300, p.bettZ || 300] : (KAK_DRUCKER[p.drucker] || KAK_DRUCKER.sv08max).bett; }
 function _kakParams(src){ const p = { ...src }; if (!p.erweitert) { p.in_w = p.schacht; p.in_d = p.schacht; } p.bett = _kakBett(p); return p; }
@@ -37762,14 +37768,17 @@ function _kakCheck(p){
   if (steinB > bett[0] || steinT > bett[1]) fehler.push(`Ein Stein (${steinB.toFixed(0)} × ${steinT.toFixed(1)} mm) passt nicht aufs Druckbett ${bett[0]} × ${bett[1]} mm.`);
   if (p.base_w + 2 * p.mantel_o > bett[0] || p.base_d + p.mantel_o + 3 > bett[1] || p.base_h > bett[2]) hinweise.push('Die Feuerstelle ist größer als das Druckbett – im Slicer teilen oder Maße unter „Erweitert“ verkleinern.');
   if (p.open_w + 18 + 16 > p.base_w) fehler.push('Kaminöffnung zu breit für die Feuerstelle.');
+  if (m.fb_w < p.in_w || m.fb_d < p.in_d) fehler.push(`Schacht (${p.in_w} × ${p.in_d} mm) ist größer als der Feuerraum (${m.fb_w} × ${m.fb_d} mm) – der Trichter bekäme Absätze. Öffnung/Feuerstelle unter „Erweitert“ vergrößern oder Schacht verkleinern.`);
+  else if (m.fb_top + Math.max(m.fb_w - p.in_w, m.fb_d - p.in_d) / 2 > p.base_h - m.sock) fehler.push('Kaminöffnung zu hoch für die Feuerstelle – der Trichter schneidet durch den Sims. Öffnungshöhe verringern oder Feuerstelle höher machen.');
   if (m.out_w + 0.6 > p.base_w || m.out_d + 0.6 > p.base_d) fehler.push('Der Turm ist breiter/tiefer als die Feuerstelle – Feuerstelle unter „Erweitert“ vergrößern.');
   let Z = [0, m.tower_h];
   if (m.tower_h > bett[2]) {
-    if (p.teilen) { Z = kakSegmente(p, m, bett[2]); if (!Z) fehler.push('Turm lässt sich für diese Bauhöhe nicht teilen.'); else hinweise.push(`Turm (${m.tower_h.toFixed(0)} mm) ist höher als der Bauraum (${bett[2]} mm) → automatisch in ${Z.length - 1} Segmente mit Steckfalz geteilt.`); }
+    if (p.teilen) { Z = kakSegmente(p, m, bett[2]); if (!Z) fehler.push('Turm lässt sich für diese Bauhöhe nicht teilen.');
+      else if (Z.length > 2 && kakFalzHoehe(p) < 1) fehler.push(`Raster zu eng für die Turm-Teilung: zwischen zwei Schlitzen bleiben nur ${((p.pitch - p.slot_h) / 2).toFixed(1)} mm für den Steckfalz – Raster vergrößern, Wand dünner oder Schlitzhöhe kleiner.`); else hinweise.push(`Turm (${m.tower_h.toFixed(0)} mm) ist höher als der Bauraum (${bett[2]} mm) → automatisch in ${Z.length - 1} Segmente mit Steckfalz geteilt.`); }
     else hinweise.push(`Turm (${m.tower_h.toFixed(0)} mm) ist höher als der Bauraum (${bett[2]} mm) – Turm im Slicer teilen oder „Turm automatisch teilen“ einschalten.`);
   }
   const used = kakBelegung(p.tage, p.slots);
-  let fach = 0; for (let i = 0; i < used.length; i++) fach = Math.max(fach, (used[i] - (i ? used[i - 1] : -1)) * p.pitch);
+  let fach = 0; for (let i = 0; i < used.length; i++) fach = Math.max(fach, ((i + 1 < used.length ? used[i + 1] : p.slots) - used[i]) * p.pitch);   // Fach = über Stein i bis zum nächsten Stein bzw. bis oben
   const hoehe = p.base_h - m.sock + m.tower_h + m.cap_t + 5 + 14;
   return { m, fehler, hinweise, Z: Z || [0, m.tower_h], used, blind: Math.max(0, p.slots - p.tage), fach, hoehe,
     breite: p.base_w + 2 * p.mantel_o, tiefe: p.base_d + p.mantel_o + 3 };
@@ -37813,14 +37822,17 @@ function _kakDruckteile(w, p){
       const z = B.number_print(d); if (z) out.push({ datei: `tag_${dd}_zahl.stl`, mf: z.translate([dx, dy, 0]), hex: _KAK_FARBE.zahl, gruppe: 'tag' + d });   // gleiche Lage wie der Stein
     }
     return out;
-  } finally { B.aufraeumen(); }
+  } catch (e) { for (const t of out) { try { t.mf.delete(); } catch (e2) {} } throw e; }   // fertige Teile im Fehlerfall freigeben
+  finally { B.aufraeumen(); }
 }
 function _kakPreviewGeo(){
   if (!_mfWasm) throw new Error('Manifold lädt noch');
   const p = _kakParams(_kakP), C = _kakCheck(p); _kakP._c = C; setTimeout(_kakSync, 0);
   if (C.fehler.length) throw new Error(C.fehler[0]);
   const teile = _kakZusammenbau(_mfWasm, p, true);
-  let n = 0; const geos = teile.map(t => { const g = _mfToGeo(t.mf).toNonIndexed(); t.mf.delete(); g.rotateX(-Math.PI / 2); n += g.attributes.position.count; return [g, t.hex]; });
+  let n = 0, geos;
+  try { geos = teile.map(t => { const g = _mfToGeo(t.mf).toNonIndexed(); g.rotateX(-Math.PI / 2); n += g.attributes.position.count; return [g, t.hex]; }); }
+  finally { for (const t of teile) { try { t.mf.delete(); } catch (e) {} } }
   const pos = new Float32Array(n * 3), col = new Float32Array(n * 3); let o = 0;
   for (const [g, hex] of geos) { const a = g.attributes.position.array, c = new THREE.Color(hex); pos.set(a, o * 3);
     for (let i = 0; i < a.length / 3; i++) { col[(o + i) * 3] = c.r; col[(o + i) * 3 + 1] = c.g; col[(o + i) * 3 + 2] = c.b; } o += a.length / 3; g.dispose(); }
@@ -37835,7 +37847,7 @@ function _kakRepaint(){ if (_kakRT) clearTimeout(_kakRT); _kakRT = setTimeout(()
 function _kakSet(k, v){ let f = parseFloat(String(v).replace(',', '.')); if (!isFinite(f)) return; const g = _KAK_FELDER[k]; if (g) f = Math.max(g[0], Math.min(g[1], f));
   _kakP[k] = f; if (k === 'schacht') { _kakP.in_w = f; _kakP.in_d = f; } _kakSync(); _kakRepaint(); }
 function _kakStr(k, v){ _kakP[k] = v; if (k === 'font') _kakFont(v); _kakSync(k === 'name_txt'); _kakRepaint(); }
-function _kakReset(){ Object.assign(_kakP, _KAK_DEF); _kakSync(); _kakRepaint(); }
+function _kakReset(){ for (const k of ['bettX', 'bettY', 'bettZ']) delete _kakP[k]; Object.assign(_kakP, _KAK_DEF); _kakSync(); _kakRepaint(); }
 function _kakSync(tippen){
   for (const k of [...Object.keys(_KAK_FELDER), 'bettX', 'bettY', 'bettZ']) { const s = document.getElementById('kak-' + k), t = document.getElementById('kakv-' + k); if (s && document.activeElement !== s) s.value = _kakP[k] ?? ''; if (t) t.textContent = String(_kakP[k]).replace('.', ','); }
   if (!tippen) { const e = document.getElementById('kak-name_txt'); if (e) e.value = _kakP.name_txt; }
@@ -37859,18 +37871,21 @@ async function _kakSzene(){
   const p = _kakParams(_kakP), C = _kakCheck(p); if (C.fehler.length) { notify(C.fehler[0], 'w'); return; }
   _progressShow('Kamin-Adventskalender wird gebaut…'); _progressSet(10); _progressCreep(90, 0.5);
   try {
-    const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
+    await _kakFontBereit(p.font); const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
     const ids = _kakInSzene(w, p);
     _progressDone(); notify(`🧱 Kamin-Adventskalender in der Szene ✓ ${ids.length} Teile (Zusammenbau) — für den Druck „⬇ STL-Teile“ oder „⬇ 3MF“`, 'ok'); _kakClose();
   } catch (e) { console.error('Kamin:', e); _progressHide(); notify('Kamin-Adventskalender fehlgeschlagen: ' + (e && e.message || e), 'w'); }
 }
 function _kakInSzene(w, p, center){
   const teile = _kakZusammenbau(w, p, false);
+  try { return _kakInSzeneTeile(teile, p, center); } finally { for (const t of teile) { try { t.mf.delete(); } catch (e) {} } }
+}
+function _kakInSzeneTeile(teile, p, center){
   saveUndo();
   typeCounts['kamin'] = (typeCounts['kamin'] || 0) + 1;
   const nr = typeCounts['kamin'], meshes = [], cx = center ? center[0] : 0, cy = center ? center[1] : 0;
   for (const t of teile) {
-    const geo = _mfToGeo(t.mf).toNonIndexed(); t.mf.delete();
+    const geo = _mfToGeo(t.mf).toNonIndexed();
     geo.translate(-p.base_w / 2 + cx, -p.base_d / 2 + cy, 0); geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1); _moldNormals(geo);
     const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(t.hex), roughness: 0.75, metalness: 0.02, side: THREE.DoubleSide }));
     mesh.castShadow = mesh.receiveShadow = true;
@@ -37885,9 +37900,10 @@ async function _kakExportStl(){
   const p = _kakParams(_kakP), C = _kakCheck(p); if (C.fehler.length) { notify(C.fehler[0], 'w'); return; }
   _progressShow('Teile werden für den Druck gebaut…'); _progressSet(10); _progressCreep(90, 0.6);
   try {
-    const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
+    await _kakFontBereit(p.font); const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
     const teile = _kakDruckteile(w, p), files = [];
-    for (const t of teile) { const geo = _mfToGeo(t.mf); t.mf.delete(); files.push({ name: t.datei, blob: _kakStlBlob(geo) }); geo.dispose(); }
+    try { for (const t of teile) { const geo = _mfToGeo(t.mf); files.push({ name: t.datei, blob: _kakStlBlob(geo) }); geo.dispose(); } }
+    finally { for (const t of teile) { try { t.mf.delete(); } catch (e) {} } }
     _progressDone();
     const res = await _saveExportMany(files);
     if (res && res.abgebrochen) return;
@@ -38072,6 +38088,7 @@ function _kakPlatten(teile, bett, opt = {}){
       if (cy + G.d > bett[1] - rand) neu(a);
       if (!stoesst(G.w, G.d)) break;
     }
+    if (stoesst(G.w, G.d)) neu(a);                                           // nie in die Turm-Ecke
     for (const t of G.ts) pl.teile.push({ name: t.name, hex: t.hex, gruppe: G.g, mf: t.mf, dx: cx - G.x0, dy: cy - G.y0 });
     cx += G.w + abst; zeileH = Math.max(zeileH, G.d); letzte = a;
   }
@@ -38100,9 +38117,9 @@ async function _kakExport3mf(){
     if (!proj) throw new Error('Slicer-Profile fehlen – bitte einmal „⬇ 3MF“ im Export-Menü öffnen, Drucker wählen und erneut versuchen');
     const pa = String((proj.settings.printable_area || []).join(',')).match(/\d+(\.\d+)?/g)?.map(Number) || [];
     const profB = pa.length >= 8 ? [Math.max(pa[0], pa[2], pa[4], pa[6]), Math.max(pa[1], pa[3], pa[5], pa[7])] : p.bett;
-    const bettPack = eigenesProfil ? [Math.min(p.bett[0], profB[0]), Math.min(p.bett[1], profB[1]), p.bett[2]] : p.bett.slice();
+    const bettPack = eigenesProfil ? [profB[0], profB[1], p.bett[2]] : p.bett.slice();   // Profilbett (H2C 330), nutzbar wird unten auf den Düsenbereich begrenzt
     if (!eigenesProfil) { const [bx, by, bz] = bettPack; proj.settings.printable_area = ['0x0', bx + 'x0', bx + 'x' + by, '0x' + by]; proj.settings.printable_height = String(bz); }   // Plattenraster = Kamin-Bett
-    const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
+    await _kakFontBereit(p.font); const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
     const teile = _kakDruckteile(w, p); zuLoeschen.push(...teile.map(t => t.mf));
     // gemeinsamer Bereich aller Düsen (H2C: links 0…325, rechts 25…330) + Ecke hinten rechts für den Reinigungsturm
     const xs = (proj.settings.extruder_printable_area || []).map(a => String(a).match(/\d+(\.\d+)?/g).map(Number).filter((_, i) => i % 2 === 0));
@@ -38115,6 +38132,7 @@ async function _kakExport3mf(){
       return { name: t.name, hex: t.hex, gruppe: t.gruppe, vert, tri: new Uint32Array(me.triVerts) }; }) }));
     const bytes = kak3mfMehrplatten(platten, { bett: bettPack, fflate: window.fflate, titel: 'Kamin-Adventskalender', projectSettings: proj.settings, farben, app: proj.settings.version ? 'BambuStudio-' + proj.settings.version : undefined });
     _progressDone();
+    if (bytes.warnungen && bytes.warnungen.length) notify('3MF-Hinweis: ' + bytes.warnungen.join(' · '), 'w', 9000);
     const res = await _saveExport(new Blob([bytes], { type: 'model/3mf' }), 'kamin_adventskalender.3mf');
     if (res && res.abgebrochen) return;
     notify(`🧱 3MF mit ${platten.length} Druckplatten ${res && res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓ (${platten.map(q => q.name).join(', ')}) – Profil ${wahl.machine}${eigenesProfil && PROFIL[p.drucker].hinweis ? ' (' + PROFIL[p.drucker].hinweis + ')' : ''}${eigenesProfil ? '' : ' (Bett ' + bettPack.slice(0, 2).join(' × ') + ' mm – Drucker im Slicer wählen)'}, Zahlen/Name als eigene Farbe`, 'ok', 10000);
@@ -38129,10 +38147,16 @@ async function _kakExport3mf(){
     { k: 'name_txt', label: 'Name auf dem Sims', type: 'text', maxlen: 30, default: '' }, { k: 'drucker', label: 'Drucker', type: 'wahl', options: Object.keys(KAK_DRUCKER), default: 'sv08max' },
     ...Object.entries(_KAK_FELDER).filter(([k]) => !['tage', 'schacht', 'pitch', 'slots'].includes(k)).map(([k, g]) => ({ k, label: g[3], type: 'range', min: g[0], max: g[1], step: g[2], unit: 'mm', default: KAK_DEF[k] }))],
   async run(q, center){
-    const src = { ..._KAK_DEF, ...q }; if (q.in_w != null || q.in_d != null) src.erweitert = 1; else if (q.schacht != null) { src.in_w = src.in_d = q.schacht; }
+    const erlaubt = new Set([...this.params.map(x => x.k), 'in_w', 'in_d', 'font', 'teilen', 'bettX', 'bettY', 'bettZ']), fremd = Object.keys(q).filter(k => !erlaubt.has(k));
+    if (fremd.length) throw new Error('Unbekannte Parameter: ' + fremd.join(', ') + ' (erlaubt: ' + [...erlaubt].join(', ') + ')');
+    if (q.drucker != null && !KAK_DRUCKER[q.drucker]) throw new Error('drucker muss einer von ' + Object.keys(KAK_DRUCKER).join(', ') + ' sein');
+    const src = { ..._KAK_DEF, ...q };
+    for (const k of Object.keys(q)) if (k in _KAK_FELDER || /^bett[XYZ]$/.test(k)) { const v = Number(q[k]); if (!isFinite(v)) throw new Error(`${k} muss eine Zahl sein`); src[k] = v; }
+    for (const k of ['tage', 'slots']) src[k] = Math.round(src[k]);
+    if (q.in_w != null || q.in_d != null) src.erweitert = 1; else if (q.schacht != null) { src.in_w = src.in_d = src.schacht; }
     for (const [k, g] of Object.entries(_KAK_FELDER)) if (typeof src[k] === 'number') src[k] = Math.max(g[0], Math.min(g[1], src[k]));
     const p = _kakParams(src), C = _kakCheck(p); if (C.fehler.length) throw new Error(C.fehler.join(' '));
-    if (p.name_txt || true) { _kakFont(p.font); for (let i = 0; i < 100 && !window['_threeFont_' + p.font]; i++) await new Promise(r => setTimeout(r, 50)); }
+    await _kakFontBereit(p.font);
     const w = await _mfInit(); return _kakInSzene(w, p, center);
   }
 };

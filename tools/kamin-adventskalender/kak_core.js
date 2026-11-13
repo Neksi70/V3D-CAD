@@ -40,6 +40,8 @@ function kakBelegung(tage, slots) {
   return used;
 }
 // Turm-Segmente: Teilung immer mittig zwischen zwei Schlitzen (auf der horizontalen Mauerfuge)
+// Steckfalz-Höhe: Zunge (hz + halbe Wand an 45°) samt Nut-Spiel muss unter den nächsten Schlitz passen → < 1 mm = Raster zu eng zum Teilen
+function kakFalzHoehe(p) { return Math.min(3, (p.pitch - p.slot_h) / 2 - p.wall / 2 - 2 * 0.3 - 0.4); }
 function kakSegmente(p, m, zMax) {
   const fuge = i => m.slot_z(i) + p.slot_h / 2 + p.pitch / 2, falz = 5.5, teil = [];
   if (!(zMax > 0) || m.tower_h <= zMax) return [0, m.tower_h];
@@ -171,7 +173,8 @@ function kakBuild(w, pIn, textFn, opt) {
     const turmTeile = () => {
       const t = tower(), zMax = p.teilen && p.bett ? p.bett[2] : 0, Z = kakSegmente(p, m, zMax);
       if (!Z || Z.length <= 2) return { teile: [{ mf: t, z0: 0, z1: tower_h }], ok: !!Z || !zMax, Z: Z || [0, tower_h] };
-      const wh = p.wall / 2, hz = 3, c = 0.3;
+      const wh = p.wall / 2, hz = kakFalzHoehe(p), c = 0.3;
+      if (hz < 1) return { teile: [{ mf: t, z0: 0, z1: tower_h }], ok: false, Z: [0, tower_h], falz: false };
       const ring = (a, b, z0, z1) => k(cube([out_w - 2 * a, out_d - 2 * a, z1 - z0], [a, a, z0]).subtract(cube([out_w - 2 * b, out_d - 2 * b, z1 - z0 + 2], [b, b, z0 - 1])));
       const teile = [];
       for (let s = 0; s + 1 < Z.length; s++) {
@@ -194,4 +197,4 @@ function kakBuild(w, pIn, textFn, opt) {
   } catch (e) { for (const x of tmp) { try { x.delete(); } catch (e2) {} } throw e; }
 }
 
-if (typeof module !== 'undefined') module.exports = { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakSegmente, kakBuild };
+if (typeof module !== 'undefined') module.exports = { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakFalzHoehe, kakSegmente, kakBuild };

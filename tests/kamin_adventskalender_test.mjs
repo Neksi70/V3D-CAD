@@ -67,6 +67,12 @@ try {
   ok(h2c.length === 2 && h2c[0] === 'turm_1von2.stl', 'H2C: Turm geteilt → ' + h2c.join(', '));
   const gr = await p.evaluate(async () => { _newCreate(false); const ids = await window._GEN_EXT['kamin-adventskalender'].run({ tage: 12, slots: 16, schacht: 80 }); return { ids: ids.length, n: objects.length }; });
   ok(gr.ids === 6 && gr.n === 6, `gen.run (12 Tage, 16 Schlitze, Schacht 80): ${gr.ids} Teile`);
+  const pr = await p.evaluate(async () => { const r = {};
+    const C1 = _kakCheck(_kakParams({ ..._KAK_DEF, drucker: 'h2c', pitch: 10, slot_h: 3, slots: 40 })); r.falz = C1.fehler.some(f => /Raster zu eng für die Turm-Teilung/.test(f));
+    const C2 = _kakCheck(_kakParams({ ..._KAK_DEF, schacht: 140 })); r.trichter = C2.fehler.some(f => /Feuerraum/.test(f));
+    try { await window._GEN_EXT['kamin-adventskalender'].run({ tage: 12, gibtsnicht: 1 }); r.fremd = false; } catch (e) { r.fremd = /Unbekannte Parameter/.test(e.message); }
+    return r; });
+  ok(pr.falz && pr.trichter && pr.fremd, `Prüfungen: Falz bei Raster 10 (H2C) ${pr.falz}, Schacht > Feuerraum ${pr.trichter}, gen.run unbekannter Parameter ${pr.fremd}`);
   await p.evaluate(() => undo()); ok(await p.evaluate(() => objects.length === 0), 'Rückgängig');
   ok(errs.length === 0, 'keine Seitenfehler ' + errs.slice(0, 3).join(' | '));
 } finally { await b.close(); srv.kill(); }
