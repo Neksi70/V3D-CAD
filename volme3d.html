@@ -6074,6 +6074,32 @@ Patrick</textarea>
   </div>
 </div>
 
+<div id="hid-modal" class="g3dm" onclick="if(event.target===this)_hidClose()">
+  <div class="g3box">
+    <div class="g3hdr">🦌 Hirsch-Deckel<span class="vx" onclick="_hidClose()">✕</span></div>
+    <div class="g3body">
+      <canvas id="hid-canvas" width="200" height="320"></canvas>
+      <div class="g3ctrl">
+        <span class="vsec">Hirsch</span>
+        <div class="vtbrow" style="display:flex;gap:4px;margin-bottom:7px"><button class="vtb on" id="hid-m-tupfen" style="flex:1" title="Flache Silhouette schwarz mit weißem Rand und weißen Tupfen" onclick="_hidModell('tupfen')">Tupfen</button><button class="vtb" id="hid-m-plastisch" style="flex:1" title="Plastischer Hirschkopf auf kleinem Sockel" onclick="_hidModell('plastisch')">Plastisch</button><button class="vtb" id="hid-m-schlicht" style="flex:1" title="Flache Silhouette schwarz mit weißem Rand" onclick="_hidModell('schlicht')">Schlicht</button></div>
+        <div class="vrow"><label title="Höhe des Hirschs über dem Deckel">Größe</label> <input type="range" id="hid-groesse" min="40" max="140" value="75" step="1" oninput="_hidSet('groesse',this.value)"><span class="vv" id="hidv-groesse">75</span><span class="vu">mm</span></div>
+        <div class="vrow" id="hid-row-dicke"><label title="Stärke der flachen Silhouette">Dicke</label> <input type="range" id="hid-dicke" min="3" max="8" value="4" step="0.5" oninput="_hidSet('dicke',this.value)"><span class="vv" id="hidv-dicke">4</span><span class="vu">mm</span></div>
+        <div class="vrow" id="hid-row-tupfen"><label title="Abstand der weißen Tupfen (0 = keine)">Tupfen</label> <input type="range" id="hid-tupfen" min="0" max="10" value="5" step="0.5" oninput="_hidSet('tupfen',this.value)"><span class="vv" id="hidv-tupfen">5</span><span class="vu">mm</span></div>
+        <span class="vsec">Deckel-Aufsatz</span>
+        <div class="vrow"><label title="Außendurchmesser des vorhandenen Glasdeckels (nachmessen)">Deckel-Ø</label> <input type="range" id="hid-deckelD" min="40" max="120" value="70" step="0.5" oninput="_hidSet('deckelD',this.value)"><span class="vv" id="hidv-deckelD">70</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Rand, der den Originaldeckel seitlich verdeckt (0 = flache Scheibe zum Aufkleben)">Schürze</label> <input type="range" id="hid-schuerze" min="0" max="20" value="8" step="0.5" oninput="_hidSet('schuerze',this.value)"><span class="vv" id="hidv-schuerze">8</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Stärke der Deckelplatte = Tiefe der Steckaufnahme">Platte</label> <input type="range" id="hid-platte" min="3" max="10" value="5" step="0.5" oninput="_hidSet('platte',this.value)"><span class="vv" id="hidv-platte">5</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Spiel zwischen Deckel und Glasdeckel sowie Zapfen und Aufnahme">Spiel</label> <input type="range" id="hid-spiel" min="0.1" max="0.8" value="0.3" step="0.05" oninput="_hidSet('spiel',this.value)"><span class="vv" id="hidv-spiel">0,3</span><span class="vu">mm</span></div>
+        <div class="g3info" id="hid-info"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_hidReset()">Zurücksetzen</button>
+      <button class="btn" onclick="_hidClose()">Abbrechen</button>
+      <button class="btn pri" onclick="_hidCreate()">✓ Erstellen</button>
+    </div>
+  </div>
+</div>
 <div id="gls-modal" class="g3dm" onclick="if(event.target===this)_glsClose()">
   <div class="g3box">
     <div class="g3hdr">✨ Glücks-Aufladestation<span class="vx" onclick="_glsClose()">✕</span></div>
@@ -39948,6 +39974,196 @@ async function _glsCreate(){
   } catch (e) { console.error('Glücks-Aufladestation:', e); _progressHide(); notify('Glücks-Aufladestation fehlgeschlagen: ' + (e && e.message || e), 'w'); }
 }
 
+// ═══ HIRSCH-DECKEL (🦌 _hid*, 1.18.401) ════════════════════════════════════════════
+// Nach Bild (13.11.): Aufsatz für Glas-Schraubdeckel + drei Hirsch-Topper. Kern 1:1 aus tools/hirschdeckel/hid_core.js.
+// Hirsch-Deckel — Aufsatz für den Schraubdeckel eines Glases + Hirsch-Topper. mm, Y oben, Vorderseite +Z.
+// Deckel: Scheibe mit Fase oben, optional Schürze über den Originaldeckel (wird aufgeklebt), Steckaufnahme durch die Platte.
+// Topper: „tupfen“ / „schlicht“ = flache Silhouette (schwarzer Kern, weißer Rand, bei „tupfen“ weiße Pünktchen, je Farbe
+// ein Teil, durchgehend), „plastisch“ = Hirschkopf als Distanzfeld auf quadratischem Sockel (Sockel = Steckzapfen).
+// Einbaulage: Deckel steht auf y = 0, Topper ab Deckeloberkante. Braucht: _lgfLevel, _lgfSmin, _dklCone, _dklEll.
+function _hidStrich(CS, k, pts) {                                            // Kapselkette [[x, y, r] …] (2D)
+  const L = [];
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const [ax, ay, ar] = pts[i], [bx, by, br] = pts[i + 1];
+    L.push(k(CS.hull([k(k(CS.circle(ar, 24)).translate([ax, ay])), k(k(CS.circle(br, 24)).translate([bx, by]))])));
+  }
+  return k(CS.union(L));
+}
+// Silhouette (Einheiten: Kinn y = 0, Geweihspitzen y ≈ 100) — rechte Hälfte, gespiegelt
+const _HID_FORM = {
+  tupfen: { kopf: [[0, 7, 6.5], [-11, 33, 9.5], [11, 33, 9.5]], ohr: [25, 36, 10, 4.6, 18],
+    stange: [[7, 40, 3.4], [16, 51, 3.1], [28, 57, 2.9], [38, 65, 2.7], [44, 77, 2.4], [45, 89, 2.0], [41, 99, 1.6]],
+    enden: [[[16, 51, 3.0], [13, 63, 2.0], [12, 70, 1.5]], [[28, 57, 2.8], [25, 72, 1.9], [23, 81, 1.5]], [[38, 65, 2.6], [34, 80, 1.8], [32, 89, 1.4]], [[44, 77, 2.3], [52, 85, 1.5]]] },
+  schlicht: { kopf: [[0, 7, 7], [-12, 32, 10.5], [12, 32, 10.5]], ohr: [27, 35, 11, 5, 12],
+    stange: [[7, 40, 3.6], [14, 50, 3.3], [26, 55, 3.0], [37, 62, 2.8], [45, 72, 2.5], [48, 84, 2.1], [46, 95, 1.7]],
+    enden: [[[14, 50, 3.2], [9, 60, 2.1], [8, 67, 1.6]], [[26, 55, 2.9], [23, 70, 2.0], [25, 80, 1.5]], [[37, 62, 2.7], [35, 78, 1.9], [38, 88, 1.5]], [[45, 72, 2.4], [53, 80, 1.6]]] }
+};
+function _hidSilhouette(CS, k, form) {
+  const F = _HID_FORM[form] || _HID_FORM.tupfen, T = [];
+  T.push(k(CS.hull(F.kopf.map(([x, y, r]) => k(k(CS.circle(r, 32)).translate([x, y]))))));
+  for (const sx of [-1, 1]) {
+    const [ox, oy, rx, ry, wink] = F.ohr;
+    T.push(k(k(k(k(CS.circle(1, 32)).scale([rx, ry])).rotate(sx * wink)).translate([sx * ox, oy])));
+    const sp = pts => pts.map(([x, y, r]) => [sx * x, y, r]);
+    T.push(_hidStrich(CS, k, sp(F.stange)));
+    for (const e of F.enden) T.push(_hidStrich(CS, k, sp(e)));
+  }
+  return k(CS.union(T));
+}
+function _hidPip(polys, x, y) {                                              // gerade/ungerade über alle Ringe
+  let inn = false;
+  for (const P of polys) for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+    const [xi, yi] = P[i], [xj, yj] = P[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inn = !inn;
+  }
+  return inn;
+}
+function _hidBuild(w, p, q) {
+  const M = w.Manifold, CS = w.CrossSection, tmp = [], k = x => { tmp.push(x); return x; };
+  const fein = q !== 'vorschau';
+  try {
+    const info = {};
+    // ── Deckel-Aufsatz ──
+    const sch = Math.max(0, p.schuerze), Ri = p.deckelD / 2 + p.spiel, Ra = p.deckelD / 2 + p.rand, H = sch + p.platte, f = Math.min(p.fase, p.platte - 1, Ra - Ri - 0.4);
+    const seg = fein ? 128 : 64;
+    let deckel = k(M.union([k(M.cylinder(H - f, Ra, Ra, seg)), k(k(M.cylinder(f, Ra, Ra - f, seg)).translate([0, 0, H - f]))]));
+    if (sch > 0) deckel = k(deckel.subtract(k(k(M.cylinder(sch + 0.01, Ri, Ri, seg)).translate([0, 0, -0.01]))));
+    const plast = p.modell === 'plastisch', zap = p.platte - 0.3;
+    const aufn = plast ? [p.sockel + 2 * p.spiel, p.sockel + 2 * p.spiel] : [p.zapfenB + 2 * p.spiel, p.dicke + 2 * p.spiel];
+    deckel = k(deckel.subtract(k(M.cube([aufn[0], aufn[1], p.platte + 0.02], true).translate([0, 0, H - p.platte / 2]))));
+    deckel = k(deckel.rotate([-90, 0, 0]));                                  // Z oben → Y oben
+    info.deckelD = 2 * Ra; info.deckelH = H; info.innen = sch > 0 ? 2 * Ri : 0;
+    // ── Topper (Ursprung = Deckeloberkante) ──
+    const out = { info };
+    if (!plast) {
+      let sil = _hidSilhouette(CS, k, p.modell);
+      const b0 = sil.bounds(), s = p.groesse / (b0.max[1] - b0.min[1]);
+      sil = k(k(sil.scale([s, s])).translate([0, p.rand2 - b0.min[1] * s]));   // Kinn des weißen Rands auf dem Deckel
+      const ring0 = k(k(sil.offset(p.rand2, 'Round', 2, 24)).subtract(sil));
+      const zapfen = k(CS.square([p.zapfenB, zap + p.rand2 + 3], false).translate([-p.zapfenB / 2, -zap]));
+      const fuss = k(CS.square([p.zapfenB + 5, p.rand2 + 1.5], false).translate([-(p.zapfenB + 5) / 2, 0]));   // Schulter: liegt auf dem Deckel auf
+      const halter = k(zapfen.add(fuss));
+      let schwarz = k(sil.add(halter)), weiss = k(ring0.subtract(halter));
+      if (p.modell === 'tupfen' && p.tupfen > 0) {
+        const r = p.tupfenR, a = p.tupfen, inn = k(sil.offset(-(r + 1.1), 'Round', 2, 16)), polys = inn.toPolygons(), bb = inn.bounds(), D = [];
+        for (let j = 0, y = bb.min[1]; y <= bb.max[1]; y += a * 0.866, j++) for (let x = (j % 2 ? a / 2 : 0) - Math.ceil(-bb.min[0] / a) * a; x <= bb.max[0]; x += a)
+          if (y > p.rand2 + zap * 0 + 2 && _hidPip(polys, x, y)) D.push(k(k(CS.circle(r, 16)).translate([x, y])));
+        if (D.length) { const dots = k(CS.union(D)); schwarz = k(schwarz.subtract(dots)); weiss = k(weiss.add(dots)); }
+        info.tupfen = D.length;
+      }
+      const ex = cs => k(k(cs.extrude(p.dicke)).translate([0, 0, -p.dicke / 2]));
+      out.schwarz = ex(schwarz); out.weiss = ex(weiss);
+      const bb = out.schwarz.boundingBox(), bw = out.weiss.boundingBox();
+      info.breite = Math.max(bb.max[0], bw.max[0]) - Math.min(bb.min[0], bw.min[0]); info.hoehe = Math.max(bb.max[1], bw.max[1]);
+    } else {
+      // plastischer Kopf: Einheiten wie Skizze (Höhe ≈ 88), Sockel mm-genau
+      const s = p.groesse / 88, so = p.sockel / 2, sh = 6;
+      const P = (x, y, z) => [x * s, y * s, z * s], C = (a, b, ra, rb) => [P(...a), P(...b), ra * s, rb * s];
+      const kegel = [C([0, 6, -1], [0, 26, -1], 5.5, 7), C([0, 28, 3], [0, 15, 8], 7, 4.6)];
+      for (const sx of [-1, 1]) {
+        kegel.push(C([sx * 8, 33, -1], [sx * 19, 42, -1], 3.6, 1.3));       // Ohren 45° schräg nach oben (stützfrei)
+        const st = [[6, 37, -2, 2.6], [12, 48, -2, 2.4], [20, 56, -3, 2.2], [26, 66, -3, 2.0], [28, 76, -2, 1.8], [25, 86, -1, 1.4]];
+        for (let i = 0; i + 1 < st.length; i++) kegel.push(C([sx * st[i][0], st[i][1], st[i][2]], [sx * st[i + 1][0], st[i + 1][1], st[i + 1][2]], st[i][3], st[i + 1][3]));
+        for (const [a, b] of [[[12, 48, -2], [9, 59, -1]], [[20, 56, -3], [16, 68, -2]], [[26, 66, -3], [21, 78, -2]]]) kegel.push(C([sx * a[0], a[1], a[2]], [sx * b[0], b[1], b[2]], 1.9, 1.1));
+      }
+      const elli = [[P(0, 30, 0), [10 * s, 11 * s, 9 * s]], [P(0, 14, 8.5), [4.6 * s, 3.6 * s, 3.8 * s]]];
+      const kw = 2.2 * s;
+      const fKopf = (x, y, z) => {
+        let d = 1e9;
+        for (const [c, r] of elli) d = _lgfSmin(d, _dklEll(x, y, z, c, r), kw);
+        for (const [a, b, ra, rb] of kegel) d = _lgfSmin(d, _dklCone(x, y, z, a, b, ra, rb), kw);
+        const zb = Math.max(Math.abs(x) - so, Math.abs(z) - so, -zap - y, y - 0.5), sb = so + 1.5;    // Zapfen [−zap, 0] in der Aufnahme
+        const box = Math.min(zb, Math.max(Math.abs(x) - sb, Math.abs(z) - sb, 0.15 - y, y - sh));    // Sockel breiter = Anschlag (0,15 mm Luft gegen Rasterrundung)
+        return Math.min(Math.max(d, -y + 0.5), box);                           // Kopf nur oberhalb des Sockels (kein Einsinken in den Zapfen)
+      };
+      const edge = fein ? 0.45 : 1.0, bbk = [-32 * s, -zap, -14 * s, 32 * s, 90 * s, 16 * s];
+      out.kopf = k(_lgfLevel(w, fKopf, bbk, edge));
+      const bb = out.kopf.boundingBox(); info.breite = bb.max[0] - bb.min[0]; info.hoehe = bb.max[1]; info.teile = out.kopf.decompose().length;
+    }
+    out.deckel = deckel;
+    for (const key of ['deckel', 'schwarz', 'weiss', 'kopf']) if (out[key]) out[key] = out[key].translate([0, 0, 0]);   // aus der Aufräumliste lösen
+    out.H = H; out.zap = zap;
+    return out;
+  } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
+}
+const _hidP = { modell: 'tupfen', deckelD: 70, schuerze: 8, platte: 5, rand: 2.4, spiel: 0.3, fase: 1.5, groesse: 75, dicke: 4, rand2: 1.6, zapfenB: 10, tupfen: 5, tupfenR: 0.8, sockel: 14,
+  farbeDeckel: '#1c1c1c', farbeSchwarz: '#1c1c1c', farbeWeiss: '#f2eee6' };
+const _HID_DEF = { ..._hidP };
+let _hidRT = null;
+function _hidTeile(r, p, einbau){                                            // [[Manifold, Farbe, Name]] – Einbaulage oder Drucklage
+  const T = [];
+  if (einbau) {
+    T.push([r.deckel, p.farbeDeckel, 'Hirsch-Deckel']);
+    if (r.schwarz) T.push([r.schwarz.translate([0, r.H, 0]), p.farbeSchwarz, 'Hirsch schwarz']);
+    if (r.weiss) T.push([r.weiss.translate([0, r.H, 0]), p.farbeWeiss, p.modell === 'tupfen' ? 'Hirsch weiß (Rand + Tupfen)' : 'Hirsch weiß (Rand)']);
+    if (r.kopf) T.push([r.kopf.translate([0, r.H, 0]), p.farbeWeiss, 'Hirschkopf']);
+    return T;
+  }
+  const Ra = r.info.deckelD / 2;
+  const zwei = (m, a, b) => { const x = a(m), y = b(x); x.delete(); return y; };   // Zwischenergebnis freigeben
+  T.push([zwei(r.deckel, m => m.rotate([180, 0, 0]), m => m.translate([0, r.H, 0])), p.farbeDeckel, 'Hirsch-Deckel']);   // Oberseite aufs Bett, Schürze nach oben
+  const flach = m => zwei(m, x => x.rotate([-90, 0, 0]), x => x.translate([0, p.dicke / 2, 0]));   // Silhouette flach liegend
+  if (r.schwarz) {
+    const s = flach(r.schwarz), wz = flach(r.weiss), bb = s.boundingBox(), dx = Ra + 8 - Math.min(bb.min[0], wz.boundingBox().min[0]), dz = -(bb.min[2] + bb.max[2]) / 2;
+    T.push([s.translate([dx, 0, dz]), p.farbeSchwarz, 'Hirsch schwarz']); T.push([wz.translate([dx, 0, dz]), p.farbeWeiss, p.modell === 'tupfen' ? 'Hirsch weiß (Rand + Tupfen)' : 'Hirsch weiß (Rand)']);
+    s.delete(); wz.delete();
+  }
+  if (r.kopf) { const bb = r.kopf.boundingBox(); T.push([r.kopf.translate([Ra + 8 - bb.min[0], -bb.min[1], 0]), p.farbeWeiss, 'Hirschkopf']); }   // stehend auf dem Sockel
+  return T;
+}
+function _hidFrei(r){ for (const k of ['deckel', 'schwarz', 'weiss', 'kopf']) if (r[k]) { try { r[k].delete(); } catch (e) {} } }
+function _hidPreviewGeo(){
+  if (!_mfWasm) throw new Error('Manifold lädt noch');
+  const r = _hidBuild(_mfWasm, _hidP, 'vorschau'); _hidP._i = r.info; setTimeout(_hidSync, 0);
+  let n = 0, geos;
+  try { geos = _hidTeile(r, _hidP, true).map(([m, c], i) => { const g = _mfToGeo(m).toNonIndexed(); if (i) m.delete(); n += g.attributes.position.count; return [g, c]; }); }
+  finally { _hidFrei(r); }
+  const pos = new Float32Array(n * 3), col = new Float32Array(n * 3); let o = 0;
+  for (const [g, hex] of geos) { const a = g.attributes.position.array, c = new THREE.Color(hex === '#1c1c1c' ? '#3a3a3a' : hex); pos.set(a, o * 3);
+    for (let i = 0; i < a.length / 3; i++) { col[(o + i) * 3] = c.r; col[(o + i) * 3 + 1] = c.g; col[(o + i) * 3 + 2] = c.b; } o += a.length / 3; g.dispose(); }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.scale(0.1, 0.1, 0.1); geo.computeVertexNormals(); return geo;
+}
+function _hidOpen(){ document.getElementById('hid-modal').classList.add('show'); _hidSync(); _mfInit().then(_hidBoot).catch(() => notify('Rechenkern konnte nicht geladen werden', 'w')); }
+function _hidBoot(){ const m = document.getElementById('hid-modal'); if (!m || !m.classList.contains('show')) return;
+  if (!_gpv['hid']) _gpvInit('hid', () => _hidPreviewGeo()); else { _gpvUpdate('hid'); if (!_gpv['hid'].anim) _gpvLoop('hid'); } }
+function _hidClose(){ document.getElementById('hid-modal').classList.remove('show'); _gpvStop('hid'); }
+function _hidRepaint(){ if (_hidRT) clearTimeout(_hidRT); _hidRT = setTimeout(() => { _hidRT = null; if (!_mfWasm) return; if (_gpv['hid']) _gpvUpdate('hid'); else _hidBoot(); }, 350); }
+function _hidSet(k, v){ _hidP[k] = parseFloat(v); _hidSync(); _hidRepaint(); }
+function _hidModell(m){ _hidP.modell = m; _hidSync(); _hidRepaint(); }
+function _hidReset(){ Object.assign(_hidP, _HID_DEF); _hidSync(); _hidRepaint(); }
+function _hidSync(){
+  for (const k of ['deckelD', 'schuerze', 'platte', 'groesse', 'dicke', 'tupfen', 'spiel']) { const s = document.getElementById('hid-' + k), t = document.getElementById('hidv-' + k); if (s) s.value = _hidP[k]; if (t) t.textContent = String(_hidP[k]).replace('.', ','); }
+  for (const m of ['tupfen', 'plastisch', 'schlicht']) { const b = document.getElementById('hid-m-' + m); if (b) b.classList.toggle('on', _hidP.modell === m); }
+  const flach = _hidP.modell !== 'plastisch';
+  for (const id of ['hid-row-dicke', 'hid-row-tupfen']) { const e = document.getElementById(id); if (e) e.style.opacity = (id === 'hid-row-tupfen' ? _hidP.modell === 'tupfen' : flach) ? '1' : '0.45'; }
+  const el = document.getElementById('hid-info'); if (!el) return; const I = _hidP._i, z = x => String(Math.round(x * 10) / 10).replace('.', ',');
+  el.innerHTML = (I ? `Aufsatz Ø ${z(I.deckelD)} × ${z(I.deckelH)} mm` + (I.innen ? ` (innen Ø ${z(I.innen)} – passt über den Deckel)` : ' (flache Scheibe)') + ` · Hirsch ${z(I.breite)} × ${z(I.hoehe)} mm` + (I.tupfen ? `, ${I.tupfen} Tupfen` : '') + '.' : '') +
+    '<br><b>Anbringen:</b> Originaldeckel messen (Außen-Ø), Aufsatz mit Sekunden- oder 2K-Kleber aufkleben, Hirsch einstecken.' +
+    '<br><b>Druck:</b> Aufsatz mit der Oberseite aufs Bett' + (flach ? ', Hirsch flach liegend – schwarz und weiß als zwei Farben (Rand' + (_hidP.modell === 'tupfen' ? ' + Tupfen' : '') + ').' : ', Hirschkopf stehend auf dem Sockel – Ohren und Geweih stützfrei, unter der Nase ggf. Stütze.');
+}
+async function _hidCreate(){
+  const p = { ..._hidP }; delete p._i;
+  _progressShow('Hirsch-Deckel wird gebaut…'); _progressSet(10); _progressCreep(90, 0.5);
+  try {
+    const w = await _mfInit(); await new Promise(res => setTimeout(res, 30));
+    const r = _hidBuild(w, p, 'fein'); let T;
+    try { T = _hidTeile(r, p, false); } finally { _hidFrei(r); }
+    saveUndo();
+    typeCounts['hirschdeckel'] = (typeCounts['hirschdeckel'] || 0) + 1;
+    const nr = typeCounts['hirschdeckel'], meshes = [];
+    for (const [m, farbe, name] of T) {
+      const geo = _mfToGeo(m).toNonIndexed(); m.delete(); geo.scale(0.1, 0.1, 0.1); _creaseNormals(geo, 50);
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(farbe), roughness: 0.6, metalness: 0.02, side: THREE.DoubleSide }));
+      mesh.castShadow = mesh.receiveShadow = true;
+      mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: name + ' #' + nr, color: farbe, isHole: false, fillet: 0, chamfer: 0, displacementPattern: 'keine', hirschParams: p, edgeAngle: 50 };
+      scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh); meshes.push(mesh);
+    }
+    selectObjs(meshes); updateTree(); fitToObjects(meshes);
+    _progressDone(); notify(`🦌 Hirsch-Deckel erstellt ✓ ${meshes.length} Teile in Drucklage – ohne Stützen` + (p.modell === 'plastisch' ? ' (Nase ggf. stützen)' : ''), 'ok'); _hidClose();
+  } catch (e) { console.error('Hirsch-Deckel:', e); _progressHide(); notify('Hirsch-Deckel fehlgeschlagen: ' + (e && e.message || e), 'w'); }
+}
+
 // ═══ ALIGN / MIRROR ═══════════════════════════════════════════════════
 function alignTool() {
   if (!selectedObjs.length) { notify('Objekt wählen', 'w'); return; }
@@ -52123,6 +52339,7 @@ const _STARTERS = [
   {i:'🧑‍🎄',t:'Zipfel-Wichtel',d:'Hoher Wichtel (Christmas Gnome): Holzrillen-Körper, rote Zipfelmütze mit weißem Umschlag und Bommel, Bart vorn, Holznase – Teile je Farbe',run:()=>_zwiOpen()},
   {i:'🧱',t:'Kamin-Adventskalender',d:'Kamin mit nummerierten Schiebe-Steinen 1–24: Stein rausziehen, der Inhalt fällt in die Feuerstelle; Blindsteine für freie Schlitze, stützfrei druckbar',run:()=>_kakOpen()},
   {i:'🎅',t:'Weihnachtsmann',d:'Sitzender Weihnachtsmann mit Mütze, V-Bart, Gesichtsband, Armen und Stiefeln – vier Farbteile',run:()=>_wmnOpen()},
+  {i:'🦌',t:'Hirsch-Deckel',d:'Aufsatz für den Schraubdeckel eines Glases (aufkleben) mit Hirsch-Topper: Silhouette mit Tupfen, schlicht oder plastischer Hirschkopf',run:()=>_hidOpen()},
   {i:'✨',t:'Glücks-Aufladestation',d:'Leuchtender hohler Stern mit eingraviertem Text („Glücks-Aufladestation – Bitte hier berühren“) auf Sockel mit LED-Teelicht und Perlenrand',run:()=>_glsOpen()},
   {i:'🔠',t:'Schrift-Aufsteller',d:'Dicke Blockschrift (WEIH/NACH/TEN, FEST, XMAS) gleich breit gestapelt, Schreibschrift-Wort obendrauf in zweiter Farbe – ohne Stützen',run:()=>_swaOpen()},
   {i:'🏠',t:'Lichthaus',d:'Satteldach-Haus mit Lichtschlitzen oder Fenstern, Bodenplatte mit LED-Teelicht-Halter – ohne Stützen',run:()=>_lhsOpen()},
@@ -52309,7 +52526,7 @@ function _maybeShowStarter(){
 // 🎄 Rubrik Weihnachten (Volker 9.11.26: „solche Sachen in eine Rubrik Weihnachten schieben, da kommt
 // noch einiges hinterher“). Neue Weihnachts-Generatoren NUR hier eintragen — die Liste speist das
 // Thema auf der Generatoren-Seite und den Block oben im Generator-Menü.
-const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Stern-Anhänger', 'Schneemann', 'Kugelkranz', 'Spiral-Baum', 'Wichtel-Türecke', 'Zipfel-Wichtel', 'Weihnachtsmann', 'Kamin-Adventskalender', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
+const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Stern-Anhänger', 'Schneemann', 'Kugelkranz', 'Spiral-Baum', 'Wichtel-Türecke', 'Zipfel-Wichtel', 'Weihnachtsmann', 'Kamin-Adventskalender', 'Hirsch-Deckel', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
   'Dackel-Kerzenhalter', 'Mops-Kerzenhalter', 'Schwein-Kerzenhalter', 'Spaniel-Kerzenhalter', 'Islandpferd-Kerzenhalter'];
 const _GEN_THEMEN = [
   ['🎄 Weihnachten', _GEN_WEIHNACHTEN],
@@ -87239,8 +87456,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.400';
+const VOLME3D_VERSION = '1.18.401';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.401', date:'2026-11-13', changes:[
+    ['🦌','<b>Neu: Hirsch-Deckel</b> (Weihnachten) – Aufsatz zum Aufkleben auf den Schraubdeckel eines Glases (Deckel-Ø, Schürze, Platte einstellbar) mit Steckaufnahme und drei Hirsch-Toppern: Silhouette mit weißem Rand und Tupfen, schlichte Silhouette oder plastischer Hirschkopf auf Sockel. Teile je Farbe, alles in Drucklage ohne Stützen.']
+  ]},
   { version:'1.18.400', date:'2026-11-13', changes:[
     ['🧱','<b>Neu: Kamin-Adventskalender</b> (Weihnachten) – Feuerstelle, Turm mit Schlitzen im Raster und abnehmbare Kaminkrone; jeder Tag ein nummerierter Schiebe-Stein, freie Schlitze mit Blindsteinen. Turm wird bei kleinem Bauraum automatisch mit Steckfalz geteilt; Export aller Teile in Druckorientierung (STL) und als 3MF mit Druckplatten'],
   ]},
@@ -100060,6 +100280,7 @@ const CMDK = [
   {i:'🧑‍🎄',g:'Generator',t:'Zipfel-Wichtel',k:'wichtel gnome christmas zipfelmütze bart holz rillen weihnachten figur skandinavisch tomte',run:()=>_zwiOpen()},
   {i:'🧱',g:'Generator',t:'Kamin-Adventskalender',k:'advent adventskalender kalender kamin schornstein feuerstelle schieber steine türchen weihnachten',run:()=>_kakOpen()},
   {i:'🎅',g:'Generator',t:'Weihnachtsmann',k:'weihnachtsmann santa claus nikolaus figur sitzend bart mütze weihnachten',run:()=>_wmnOpen()},
+  {i:'🦌',g:'Generator',t:'Hirsch-Deckel',k:'hirsch deckel glas glasdeckel topper geweih platzhirsch kerze weihnachten aufsatz tupfen',run:()=>_hidOpen()},
   {i:'✨',g:'Generator',t:'Glücks-Aufladestation',k:'glück glücks aufladestation stern licht leuchte teelicht led gravur geschenk deko bitte hier berühren',run:()=>_glsOpen()},
   {i:'🔠',g:'Generator',t:'Schrift-Aufsteller',k:'schrift aufsteller schriftzug frohe weihnachten frohes fest merry xmas blockschrift schreibschrift text deko',run:()=>_swaOpen()},
   {i:'🏠',g:'Generator',t:'Lichthaus',k:'haus lichthaus häuschen windlicht led teelicht lichterkette weihnachten advent winter deko schlitze fenster satteldach giebel',run:()=>_lhsOpen()},
