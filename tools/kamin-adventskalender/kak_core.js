@@ -1,11 +1,14 @@
-// Kamin-Adventskalender — Rechenkern 1:1 nach v3d_kamin_adventskalender.scad (Volme 3D Akademie).
-// Manifold, mm, OpenSCAD-Koordinaten (Z oben). Namen und Formeln wie in der .scad, damit jede Zeile vergleichbar bleibt.
+// Kamin-Adventskalender — Rechenkern. Feuerstelle, Trichter und Krone wie v3d_kamin_adventskalender.scad;
+// Turm und Schieber nach Volkers Foto (13.11.): Schlitze links UND rechts auf jeder Etage, Tages-Schieber mit runder
+// Griffscheibe + Zahl abwechselnd von rechts (ungerade) und links (gerade), freie Schlitze mit Blindstopfen.
+// Fachhöhe = beim Befüllen wählen (den nächsten Tag einfach ein paar Etagen höher einschieben).
+// Manifold, mm, OpenSCAD-Koordinaten (Z oben).
 // Läuft im Browser (App) und in Node (Test): kakBuild(wasm, p, textFn) — textFn(CS, keep, txt, font, h, cx, yb, maxW) → {cs}
 // (App: _lttText); ohne textFn (Node) entstehen keine Zahlen/Namen.
 const KAK_DEF = {
   tage: 24,
-  /* Schacht */ in_w: 96, in_d: 96, wall: 4, gd: 2, pitch: 14, slots: 30, margin_b: 9, margin_t: 12,
-  /* Schieber */ pt: 2.4, slot_h: 3.0, clr: 0.3, tab_d: 5, tab_gap: 1.2, num_h: 0.6, blank_len: 18,
+  /* Schacht */ in_w: 96, in_d: 96, wall: 4, gd: 1.6, pitch: 12, slots: 38, margin_b: 9, margin_t: 24,
+  /* Schieber */ pt: 2.4, slot_h: 3.0, clr: 0.3, num_h: 0.6, griff_r: 10.5, griff_t: 3, hals: 2.5, lippe: 1.2,
   /* Feuerstelle */ base_w: 176, base_d: 136, base_h: 112, open_w: 112, open_h: 74, open_ch: 20, floor_t: 4, ramp_h: 12, mantel_t: 10, mantel_o: 8,
   name_txt: '', name_size: 8,
   /* Optik */ joint_w: 1.2, joint_d: 0.8, font: 'helvetiker_bold',
@@ -23,9 +26,9 @@ function kakMasse(p) {
   const out_w = p.in_w + 2 * p.wall, out_d = p.in_d + 2 * p.wall;
   const tower_h = p.margin_b + (p.slots - 1) * p.pitch + p.slot_h + p.margin_t;
   const slot_z = i => p.margin_b + i * p.pitch;
-  const tab_h = p.pitch - p.tab_gap;
+  const tab_h = 2 * p.griff_r;                                              // Höhe der Griffscheibe
   const tower_x = (p.base_w - out_w) / 2, tower_y = (p.base_d - out_d) / 2, sock = 5;
-  const plate_w = p.in_w + 2 * p.gd - 2 * p.clr, plate_l = p.wall + p.in_d + p.gd - p.clr;
+  const plate_w = p.in_d + 2 * p.gd - 2 * p.clr, plate_l = p.wall + p.in_w - p.clr;   // Schieber quer (Y) × lang (X, durch Wand + Schacht)
   const tab_z0 = (p.slot_h - p.pt) / 2;
   const fb_w = p.open_w + 18, fb_d = p.base_d - 2 * 8, fb_top = p.floor_t + p.open_h;
   const cap_t = 8;
@@ -69,37 +72,31 @@ function kakBuild(w, pIn, textFn, opt) {
   const fein = !(opt && opt.vorschau);
   try {
     const { out_w, out_d, tower_h, slot_z, tab_h, tower_x, tower_y, sock, plate_w, plate_l, tab_z0, fb_w, fb_d, fb_top, cap_t } = m;
-    // ── TURM ──
+    // ── TURM: Schlitze links + rechts auf jeder Etage (durch beide Seitenwände), Führungsnut vorn/hinten, Mauerfugen vorn/hinten ──
     const tower = () => {
       const cut = [cube([p.in_w, p.in_d, tower_h + 2 * eps], [p.wall, p.wall, -eps])];
-      for (let i = 0; i < p.slots; i++) cut.push(cube([p.in_w + 2 * p.gd, p.wall + p.in_d + p.gd + eps, p.slot_h], [p.wall - p.gd, -eps, slot_z(i)]));
-      for (let i = 0; i <= p.slots - 2; i++) {
-        const z = slot_z(i) + p.slot_h / 2 + p.pitch / 2 - p.joint_w / 2;
-        for (const x of [-eps, out_w - p.joint_d]) cut.push(cube([p.joint_d + eps, out_d + 2 * eps, p.joint_w], [x, -eps, z]));
-        cut.push(cube([out_w + 2 * eps, p.joint_d + eps, p.joint_w], [-eps, out_d - p.joint_d, z]));
-      }
-      for (let i = 0; i <= p.slots - 2; i += 2) {
-        const z0 = slot_z(i) + p.slot_h / 2 + p.pitch / 2;
-        for (let kk = 0; kk <= 1; kk++) {
-          const zz = z0 + kk * p.pitch, off = kk === 0 ? 0.5 : 0.25;
-          for (const x of [-eps, out_w - p.joint_d]) for (const f of [off, off + 0.5]) if (f < 1) cut.push(cube([p.joint_d + eps, p.joint_w, p.pitch], [x, out_d * f - p.joint_w / 2, zz]));
-          for (const f of [off, off + 0.5]) if (f < 1) cut.push(cube([p.joint_w, p.joint_d + eps, p.pitch], [out_w * f - p.joint_w / 2, out_d - p.joint_d, zz]));
-        }
+      for (let i = 0; i < p.slots; i++) cut.push(cube([out_w + 2, p.in_d + 2 * p.gd, p.slot_h], [-1, p.wall - p.gd, slot_z(i)]));
+      const reihe = 2 * p.pitch, stein = 36;                                 // Ziegel: 2 Etagen hoch
+      for (let r = 0; ; r++) {
+        const z = slot_z(0) + p.slot_h / 2 + p.pitch / 2 + r * reihe; if (z + reihe > tower_h - 3) break;
+        for (const y of [-eps, out_d - p.joint_d]) cut.push(cube([out_w + 2 * eps, p.joint_d + eps, p.joint_w], [-eps, y, z - p.joint_w / 2]));
+        if (z + reihe + reihe > tower_h - 3) continue;
+        for (let x = (r % 2 ? stein / 2 : stein) ; x < out_w - 4; x += stein) for (const y of [-eps, out_d - p.joint_d]) cut.push(cube([p.joint_w, p.joint_d + eps, reihe], [x - p.joint_w / 2, y, z]));
       }
       return k(cube([out_w, out_d, tower_h]).subtract(U(cut)));
     };
-    // ── TAGESSTEIN / SCHIEBER ──
-    const stone_tab_shape = () => { const c = 0.8; return hull([cube([out_w - 1 - 2 * c, p.tab_d, tab_h], [0.5 + c, -p.tab_d, 0]), cube([out_w - 1, p.tab_d - c, tab_h - 2 * c], [0.5, -p.tab_d + c, c])]); };
-    const jxOf = d => (d % 2 === 1) ? out_w * 0.28 : out_w * 0.72;
+    // ── TAGES-SCHIEBER (links eingeschoben; rechts = um 180° gedreht, gleiches Teil): Platte + Hals + Griffscheibe ──
+    // Lage: z = 0 Schlitzunterkante, x = 0 Außenfläche der linken Wand
+    const yM = out_d / 2;
+    const scheibe = () => k(k(k(M.cylinder(p.griff_t, p.griff_r, p.griff_r, fein ? 64 : 32)).rotate([0, 90, 0])).translate([-p.hals - p.griff_t, yM, tab_z0 + p.griff_r]));
     const stone_body = (d, with_plate) => {
-      const plate = cube([plate_w, (with_plate ? plate_l + p.tab_d - eps : p.blank_len + p.tab_d), p.pt], [p.wall - p.gd + p.clr, -p.tab_d + eps, (p.slot_h - p.pt) / 2]);
-      const jx = jxOf(d);
-      let b = k(U([k(stone_tab_shape().translate([0, 0, tab_z0])), plate]).subtract(cube([p.joint_w, p.joint_d + eps, tab_h + 2 * eps], [jx - p.joint_w / 2, -p.tab_d - eps, tab_z0 - eps])));
-      if (!with_plate) {                                                     // Klemmnoppen am Blindstein
-        const n = []; for (const x of [p.wall - p.gd + p.clr + 6, p.wall - p.gd + p.clr + plate_w - 6]) n.push(k(k(k(M.sphere(0.7, fein ? 24 : 12)).scale([1, 1, 0.5])).translate([x, p.blank_len * 0.6, (p.slot_h - p.pt) / 2 + p.pt])));
-        b = U([b, ...n]);
+      if (!with_plate) {                                                     // Blindstopfen: Platte in der Wand + Abdecklippe außen + Klemmnoppen
+        const y0 = p.wall - p.gd + p.clr, b = [cube([p.wall - p.clr + p.lippe / 2, plate_w, p.pt], [-p.lippe / 2, y0, tab_z0]), cube([p.lippe, p.in_d + 2 * p.gd + 2, p.slot_h + 1 - tab_z0], [-p.lippe, p.wall - p.gd - 1, tab_z0])];   // Lippe endet an der Wandfläche
+        for (const y of [y0 + 8, y0 + plate_w - 8]) b.push(k(k(k(M.sphere(0.7, fein ? 24 : 12)).scale([1, 1, 0.5])).translate([(p.wall - p.clr) / 2, y, tab_z0 + p.pt])));
+        return U(b);
       }
-      return b;
+      const hb = Math.min(p.griff_r * 1.2, plate_w);
+      return U([cube([plate_l, plate_w, p.pt], [0, p.wall - p.gd + p.clr, tab_z0]), cube([p.hals + 2 * eps, hb, p.pt], [-p.hals - eps, yM - hb / 2, tab_z0]), scheibe()]);
     };
     // Text mittig an (cx, cy) in der XY-Ebene; Höhe = Ziffern-/Großbuchstabenhöhe (OpenSCAD size ≈ Versalhöhe)
     const textMitte = (txt, size, cx, cy) => {
@@ -110,15 +107,14 @@ function kakBuild(w, pIn, textFn, opt) {
       const t = k(r.cs.scale([s, s])), b = t.bounds();
       return k(t.translate([cx - (b.min[0] + b.max[0]) / 2, cy - (rb.min[1] + rb.max[1]) / 2 * s]));
     };
+    // Zahl erhaben auf der Außenseite der Scheibe, lesbar von links: Text-x → −Y, Text-y → +Z, Extrusion → −X
     const stone_number = d => {
-      const jx = jxOf(d), cx = (d % 2 === 1) ? (jx + out_w) / 2 : jx / 2;
-      const cs = textMitte(String(d), tab_h * 0.62, 0, 0); if (!cs) return null;
-      // translate([cx, -tab_d+eps, tab_z0+tab_h/2]) rotate([90,0,0]) linear_extrude(num_h+eps): (x,y,z) → (x, −z, y)
-      return k(k(k(cs.extrude(p.num_h + eps)).rotate([90, 0, 0])).translate([cx, -p.tab_d + eps, tab_z0 + tab_h / 2]));
+      const txt = String(d), cs = textMitte(txt, p.griff_r * (txt.length > 1 ? 0.85 : 1.05), 0, 0); if (!cs) return null;
+      return k(k(k(cs.extrude(p.num_h + eps)).rotate([90, 0, -90])).translate([-p.hals - p.griff_t + eps, yM, tab_z0 + p.griff_r]));
     };
-    const stone_print = d => k(stone_body(d, true).translate([0, 0, -(p.slot_h - p.pt) / 2]));
-    const number_print = d => { const n = stone_number(d); return n ? k(n.translate([0, 0, -(p.slot_h - p.pt) / 2])) : null; };
-    const blank_print = () => k(stone_body(0, false).translate([0, 0, -(p.slot_h - p.pt) / 2]));
+    const stone_print = d => k(stone_body(d, true).translate([0, 0, -tab_z0]));
+    const number_print = d => { const n = stone_number(d); return n ? k(n.translate([0, 0, -tab_z0])) : null; };
+    const blank_print = () => k(stone_body(0, false).translate([0, 0, -tab_z0]));
     // ── FEUERSTELLE MIT SIMS ──
     const base_joints = body_h => {
       const row = 14, brick = 36, c = [];

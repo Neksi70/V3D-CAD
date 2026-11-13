@@ -1,11 +1,11 @@
 // Node-Test des Kamin-Kerns (tools/kamin-adventskalender/kak_core.js) gegen die Formeln der .scad:
-// Abnahme-Maße (Turm 104×104×430, Stein 103×106,7×12,8, Feuerstelle 192×147×112), jedes Teil geschlossen
+// Maße (Turm 104×104×480, Schieber mit Griffscheibe, Feuerstelle 192×147×112), jedes Teil geschlossen
 // (Manifold-Status + Kantenprüfung), Kollision Stein/Blindstein ↔ Turm in jedem Schlitz, Krone ↔ Turm,
 // Turm ↔ Feuerstelle, Turm-Teilung (Segmente ≤ Bauhöhe, Falz passt, stützfrei).
 import Module from '/home/v3da/node_modules/manifold-3d/manifold.js';
 import fs from 'fs';
 const w = await Module(); w.setup();
-const K = new Function('module', fs.readFileSync(new URL('../tools/kamin-adventskalender/kak_core.js', import.meta.url), 'utf8') + '; return { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakSegmente, kakBuild };')(undefined);
+const K = new Function('module', fs.readFileSync(new URL('../tools/kamin-adventskalender/kak_core.js', import.meta.url), 'utf8') + '; return { KAK_DEF, KAK_DRUCKER, kakMasse, kakBelegung, kakFalzHoehe, kakSegmente, kakBuild };')(undefined);
 let fail = 0; const ok = (c, m) => { console.log((c ? 'OK   ' : 'FAIL ') + m); if (!c) fail++; };
 const groesse = mf => { const b = mf.boundingBox(); return [0, 1, 2].map(i => +(b.max[i] - b.min[i]).toFixed(2)); };
 const gleich = (a, b, t = 0.05) => a.every((v, i) => Math.abs(v - b[i]) <= t);
@@ -16,35 +16,40 @@ const dicht = mf => { if (mf.status && mf.status() !== 'NoError' && mf.status() 
   for (const v of E.values()) if (v !== 2) return false; return true; };
 const t0 = Date.now();
 const B = K.kakBuild(w, { ...K.KAK_DEF }, null), m = B.m, P = B.p;
-const turm = B.tower(), stein = B.stone_body(1, true), feuer = B.base(), krone = B.cap(), aufsatz = B.cap_top(), blind = B.blank_print();
+const turm = B.tower(), stein = B.stone_body(1, true), feuer = B.base(), krone = B.cap(), aufsatz = B.cap_top(), blind = B.stone_body(0, false);
 console.log('Bauzeit', Date.now() - t0, 'ms');
-ok(gleich(groesse(turm), [104, 104, 430]), 'Turm 104 × 104 × 430: ' + groesse(turm).join(' × '));
-ok(gleich(groesse(stein), [103, 106.7, 12.8]), 'Stein 103 × 106,7 × 12,8: ' + groesse(stein).join(' × '));
+const H = P.margin_b + (P.slots - 1) * P.pitch + P.slot_h + P.margin_t;
+ok(gleich(groesse(turm), [104, 104, H]) && H === 480, `Turm 104 × 104 × ${H} (38 Etagen à 12 mm): ` + groesse(turm).join(' × '));
+const sp = groesse(B.stone_print(1));
+ok(gleich(sp, [P.hals + P.griff_t + P.wall + P.in_w - P.clr, P.in_d + 2 * P.gd - 2 * P.clr, 2 * P.griff_r]), `Tages-Schieber ${sp.join(' × ')} (lang × breit × Scheibe)`);
 ok(gleich(groesse(feuer), [192, 147, 112]), 'Feuerstelle 192 × 147 × 112: ' + groesse(feuer).join(' × '));
-for (const [n, mf] of [['Turm', turm], ['Stein', stein], ['Feuerstelle', feuer], ['Krone', B.cap_print()], ['Aufsatz', aufsatz], ['Blindstein', blind], ['Stein Tag 2', B.stone_print(2)]])
+for (const [n, mf] of [['Turm', turm], ['Schieber', B.stone_print(1)], ['Feuerstelle', feuer], ['Krone', B.cap_print()], ['Aufsatz', aufsatz], ['Blindstopfen', B.blank_print()]])
   ok(dicht(mf) && mf.volume() > 0 && mf.decompose().length === 1, `${n} geschlossen, 1 Stück, ${(mf.volume() / 1000).toFixed(1)} cm³, Genus ${mf.genus()}`);
-// Kollision: Stein / Blindstein in jedem Schlitz (Koordinaten wie im Turm: y = 0 Front, Schlitz-Unterkante = slot_z)
-let maxS = 0, maxB = 0;
-for (let i = 0; i < P.slots; i++) {
-  maxS = Math.max(maxS, w.Manifold.intersection(turm, stein.translate([0, 0, m.slot_z(i)])).volume());
-  maxB = Math.max(maxB, w.Manifold.intersection(turm, B.stone_body(0, false).translate([0, 0, m.slot_z(i)])).volume());
-}
-ok(maxS < 1e-3 && maxB < 1e-3, `Stein und Blindstein in allen ${P.slots} Schlitzen kollisionsfrei (max ${maxS.toExponential(1)} / ${maxB.toExponential(1)} mm³)`);
-// Stein steckt wirklich im Schlitz: 0,3 mm höher stößt an
-ok(w.Manifold.intersection(turm, stein.translate([0, 0, m.slot_z(5) + 0.4])).volume() > 1, 'Stein sitzt satt im Schlitz (0,4 mm höher stößt an)');
-// Blindstein-Noppen klemmen (stoßen leicht an der Schlitzdecke an – gewollt, .scad: „damit er nicht rausrutscht“)
-const klemm = w.Manifold.intersection(turm, B.stone_body(0, false).translate([0, 0, m.slot_z(3)])).volume();
-console.log('   Blindstein-Noppen gegen Schlitzdecke:', klemm.toFixed(4), 'mm³ (Noppen 0,35 hoch, Luft über Platte', ((P.slot_h - P.pt) / 2).toFixed(2), 'mm)');
+// Druckorientierung: alles ab z = 0, Platte unten
+ok([B.stone_print(1), B.blank_print()].every(mf => Math.abs(mf.boundingBox().min[2]) < 1e-6), 'Schieber/Stopfen liegen in Drucklage auf z = 0');
+// Lage im Turm: links = wie gebaut, rechts = 180° um die Turmachse gedreht (gleiches Teil)
+const R = mf => mf.translate([-m.out_w / 2, -m.out_d / 2, 0]).rotate([0, 0, 180]).translate([m.out_w / 2, m.out_d / 2, 0]);
+const an = (mf, i) => mf.translate([0, 0, m.slot_z(i)]), V = (a, b) => w.Manifold.intersection(a, b).volume();
+let mx = 0, mb = 0;
+for (let i = 0; i < P.slots; i++) { for (const mf of [stein, R(stein)]) mx = Math.max(mx, V(turm, an(mf, i))); for (const mf of [blind, R(blind)]) mb = Math.max(mb, V(turm, an(mf, i))); }
+ok(mx < 1e-3, `Schieber links/rechts in allen ${P.slots} Etagen kollisionsfrei mit dem Turm (max ${mx.toExponential(1)} mm³)`);
+ok(mb < 0.05, `Blindstopfen: nur die Klemmnoppen drücken gewollt an die Schlitzdecke (${mb.toFixed(4)} mm³ je Stopfen)`);
+ok(V(turm, an(stein, 5).translate([0, 0, 0.4])) > 1, 'Schieber sitzt satt im Schlitz (0,4 mm höher stößt an)');
+ok(V(an(stein, 7), an(R(blind), 7)) < 1e-3 && V(an(R(stein), 7), an(blind, 7)) < 1e-3, 'Schieber und Stopfen der Gegenseite auf derselben Etage berühren sich nicht');
+ok(V(an(stein, 7), an(blind, 8)) < 1e-3 && V(an(stein, 7), an(stein, 9)) < 1e-3, 'Griffscheibe stößt weder an den Stopfen darüber noch an den Schieber 2 Etagen höher');
+ok(V(an(stein, 7), an(stein, 8)) > 1, 'Gegenprobe: zwei Schieber auf derselben Seite direkt übereinander stoßen an (deshalb abwechselnd links/rechts)');
+ok(V(krone.translate([0, 0, m.tower_h]), an(stein, P.slots - 1)) < 1e-3 && V(krone.translate([0, 0, m.tower_h]), an(R(stein), P.slots - 1)) < 1e-3, 'Griffscheibe in der obersten Etage stößt nicht an die Krone');
+const amTurm = mf => mf.translate([m.tower_x, m.tower_y, P.base_h - m.sock]);
+ok(V(feuer, amTurm(an(stein, 0))) < 1e-3 && V(feuer, amTurm(an(R(stein), 0))) < 1e-3, 'Unterste Griffscheiben stoßen nicht an den Sims');
 // Krone ↔ Turm (Krone sitzt bei z = tower_h), Turm ↔ Feuerstelle (Turm steht bei z = base_h − sock)
 ok(w.Manifold.intersection(turm, krone.translate([0, 0, m.tower_h])).volume() < 1e-3, 'Kronen-Steckrand kollisionsfrei im Turm');
 ok(w.Manifold.intersection(feuer, turm.translate([m.tower_x, m.tower_y, P.base_h - m.sock])).volume() < 1e-3, 'Turm steht kollisionsfrei in der Sims-Aufnahme');
 ok(w.Manifold.intersection(feuer, turm.translate([m.tower_x, m.tower_y, P.base_h - m.sock - 0.1])).volume() > 1, 'Turm steht auf dem Boden der Aufnahme (0,1 mm tiefer stößt an)');
 // Trichter: 45° links/rechts (Höhe = (fb_w − in_w)/2 = 17)
 ok(Math.abs((m.fb_w - P.in_w) / 2 - 17) < 1e-9, 'Trichter links/rechts 45° (17 mm)');
-// Belegung
-const bel = K.kakBelegung(24, 30); ok(bel.length === 24 && bel[23] === 28, 'Belegung 24/30 = Liste der .scad');
-const b31 = K.kakBelegung(31, 31), b10 = K.kakBelegung(10, 30);
-ok(new Set(b31).size === 31 && new Set(b10).size === 10 && b10.every(x => x < 30), 'Belegung 31/31 und 10/30 eindeutig, im Bereich');
+// Belegung (Vorschau): gleichmäßig, aufsteigend, Seiten wechseln → gleiche Seite ≥ 2 Etagen Abstand
+const bel = K.kakBelegung(24, P.slots);
+ok(bel.length === 24 && new Set(bel).size === 24 && bel.every((x, i) => x < P.slots && (i < 2 || x - bel[i - 2] >= 2)), `Belegung 24/${P.slots}: ${bel.join(',')}`);
 // Turm teilen: H2C (325) und K3 (260)
 for (const dr of ['h2c', 'k3']) {
   const bett = K.KAK_DRUCKER[dr].bett, B2 = K.kakBuild(w, { ...K.KAK_DEF, bett, teilen: 1 }, null), T = B2.turmTeile();
