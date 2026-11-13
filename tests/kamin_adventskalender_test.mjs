@@ -37,7 +37,7 @@ try {
   ok(gesperrt.sp && gesperrt.frei && /Mehr Tage/.test(gesperrt.t), 'Tage > Etagen: Hinweis + Export gesperrt, danach wieder frei');
   await p.evaluate(() => _kakStr('name_txt', 'FAMILIE ISKEN'));
   const sz = await p.evaluate(async () => { const t0 = performance.now(); await _kakSzene(); return { ms: performance.now() - t0, n: objects.map(o => o.userData.name), y0: Math.min(...objects.map(o => getMeshBox(o).min.y)) }; });
-  ok(sz.n.length === 11 && Math.abs(sz.y0) < 0.01, `In Szene: ${sz.n.join(', ')} (${(sz.ms / 1000).toFixed(1)} s)`);
+  ok(sz.n.length === 13 && [1, 2, 3].every(i => sz.n.some(n => n.startsWith(`Kamin Turm ${i}/3 #`))) && Math.abs(sz.y0) < 0.01, `In Szene: ${sz.n.join(', ')} (${(sz.ms / 1000).toFixed(1)} s)`);
   // STL-Export abfangen
   const ex = await p.evaluate(async () => { let files = null; const alt = window._saveExportMany; window._saveExportMany = async f => { files = f; return { wrote: true, dir: 'Test' }; };
     try { _kakOpen(); await _kakExportStl(); } finally { window._saveExportMany = alt; }
@@ -73,7 +73,7 @@ try {
     try { await _kakExportStl(); } finally { window._saveExportMany = alt; _kakStr('drucker', 'sv08max'); } return files.map(f => f.name).filter(n => /^turm/.test(n)); });
   ok(h2c.length === 3 && h2c[0] === 'turm_1von3.stl', 'Turm in 3 Steckteilen (H2C) → ' + h2c.join(', '));
   const gr = await p.evaluate(async () => { _newCreate(false); const ids = await window._GEN_EXT['kamin-adventskalender'].run({ oben: 'krone', tage: 12, slots: 16, schacht: 80 }); return { ids: ids.length, n: objects.length }; });
-  ok(gr.ids === 10 && gr.n === 10, `gen.run (12 Tage, 16 Etagen, Schacht 80): ${gr.ids} Teile`);
+  ok(gr.ids === 12 && gr.n === 12, `gen.run (12 Tage, 16 Etagen, Schacht 80): ${gr.ids} Teile`);
   const pr = await p.evaluate(async () => { const r = {};
     const C1 = _kakCheck(_kakParams({ ..._KAK_DEF, drucker: 'h2c', pitch: 10, slot_h: 3, slots: 40 })); r.falz = C1.fehler.some(f => /Etagenhöhe zu klein für die Turm-Teilung/.test(f));
     const C2 = _kakCheck(_kakParams({ ..._KAK_DEF, schacht: 160 })); r.trichter = C2.fehler.some(f => /Feuerraum/.test(f));
