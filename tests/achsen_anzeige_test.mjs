@@ -31,14 +31,15 @@ try {
   });
   await pg.mouse.click(5, 900); await pg.evaluate(() => selectObjs([objects[objects.length - 1]])); await pg.waitForTimeout(300);
 
-  for (const [achse, dy, erwartet] of [['y', 60, 'Z · Höhe'], ['x', 0, 'X · Breite'], ['z', 0, 'Y · Tiefe']]) {
+  // Seit 1.18.406 (Oswald): nur der Achsname, ohne „Breite/Tiefe/Höhe“ (klang nach Größenänderung)
+  for (const [achse, dy, erwartet] of [['y', 60, 'Z'], ['x', 0, 'X'], ['z', 0, 'Y']]) {
     const t = await scr(await tip(achse));
     await pg.mouse.move(t.x, t.y); await pg.mouse.down();
     const ziel = dy ? { x: t.x, y: t.y + dy } : { x: t.x + 40, y: t.y + 25 };
     for (let i = 1; i <= 10; i++) { await pg.mouse.move(t.x + (ziel.x - t.x) * i / 10, t.y + (ziel.y - t.y) * i / 10); await pg.waitForTimeout(20); }
     const anzeige = await pg.evaluate(() => { const el = document.getElementById('mg-tip'); return el && el.style.display !== 'none' ? el.textContent : null; });
     await pg.mouse.up(); await pg.waitForTimeout(150);
-    ok(anzeige && anzeige.startsWith(erwartet + ':'), `Pfeil intern ${achse} zeigt „${erwartet}“`, anzeige);
+    ok(anzeige && new RegExp('^' + erwartet + ' [+−±]').test(anzeige) && anzeige.includes('Mitte bei ' + erwartet + ' =') && !/Breite|Tiefe|Höhe/.test(anzeige), `Pfeil intern ${achse} zeigt „${erwartet}“`, anzeige);
     if (achse === 'y') ok(/−/.test(anzeige || ''), 'nach unten gezogen = negativ', anzeige);
   }
 

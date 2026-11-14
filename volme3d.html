@@ -50800,6 +50800,16 @@ function _mgRayT(e, origin, dir) {
   return (b * f - c * d) / den;
 }
 
+// Achsname in der Oberfläche: intern y = oben (Z), z = Tiefe (Y, plus nach hinten wie im Export)
+function _mgAchsName(axis) { return { x: 'X', y: 'Z', z: 'Y' }[axis] || axis.toUpperCase(); }
+// Lage der Mitte der Auswahl in mm (Bezug: Plattenmitte, Z = über der Platte)
+function _mgMitteMm(axis) {
+  const bb = new THREE.Box3();
+  selectedObjs.forEach(o => { o.updateMatrixWorld(true); bb.union(new THREE.Box3().setFromObject(o)); });
+  if (bb.isEmpty()) return 0;
+  const c = bb.getCenter(new THREE.Vector3());
+  return axis === 'x' ? c.x * 10 : axis === 'y' ? c.y * 10 : -c.z * 10;
+}
 function _mgTip(e, axis, mm) {
   let el = document.getElementById('mg-tip');
   if (!e) { if (el) el.style.display = 'none'; return; }
@@ -50810,11 +50820,15 @@ function _mgTip(e, axis, mm) {
       'box-shadow:0 4px 14px rgba(0,0,0,.4)';
     document.body.appendChild(el);
   }
-  const sign = mm > 0 ? '+' : (mm < 0 ? '−' : '');
   // Intern ist Y oben — in der Oberfläche (Maße, Slicer) heißt die Höhe Z und die Tiefe Y
-  // (Kurs 8.10.: Teil nach unten verschoben, Anzeige sagte „Y“)
-  const nm = { x: 'X · Breite', y: 'Z · Höhe', z: 'Y · Tiefe' }[axis] || axis.toUpperCase();
-  el.textContent = nm + ': ' + sign + Math.abs(mm).toFixed(1).replace('.', ',') + ' mm';
+  // (Kurs 8.10.: Teil nach unten verschoben, Anzeige sagte „Y“). Nur der Achsname: „X · Breite“
+  // klang, als würde das Teil breiter (Oswald 14.11.) — es wird ja nur verschoben.
+  // mm = null → nur die Lage zeigen (Zeiger über dem Pfeil)
+  const nm = _mgAchsName(axis), f = v => (v < 0 ? '−' : '') + Math.abs(v).toFixed(1).replace('.', ',');
+  const mitte = nm + ' = ' + f(_mgMitteMm(axis)) + ' mm';
+  el.innerHTML = mm == null
+    ? 'Mitte bei <b>' + mitte + '</b><br><span style="color:#9aa0a8">Ziehen = verschieben · Rechtsklick = genau verschieben</span>'
+    : '<b>' + nm + ' ' + (mm > 0 ? '+' : mm < 0 ? '−' : '±') + Math.abs(mm).toFixed(1).replace('.', ',') + ' mm</b> · Mitte bei ' + mitte;
   el.style.display = 'block';
   el.style.left = (e.clientX + 14) + 'px';
   el.style.top  = (e.clientY - 10) + 'px';
@@ -50842,6 +50856,10 @@ function _mgMuteHandles(on) {
 }
 
 function _mgDown(e) {
+  if (e.button === 2 && !_mg.drag && _mgOwnsEvent(e)) {
+    const ax = _mgPick(e);
+    if (ax) { e.stopPropagation(); e.preventDefault(); _mgGenauOeffnen(e, ax); return; }   // preventDefault: kein Drehen, kein Kontextmenü
+  }
   if (e.button !== 0 || _mg.drag) return;
   if (!_mgOwnsEvent(e)) return;
   const axis = _mgPick(e);
@@ -50901,7 +50919,7 @@ function _mgMove(e) {
   updateTFInputs(); updateCtxPopup();
   _doRepositionDimHandles();
   if (selectedObjs.length === 1) _fpPositionPanel();
-  _mgTip(e, k, shown * 10);   // 1 Scene-Unit = 10 mm
+  _mgTip(e, k, shown * 10 * (k === 'z' ? -1 : 1));   // 1 Scene-Unit = 10 mm; Y (Tiefe) zählt nach hinten = −z
   // Anschmiegen muss auch beim Ziehen am Pfeil greifen — bei einem schon
   // aufgesetzten SVG aber nur auf dem EIGENEN Körper (siehe _mgDown)
   const haft = d.svgHaft;
@@ -50943,12 +50961,68 @@ function _mgUp(e) {
   updateTFInputs();
 }
 
+// Rechtsklick auf einen Pfeil: kleines Feld zum genauen Verschieben (Oswald 14.11.:
+// „Linksklick zeigt x = 12,5, Rechtsklick und −2,5 eintippen, dann steht er auf 10“).
+// „um“ = relativ, „auf“ = Mitte absolut (mm, Bezug Plattenmitte). Enter übernimmt.
+function _mgGenauOeffnen(e, axis) {
+  _mgTip(null); _mgGenauZu();
+  const movable = selectedObjs.filter(o => !o.userData.locked);
+  if (!movable.length) { notify('Objekt ist gesperrt', 'warn'); return; }
+  const nm = _mgAchsName(axis), f = v => (Math.round(v * 100) / 100).toString().replace('.', ',');
+  const p = document.createElement('div'); p.id = 'mg-genau';
+  p.style.cssText = 'position:fixed;z-index:7100;background:#1f2329;color:#e6e8eb;border:1px solid #3a3f47;border-radius:8px;padding:10px 12px;' +
+    'font:12px system-ui,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.45);width:230px';
+  const inp = 'style="width:70px;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px" type="text" inputmode="decimal"';
+  p.innerHTML = `<div style="display:flex;justify-content:space-between;margin-bottom:8px"><b>${nm} genau verschieben</b><span style="cursor:pointer;color:#9aa0a8" onclick="_mgGenauZu()">✕</span></div>` +
+    `<div style="color:#9aa0a8;margin-bottom:8px">Mitte jetzt bei ${nm} = ${f(_mgMitteMm(axis))} mm</div>` +
+    `<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><span style="width:28px">um</span><input id="mg-genau-um" ${inp} placeholder="z. B. −2,5"><span>mm</span></div>` +
+    `<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span style="width:28px">auf</span><input id="mg-genau-auf" ${inp} placeholder="${f(_mgMitteMm(axis))}"><span>mm (Mitte)</span></div>` +
+    `<button style="width:100%;background:#F97316;border:none;color:#fff;border-radius:6px;padding:6px;font-weight:700;cursor:pointer" onclick="_mgGenauAnwenden('${axis}')">Verschieben (Enter)</button>`;
+  document.body.appendChild(p);
+  p.style.left = Math.min(e.clientX + 12, window.innerWidth - 250) + 'px';
+  p.style.top = Math.min(e.clientY - 10, window.innerHeight - 190) + 'px';
+  p.querySelectorAll('input').forEach(i => i.addEventListener('keydown', ev => {
+    ev.stopPropagation();
+    if (ev.key === 'Enter') { ev.preventDefault(); _mgGenauAnwenden(axis); }
+    else if (ev.key === 'Escape') _mgGenauZu();
+  }));
+  // Tippt man in ein Feld, wird das andere geleert — eindeutig, was gilt
+  const um = p.querySelector('#mg-genau-um'), auf = p.querySelector('#mg-genau-auf');
+  um.addEventListener('input', () => { if (um.value) auf.value = ''; });
+  auf.addEventListener('input', () => { if (auf.value) um.value = ''; });
+  setTimeout(() => um.focus(), 0);
+  setTimeout(() => window.addEventListener('pointerdown', _mgGenauAussen, true), 0);
+}
+function _mgGenauAussen(e) { const p = document.getElementById('mg-genau'); if (p && !p.contains(e.target)) _mgGenauZu(); }
+function _mgGenauZu() {
+  const p = document.getElementById('mg-genau'); if (p) p.remove();
+  window.removeEventListener('pointerdown', _mgGenauAussen, true);
+}
+function _mgGenauAnwenden(axis) {
+  const z = id => { const el = document.getElementById(id); const v = parseFloat(String(el && el.value || '').trim().replace(/[−–]/g, '-').replace(',', '.')); return isFinite(v) ? v : null; };
+  const um = z('mg-genau-um'), auf = z('mg-genau-auf');
+  let mm = um != null ? um : auf != null ? auf - _mgMitteMm(axis) : null;
+  if (mm == null) { notify('Bitte einen Wert eintippen, z. B. −2,5', 'w'); return; }
+  const movable = selectedObjs.filter(o => !o.userData.locked);
+  if (!movable.length) { _mgGenauZu(); return; }
+  saveUndo();
+  const d = mm / 10 * (axis === 'z' ? -1 : 1);                          // mm → Units; Y (Tiefe) = −z
+  movable.forEach(o => { o.position[axis] += d; o.updateMatrixWorld(true); });
+  _mgGenauZu();
+  updateTFInputs(); updateCtxPopup(); _doRepositionDimHandles();
+  if (selectedObjs.length === 1) _fpPositionPanel();
+  _svgWrapFollowSel(0);
+  const nm = _mgAchsName(axis), f = v => (v < 0 ? '−' : '') + Math.abs(Math.round(v * 100) / 100).toString().replace('.', ',');
+  notify(`${nm} um ${mm > 0 ? '+' : ''}${f(mm)} mm verschoben — Mitte jetzt bei ${nm} = ${f(_mgMitteMm(axis))} mm`, 'ok');
+}
+
 function _mgHoverMove(e) {
   if (_mg.drag || isDrag || isOrbit || isRubber) return;
-  if (!_mgOwnsEvent(e)) { _mgSetHover(null); _mgMuteHandles(false); return; }
+  if (!_mgOwnsEvent(e)) { _mgSetHover(null); _mgMuteHandles(false); _mgTip(null); return; }
   const axis = _mgPick(e);
   _mgSetHover(axis);
   _mgMuteHandles(!!axis);
+  if (axis && !document.getElementById('mg-genau')) _mgTip(e, axis, null); else if (!_mg.drag) _mgTip(null);
 }
 
 // Die Maß-Anfasser starten ihren Zug auf pointerdown — das feuert VOR mousedown.
@@ -87775,8 +87849,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.405';
+const VOLME3D_VERSION = '1.18.406';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.406', date:'2026-11-14', changes:[
+    ['✥','<b>Verschiebe-Pfeile: genau positionieren.</b> Zeigt man auf einen Pfeil, steht dort, wo die Mitte des Teils gerade liegt (z. B. „Mitte bei X = 12,5 mm“). Ein <b>Rechtsklick auf den Pfeil</b> öffnet ein kleines Feld: bei „um“ die Strecke eintippen (z. B. −2,5) oder bei „auf“ die gewünschte Lage der Mitte (z. B. 10) – Enter, fertig. Beim Ziehen steht nur noch „X“, „Y“ oder „Z“ statt „X · Breite“, das klang, als würde das Teil breiter. Danke an Oswald!'],
+  ]},
   { version:'1.18.405', date:'2026-11-14', changes:[
     ['🧱','<b>Kamin-Adventskalender neu (wie BRICKLET):</b> Die Tages-Schieber gehen jetzt ganz durch den Turm und werden abwechselnd von rechts (ungerade Tage) und links (gerade) eingeschoben – jeder mit grüner Griffleiste über die ganze Seite und weißer Zahl. Wie hoch ein Fach wird, entscheidest du beim Befüllen: den nächsten Schieber einfach ein paar Etagen höher einschieben. Der Turm wird in Steckteile zerlegt (Regler „Turmteile“, Standard 3).'],
     ['🎅','<b>Oben drauf:</b> Ein Weihnachtsmann steckt kopfüber im Schornstein (Hose, Pelz, Stiefel, Gürtel mit Schnalle als Farbteile) – oder wie bisher die Kaminkrone.'],
