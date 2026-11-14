@@ -11,6 +11,7 @@ const KAK_DEF = {
   /* Schieber */ pt: 2.4, slot_h: 3.0, clr: 0.3, num_h: 0.6, griff_h: 9, griff_b: 0, griff_t: 10, hals: 0, lippe: 1.2,     // Griffleiste über die ganze Seite (griff_b 0 = Turmtiefe), 10 vor, 9 hoch
   /* Feuerstelle */ base_w: 160, base_d: 124, base_h: 112, open_w: 104, open_h: 74, open_ch: 20, floor_t: 4, ramp_h: 12, mantel_t: 10, mantel_o: 8,
   name_txt: '', name_size: 8,
+  /* Feuerstelle als Steckbausatz */ feuer_platten: 1, feuer_wand: 4, feuer_feder: 2, feuer_spiel: 0.2, rampe: 1,
   /* Deko (Foto) */ bogen: 1, schnee: 1, flamme: 1, socken: '', socke_h: 70, deko_t: 1.6,
   /* Optik */ joint_w: 1.2, joint_d: 0.8, font: 'helvetiker_bold',
   /* Generator */ drucker: 'sv08max', bett: [500, 500, 500], teilen: 1, turm_teile: 3
@@ -217,7 +218,7 @@ function kakBuild(w, pIn, textFn, opt) {
     const flamme_print = () => { const F = flamme2D(), b = F.aussen.bounds(), s = flammeH() / (b.max[1] - b.min[1]);
       const sc = c => k(k(c.translate([0, -b.min[1]])).scale([s, s]));
       return { aussen: k(sc(F.aussen).extrude(2)), innen: k(k(sc(F.innen).extrude(p.num_h)).translate([0, 0, 2])) }; };
-    const flamme_lage = mf => k(k(mf.rotate([90, 0, 0])).translate([p.base_w / 2, (p.base_d + fb_d) / 2 - 0.2, p.floor_t + p.ramp_h]));   // Gesicht nach vorn, an der Rückwand
+    const flamme_lage = mf => k(k(mf.rotate([90, 0, 0])).translate([p.base_w / 2, (p.feuer_platten ? p.base_d - p.feuer_wand : (p.base_d + fb_d) / 2) - 0.2, p.floor_t + (p.feuer_platten && !p.rampe ? 0 : p.ramp_h)]));   // Gesicht nach vorn, an der Rückwand
     // Socke mit Namensschild (flach drucken: rot, weiß erhaben + Name erhaben) → vorn an die Simsecken kleben
     const sockenNamen = () => String(p.socken || '').split(/[,;\n]/).map(x => x.trim()).filter(Boolean).slice(0, 2);
     const socke_print = (name, links) => {
@@ -237,6 +238,9 @@ function kakBuild(w, pIn, textFn, opt) {
     const socke_lage = (mf, links) => { const x = links ? 26 : p.base_w - 26;
       return k(k(mf.rotate([90, 0, 0])).translate([x, -p.mantel_o - 0.05, p.base_h - p.mantel_t / 2 + 2])); };   // Rückseite an der Simsfront
     let baseGlatt = null;
+    const koerper0 = () => { const body_h = p.base_h - p.mantel_t; return U([hull([cube([p.base_w + 6, p.base_d + 6, 4], [-3, -3, 0]), cube([p.base_w, p.base_d, eps], [0, 0, 7])]),
+        cube([p.base_w, p.base_d, body_h]),
+        hull([cube([p.base_w, p.base_d, eps], [0, 0, body_h - p.mantel_o]), cube([p.base_w + 2 * p.mantel_o, p.base_d + p.mantel_o, p.mantel_t], [-p.mantel_o, -p.mantel_o, body_h])])]); };
     const base0 = (fugen = true) => {
       const body_h = p.base_h - p.mantel_t;
       const koerper = U([hull([cube([p.base_w + 6, p.base_d + 6, 4], [-3, -3, 0]), cube([p.base_w, p.base_d, eps], [0, 0, 7])]),
@@ -257,6 +261,50 @@ function kakBuild(w, pIn, textFn, opt) {
       const ramp = k(k(k(rp.extrude(fb_w)).rotate([90, 0, 90])).translate([(p.base_w - fb_w) / 2, (p.base_d - fb_d) / 2, p.floor_t - eps]));
       b = U([b, ramp]);
       return b;
+    };
+    // ── FEUERSTELLE ALS STECKBAUSATZ: hohle Hülle (Wand feuer_wand), geteilt in Boden, Front, Rückwand, 2 Seiten, Sims;
+    // Federn (mittlere Wandhälfte, feuer_feder tief) an den Wänden, Nuten mit feuer_spiel in Boden/Sims/Front/Rückwand.
+    // Kein Trichter nötig: der Innenraum ist breiter als der Schacht, alles fällt gerade durch. → [{ name, mf, druck }]
+    const feuerPlatten = () => {
+      const pw = p.feuer_wand, g = p.feuer_feder, c = p.feuer_spiel, w = p.base_w, d = p.base_d, body_h = p.base_h - p.mantel_t, zM = body_h - p.mantel_o, zF = p.floor_t, B = 1e3;
+      const sx = tower_x + p.wall, sy = tower_y + p.wall, ow = p.open_w;
+      const zH = p.base_h - sock - 3, hS = zH - zM;                           // Sims von unten hohl mit 45°-Schrägen (aufrecht stützfrei), oben 8 mm
+      const simsHohl = hull([cube([w - 2 * pw, d - 2 * pw, eps], [pw, pw, zM - eps]), cube([w - 2 * pw - 2 * hS, d - 2 * pw - 2 * hS, eps], [pw + hS, pw + hS, zH - eps])]);
+      const cut = [cube([w - 2 * pw, d - 2 * pw, zM - zF], [pw, pw, zF]), simsHohl, cube([p.in_w, p.in_d, p.base_h], [sx, sy, zM - 1]),
+        cube([out_w + 0.6, out_d + 0.6, sock + eps], [tower_x - 0.3, tower_y - 0.3, p.base_h - sock]),
+        k(k(k(oeffnung2D().extrude(40)).rotate([-90, 0, 0])).translate([w / 2, -20, zF])), ...base_joints(body_h)];
+      let huelle = k(koerper0().subtract(U(cut)));
+      const ein = [p.bogen && bogenRing(), p.schnee && schneeKante()].filter(Boolean); if (ein.length) huelle = k(huelle.subtract(U(ein)));
+      const box = (x0, x1, y0, y1, z0, z1) => cube([x1 - x0, y1 - y0, z1 - z0], [x0, y0, z0]);
+      const R = { boden: box(-B, B, -B, B, -B, zF), sims: box(-B, B, -B, B, zM, B), front: box(-B, B, -B, pw, zF, zM), rueck: box(-B, B, d - pw, B, zF, zM),
+        links: box(-B, pw, pw, d - pw, zF, zM), rechts: box(w - pw, B, pw, d - pw, zF, zM) };
+      const a = pw / 4, b2 = pw * 3 / 4, offen = box(w / 2 - ow / 2 - 1, w / 2 + ow / 2 + 1, -B, B, -B, B);   // unter der Kaminöffnung keine Feder/Nut
+      const F = (x0, x1, y0, y1, z0, z1, e = 0) => box(x0 - e, x1 + e, y0 - e, y1 + e, z0 - e, z1 + e);
+      // Federn: [Besitzer, Empfänger, Quader(e)]
+      const fed = [
+        ['front', 'boden', e => k(F(pw, w - pw, a, b2, zF - g, zF + 0.01, e).subtract(offen))], ['rueck', 'boden', e => F(pw, w - pw, d - b2, d - a, zF - g, zF + 0.01, e)],
+        ['links', 'boden', e => F(a, b2, pw, d - pw, zF - g, zF + 0.01, e)], ['rechts', 'boden', e => F(w - b2, w - a, pw, d - pw, zF - g, zF + 0.01, e)],
+        ['front', 'sims', e => F(pw, w - pw, a, b2, zM - 0.01, zM + g, e)], ['rueck', 'sims', e => F(pw, w - pw, d - b2, d - a, zM - 0.01, zM + g, e)],
+        ['links', 'sims', e => F(a, b2, pw, d - pw, zM - 0.01, zM + g, e)], ['rechts', 'sims', e => F(w - b2, w - a, pw, d - pw, zM - 0.01, zM + g, e)],
+        ['links', 'front', e => F(a, b2, pw - g, pw + 0.01, zF + 2, zM - 2, e)], ['links', 'rueck', e => F(a, b2, d - pw - 0.01, d - pw + g, zF + 2, zM - 2, e)],
+        ['rechts', 'front', e => F(w - b2, w - a, pw - g, pw + 0.01, zF + 2, zM - 2, e)], ['rechts', 'rueck', e => F(w - b2, w - a, d - pw - 0.01, d - pw + g, zF + 2, zM - 2, e)]];
+      const teile = {};
+      for (const n of Object.keys(R)) {
+        let t = k(huelle.intersect(R[n]));
+        const plus = fed.filter(f => f[0] === n).map(f => f[2](0)), minus = fed.filter(f => f[1] === n).map(f => f[2](c));
+        if (plus.length) t = U([t, ...plus]);
+        if (minus.length) t = k(t.subtract(U(minus)));
+        teile[n] = t;
+      }
+      const out = [];
+      const lage = { boden: m => m, sims: m => m, front: m => k(m.rotate([-90, 0, 0])), rueck: m => k(m.rotate([90, 0, 0])), links: m => k(m.rotate([0, 90, 0])), rechts: m => k(m.rotate([0, -90, 0])) };
+      const namen = { boden: 'Boden', front: 'Front', rueck: 'Rückwand', links: 'Seite links', rechts: 'Seite rechts', sims: 'Sims' };
+      for (const n of ['boden', 'front', 'rueck', 'links', 'rechts', 'sims']) out.push({ id: n, name: namen[n], mf: teile[n], druck: lage[n] });
+      if (p.rampe && p.ramp_h > 0) {                                         // Rampe als Einleger: hinten ramp_h hoch, vorn flach (Süßes rollt nach vorn)
+        const L = d - 2 * pw - 2 * c, rp = k(new CS([[[0, 0], [L, 0], [L, p.ramp_h], [L * 0.25, 0]]], 'NonZero'));
+        out.push({ id: 'rampe', name: 'Rampe', mf: k(k(k(rp.extrude(w - 2 * pw - 2 * c)).rotate([90, 0, 90])).translate([pw + c, pw + c, zF])), druck: m => m });
+      }
+      return out;
     };
     const nameplate_text = () => {
       const body_h = p.base_h - p.mantel_t, cs = textMitte(p.name_txt, p.name_size, 0, 0); if (!cs) return null;
@@ -298,7 +346,7 @@ function kakBuild(w, pIn, textFn, opt) {
       }
       return { teile, ok: true, Z };
     };
-    return { m, p, oeffnung2D, bogenRing, schneeKante, flamme_print, flamme_lage, flammeH, sockenNamen, socke_print, socke_lage, tower, stone_body, stone_number, stone_print, number_print, blank_print, base, nameplate_text, cap, cap_top, cap_print, turmTeile, tmp, k,
+    return { m, p, feuerPlatten, oeffnung2D, bogenRing, schneeKante, flamme_print, flamme_lage, flammeH, sockenNamen, socke_print, socke_lage, tower, stone_body, stone_number, stone_print, number_print, blank_print, base, nameplate_text, cap, cap_top, cap_print, turmTeile, tmp, k,
       aufraeumen: () => { for (const x of tmp) { try { x.delete(); } catch (e) {} } tmp.length = 0; } };
   } catch (e) { for (const x of tmp) { try { x.delete(); } catch (e2) {} } throw e; }
 }

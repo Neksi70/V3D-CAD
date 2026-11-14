@@ -37,7 +37,7 @@ try {
   ok(gesperrt.sp && gesperrt.frei && /Mehr Tage/.test(gesperrt.t), 'Tage > Etagen: Hinweis + Export gesperrt, danach wieder frei');
   await p.evaluate(() => _kakStr('name_txt', 'FAMILIE ISKEN'));
   const sz = await p.evaluate(async () => { const t0 = performance.now(); await _kakSzene(); return { ms: performance.now() - t0, n: objects.map(o => o.userData.name), y0: Math.min(...objects.map(o => getMeshBox(o).min.y)) }; });
-  ok(sz.n.length === 13 && [1, 2, 3].every(i => sz.n.some(n => n.startsWith(`Kamin Turm ${i}/3 #`))) && Math.abs(sz.y0) < 0.01, `In Szene: ${sz.n.join(', ')} (${(sz.ms / 1000).toFixed(1)} s)`);
+  ok(sz.n.length === 19 && sz.n.some(n => n.startsWith('Kamin Feuerstelle Sims #')) && [1, 2, 3].every(i => sz.n.some(n => n.startsWith(`Kamin Turm ${i}/3 #`))) && Math.abs(sz.y0) < 0.01, `In Szene: ${sz.n.join(', ')} (${(sz.ms / 1000).toFixed(1)} s)`);
   // STL-Export abfangen
   const ex = await p.evaluate(async () => { let files = null; const alt = window._saveExportMany; window._saveExportMany = async f => { files = f; return { wrote: true, dir: 'Test' }; };
     try { _kakOpen(); await _kakExportStl(); } finally { window._saveExportMany = alt; }
@@ -51,8 +51,8 @@ try {
       if ([...E.values()].every(c => c === 2)) out.dicht++; else (out.offen = out.offen || []).push(f.name + ':' + [...E.values()].filter(c => c !== 2).length);
       out.bb[f.name] = [x1 - x0, y1 - y0, z1 - z0].map(v => +v.toFixed(2)).concat([+z0.toFixed(3)]); }
     return out; });
-  const erwartet = ['feuerstelle.stl', 'name.stl', 'feuerstelle_bogenrahmen.stl', 'feuerstelle_schnee.stl', 'flamme.stl', 'flamme_innen.stl', 'turm_1von3.stl', 'turm_3von3.stl', 'kaminkrone.stl', 'kaminkrone_aufsatz.stl', 'blindstopfen.stl', 'tag_01_schieber.stl', 'tag_01_zahl.stl', 'tag_24_schieber.stl', 'tag_24_zahl.stl'];
-  ok(ex.namen.length === 60 && erwartet.every(n => ex.namen.includes(n)), `STL-Export: ${ex.namen.length} Dateien (${ex.namen.slice(0, 7).join(', ')} …)`);
+  const erwartet = ['feuerstelle_boden.stl', 'feuerstelle_front.stl', 'feuerstelle_sims.stl', 'feuerstelle_sims_name.stl', 'feuerstelle_rampe.stl', 'feuerstelle_front_bogenrahmen.stl', 'feuerstelle_sims_schnee.stl', 'flamme.stl', 'flamme_innen.stl', 'turm_1von3.stl', 'turm_3von3.stl', 'kaminkrone.stl', 'kaminkrone_aufsatz.stl', 'blindstopfen.stl', 'tag_01_schieber.stl', 'tag_01_zahl.stl', 'tag_24_schieber.stl', 'tag_24_zahl.stl'];
+  ok(ex.namen.length === 66 && erwartet.every(n => ex.namen.includes(n)), `STL-Export: ${ex.namen.length} Dateien (${ex.namen.slice(0, 7).join(', ')} …)`);
   ok(ex.dicht === ex.namen.length, `alle ${ex.dicht}/${ex.namen.length} STL geschlossen (jede Kante 2×) ${(ex.offen || []).join(', ')}`);
   ok(Object.entries(ex.bb).every(([n, b]) => /name|zahl|bogenrahmen|schnee|innen|weiss/.test(n) || Math.abs(b[3]) < 0.01) && Math.abs(ex.bb['turm_1von3.stl'][2] - 152) < 0.05 && Math.abs(ex.bb['tag_01_schieber.stl'][2] - 9) < 0.05,
      `Druckorientierung: alles auf z = 0 (Name/Zahlen in derselben Lage wie Feuerstelle/Schieber), Turmteil 1 ${ex.bb['turm_1von3.stl'].slice(0, 3).join('×')}, Schieber ${ex.bb['tag_01_schieber.stl'].slice(0, 3).join('×')}, Krone ${ex.bb['kaminkrone.stl'].slice(0, 3).join('×')}`);
@@ -60,7 +60,7 @@ try {
   const hol3mf = dr => p.evaluate(async (dr) => { _kakStr('drucker', dr); let blob = null; const alt = window._saveExport; window._saveExport = async bl => { blob = bl; return { wrote: true, dir: 'Test' }; };
     try { await _kakExport3mf(); } finally { window._saveExport = alt; _kakStr('drucker', 'sv08max'); }
     return blob && await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); }); }, dr);
-  for (const [dr, soll, masch] of [['sv08max', 'Feuerstelle|Deko|Turm|Krone|Blindstopfen|Tages-Schieber 1|Tages-Schieber 2', /SV08 MAX/], ['h2c', 'Feuerstelle|Deko|Turm|Krone|Blindstopfen|Tages-Schieber 1|Tages-Schieber 2|Tages-Schieber 3|Tages-Schieber 4|Tages-Schieber 5', /H2C/]]) {
+  for (const [dr, soll, masch] of [['sv08max', 'Feuerstelle|Deko|Turm|Krone|Blindstopfen|Tages-Schieber 1|Tages-Schieber 2', /SV08 MAX/], ['h2c', 'Feuerstelle 1|Feuerstelle 2|Feuerstelle 3|Deko|Turm|Krone|Blindstopfen|Tages-Schieber 1|Tages-Schieber 2|Tages-Schieber 3|Tages-Schieber 4|Tages-Schieber 5', /H2C/]]) {
     const b64 = await hol3mf(dr); if (!b64) { ok(false, `3MF ${dr}: keine Datei`); continue; }
     const z = fflate.unzipSync(Buffer.from(b64, 'base64')), cfg = fflate.strFromU8(z['Metadata/model_settings.config']), ps = JSON.parse(fflate.strFromU8(z['Metadata/project_settings.config']));
     const namen = [...cfg.matchAll(/key="plater_name" value="([^"]*)"/g)].map(m => m[1]).join('|');
@@ -73,7 +73,7 @@ try {
     try { await _kakExportStl(); } finally { window._saveExportMany = alt; _kakStr('drucker', 'sv08max'); } return files.map(f => f.name).filter(n => /^turm/.test(n)); });
   ok(h2c.length === 3 && h2c[0] === 'turm_1von3.stl', 'Turm in 3 Steckteilen (H2C) → ' + h2c.join(', '));
   const gr = await p.evaluate(async () => { _newCreate(false); const ids = await window._GEN_EXT['kamin-adventskalender'].run({ oben: 'krone', tage: 12, slots: 16, schacht: 80 }); return { ids: ids.length, n: objects.length }; });
-  ok(gr.ids === 12 && gr.n === 12, `gen.run (12 Tage, 16 Etagen, Schacht 80): ${gr.ids} Teile`);
+  ok(gr.ids === 18 && gr.n === 18, `gen.run (12 Tage, 16 Etagen, Schacht 80): ${gr.ids} Teile`);
   const pr = await p.evaluate(async () => { const r = {};
     const C1 = _kakCheck(_kakParams({ ..._KAK_DEF, drucker: 'h2c', pitch: 10, slot_h: 3, slots: 40 })); r.falz = C1.fehler.some(f => /Etagenhöhe zu klein für die Turm-Teilung/.test(f));
     const C2 = _kakCheck(_kakParams({ ..._KAK_DEF, schacht: 160 })); r.trichter = C2.fehler.some(f => /Feuerraum/.test(f));

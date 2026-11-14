@@ -28,7 +28,8 @@ ok(gleich(groesse(feuerGanz), [176, 135, 112]), 'Feuerstelle mit Einlagen 176 ×
 { const bog = B.bogenRing(), sch = B.schneeKante(), F = B.flamme_print(), V2 = (a, b) => w.Manifold.intersection(a, b).volume();
   ok(V2(feuer, bog) < 1e-3 && V2(feuer, sch) < 1e-3 && bog.volume() > 1000 && sch.volume() > 1000, `Bogenrahmen (${bog.volume().toFixed(0)} mm³) und Schnee (${sch.volume().toFixed(0)} mm³) als Einlage ohne Überschneidung`);
   const fl = B.flamme_lage(F.aussen), fb = fl.boundingBox();
-  ok(dicht(F.aussen) && dicht(F.innen) && V2(feuer, fl) < 1e-3 && fb.max[2] < m.fb_top, `Flamme geschlossen, steht frei an der Rückwand (Oberkante ${fb.max[2].toFixed(1)} < Feuerraum ${m.fb_top})`);
+  const feuerHuelle = P.feuer_platten ? w.Manifold.union(B.feuerPlatten().map(t => t.mf)) : feuer;
+  ok(dicht(F.aussen) && dicht(F.innen) && V2(feuerHuelle, fl) < 1e-3 && fb.max[2] < m.fb_top, `Flamme geschlossen, steht frei an der Rückwand (Oberkante ${fb.max[2].toFixed(1)} < Feuerraum ${m.fb_top})`);
   for (const L of [true, false]) { const S = B.socke_print('', L), sl = B.socke_lage(S.rot, L);
     ok(dicht(S.rot) && S.rot.decompose().length === 1 && V2(feuer, sl) < 1e-3 && V2(feuer, sl.translate([0, 0.1, 0])) > 0.1, `Socke ${L ? 'links' : 'rechts'}: 1 Stück, liegt an der Simsfront an (0,1 mm weiter stößt an)`); }
 }
@@ -76,6 +77,21 @@ for (const dr of ['h2c', 'k3']) {
   ok(T.teile.length >= 2 && hs.every(h => h <= bett[2]) && fugeOk && fit < 1e-3 && T.teile.every(s => dicht(s.mf) && s.mf.decompose().length === 1),
      `${K.KAK_DRUCKER[dr].name}: ${T.teile.length} Segmente ${hs.join(' / ')} mm ≤ ${bett[2]}, Teilung auf Mauerfuge, Falz kollisionsfrei`);
   B2.aufraeumen();
+}
+// ── Feuerstelle als Steckbausatz ──
+{ const FP = B.feuerPlatten(), V2 = (a, b) => w.Manifold.intersection(a, b).volume(), by = Object.fromEntries(FP.map(t => [t.id, t]));
+  let mx = 0; for (let i = 0; i < FP.length; i++) for (let j = i + 1; j < FP.length; j++) mx = Math.max(mx, V2(FP[i].mf, FP[j].mf));
+  ok(FP.every(t => dicht(t.mf) && t.mf.decompose().length === 1), `Feuerstelle: ${FP.length} Platten, jede geschlossen und ein Stück (${FP.map(t => t.name).join(', ')})`);
+  ok(mx < 1e-3, `Platten berühren sich nur, keine Überschneidung (max ${mx.toExponential(1)} mm³)`);
+  const gross = FP.map(t => { const b = t.druck(t.mf).boundingBox(); return [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]]; });
+  ok(gross.every(g => Math.max(g[0], g[1]) <= 180 && Math.min(g[0], g[1]) <= 180), 'Jede Platte passt flach auf ein 180er-Bett (A1 mini): ' + gross.map(g => g.map(v => v.toFixed(0)).join('×')).join(', '));
+  ok(gross.slice(1, 5).every(g => g[2] <= 8), 'Wände liegen flach (≤ 8 mm hoch in Drucklage)');
+  // Federn greifen: Front 1 mm nach vorn stößt an die Seiten, Seite 1 mm nach oben an den Sims, Wand 1 mm nach oben/unten an Boden/Sims
+  ok(V2(by.front.mf.translate([0, -1, 0]), by.boden.mf) + V2(by.front.mf.translate([0, -1, 0]), by.sims.mf) > 0.1 && V2(by.links.mf.translate([-1, 0, 0]), by.boden.mf) > 0.1 && V2(by.links.mf.translate([0, 0, 1]), by.sims.mf) > 0.1 && V2(by.rueck.mf.translate([0, 0, -1]), by.boden.mf) > 0.1,
+     'Federn greifen: Front/Seiten lassen sich nicht nach außen ziehen, Seite nicht hoch, Rückwand nicht runter');
+  const turmF = turm.translate([m.tower_x, m.tower_y, P.base_h - m.sock]); let tv = 0; for (const t of FP) tv = Math.max(tv, V2(t.mf, turmF));
+  ok(tv < 1e-3 && V2(by.sims.mf, turm.translate([m.tower_x, m.tower_y, P.base_h - m.sock - 0.1])) > 1, 'Turm steht in der Sims-Aufnahme (kollisionsfrei, 0,1 mm tiefer stößt an)');
+  const vol = FP.reduce((a, t) => a + t.mf.volume(), 0); ok(vol < 0.6 * feuer.volume(), `Material ${(vol / 1000).toFixed(0)} cm³ statt ${(feuer.volume() / 1000).toFixed(0)} cm³ massiv`);
 }
 B.aufraeumen();
 console.log(fail ? `\n${fail} FEHLER` : '\nalles grün'); process.exit(fail ? 1 : 0);
