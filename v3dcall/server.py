@@ -378,6 +378,34 @@ a{{color:#4f8cff}}
 </body></html>""", mimetype="text/html; charset=utf-8")
 
 
+@app.get("/vergleich")
+def vergleich_seite():
+    """Stimmenvergleich ElevenLabs <-> VoiceStudio (erzeugt von vergleich.py)."""
+    if (w := wache()):
+        return w
+    import vergleich
+    if not os.path.exists(vergleich.ERGEBNIS):
+        return "<p>Noch keine Proben — vergleich.py laufen lassen.</p>", 404
+    with open(vergleich.ERGEBNIS, encoding="utf-8") as fh:
+        erg = json.load(fh)
+    return Response(vergleich.seite(erg, key=request.args.get("key", "")),
+                    mimetype="text/html; charset=utf-8")
+
+
+@app.get("/vergleich/<stimme>/<datei>")
+def vergleich_datei(stimme, datei):
+    if (w := wache()):
+        return w
+    import vergleich
+    if not re.fullmatch(r"[a-z0-9-]+", stimme) or \
+            not re.fullmatch(r"[a-z0-9-]+(\.8k)?\.(mp3|wav)", datei):
+        return jsonify(fehler="unbekannt"), 404
+    p = os.path.join(vergleich.ZIEL, stimme, datei)
+    if not os.path.exists(p):
+        return jsonify(fehler="unbekannt"), 404
+    return send_file(p, mimetype="audio/mpeg" if datei.endswith(".mp3") else "audio/wav")
+
+
 # ------------------------------------------------------------- Gespraech
 
 @app.post("/api/dialog")

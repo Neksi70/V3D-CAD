@@ -565,6 +565,14 @@ def mit_satzpausen(text):
 
 def sprich(text, ziel_ohne_endung):
     """Text -> 8-kHz-wav fuer Asterisk. Flash-Modell wegen der Latenz."""
+    if tts.anbieter("live") == "voicestudio":
+        # Lokal: dieselben Aussprache-Kruecken, aber KEINE <break>-Marken —
+        # VoiceStudio wuerde sie vorlesen.
+        roh = ziel_ohne_endung + ".vs.wav"
+        tts.voicestudio_sprich(fuer_die_stimme(text), roh, format="wav", timeout=60)
+        tts.nach_asterisk(roh, ziel_ohne_endung + ".wav")
+        os.remove(roh)
+        return ziel_ohne_endung + ".wav"
     k = core.cfg("elevenlabs", "apiKey")
     v = core.cfg("elevenlabs", "voiceId")
     # Stream-Endpunkt mit Latenz-Optimierung: die ersten Daten kommen nach

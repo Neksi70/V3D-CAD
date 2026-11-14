@@ -1,10 +1,10 @@
-"""Ansagen mit ElevenLabs erzeugen und für Asterisk aufbereiten.
+"""Ansagen erzeugen (ElevenLabs oder lokal VoiceStudio) und für Asterisk aufbereiten.
 
 Asterisk mag am liebsten 8 kHz mono 16-bit PCM als .wav — genau das
 liefert die Umwandlung hier ab. Zusaetzlich bleibt eine mp3 fuer die
 Vorschau in der Weboberflaeche liegen.
 """
-import json, os, re, subprocess, sys, requests
+import json, os, re, subprocess, sys, tempfile, wave, requests
 import core
 
 API = "https://api.elevenlabs.io/v1"
@@ -25,8 +25,95 @@ def stimmen():
              "labels": v.get("labels", {})} for v in r.json().get("voices", [])]
 
 
-def sprich(text, ziel_mp3):
-    """Text -> mp3 ueber ElevenLabs."""
+# ------------------------------------------------------------ Anbieter
+#
+# Welche Stimme spricht? config.json:
+#   "tts": {"anbieter": "elevenlabs" | "voicestudio",   # Standard fuer alles
+#           "ansagen":  null | "elevenlabs" | "voicestudio",  # feste Ansagen
+#           "live":     null | "elevenlabs" | "voicestudio",  # Live-Antworten
+#           "voicestudio": {"url": "http://127.0.0.1:8840",
+#                           "keyDatei": "~/voicestudio/.env",
+#                           "stimme": "Volker", "modell": "omnivoice",
+#                           "sprache": "de", "speed": 1.0}}
+# Fehlt der Block, bleibt alles bei ElevenLabs — so wie bisher.
+
+ANBIETER = ("elevenlabs", "voicestudio")
+
+
+def anbieter(zweck=None):
+    """'elevenlabs' oder 'voicestudio' fuer zweck 'ansagen' / 'live'."""
+    wert = core.cfg("tts", zweck, default=None) if zweck else None
+    wert = wert or core.cfg("tts", "anbieter", default="elevenlabs")
+    return wert if wert in ANBIETER else "elevenlabs"
+
+
+def _vs(schluessel, default=None):
+    return core.cfg("tts", "voicestudio", schluessel, default=default)
+
+
+def _vs_key():
+    """API-Schluessel aus ~/voicestudio/.env (OMNIVOICE_API_KEY=...)."""
+    pfad = os.path.expanduser(_vs("keyDatei", "~/voicestudio/.env"))
+    try:
+        with open(pfad, encoding="utf-8") as fh:
+            for zeile in fh:
+                if zeile.startswith("OMNIVOICE_API_KEY="):
+                    return zeile.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
+# Dauerhafte Verbindung: lokal kostet der Handschlag wenig, aber umsonst
+# muss er auch nicht jedes Mal sein.
+_vs_sitzung = requests.Session()
+
+
+def voicestudio_sprich(text, ziel, format="mp3", stimme=None, modell=None,
+                       timeout=300):
+    """Text -> Audiodatei ueber VoiceStudio (OpenAI-kompatibel, lokal).
+
+    Kein SSML: VoiceStudio liest <break .../> sonst vor. Satzpausen setzt
+    das Modell an Punkten von selbst.
+    """
+    body = {"model": modell or _vs("modell", "omnivoice"),
+            "input": text,
+            "voice": stimme or _vs("stimme", "Volker"),
+            "language": _vs("sprache", "de"),
+            "response_format": format,
+            "speed": _vs("speed", 1.0)}
+    for k, v in (_vs("extra", {}) or {}).items():
+        body.setdefault(k, v)
+    kopf = {"Content-Type": "application/json"}
+    key = _vs_key()
+    if key:
+        kopf["Authorization"] = f"Bearer {key}"
+    url = _vs("url", "http://127.0.0.1:8840").rstrip("/") + "/v1/audio/speech"
+    r = _vs_sitzung.post(url, json=body, headers=kopf, timeout=timeout)
+    if r.status_code != 200:
+        raise RuntimeError(f"VoiceStudio {r.status_code}: {r.text[:300]}")
+    os.makedirs(os.path.dirname(ziel) or ".", exist_ok=True)
+    with open(ziel, "wb") as fh:
+        fh.write(r.content)
+    return ziel
+
+
+def voicestudio_pcm8k(text):
+    """Text -> rohes PCM (8 kHz, 16 bit, mono), lautheitsangeglichen —
+    fertig fuer den Datenstrom-Weg (strom.py)."""
+    with tempfile.TemporaryDirectory(prefix="vs-") as tmp:
+        roh, wav = os.path.join(tmp, "roh.wav"), os.path.join(tmp, "8k.wav")
+        voicestudio_sprich(text, roh, format="wav")
+        nach_asterisk(roh, wav)
+        with wave.open(wav, "rb") as w:
+            return w.readframes(w.getnframes())
+
+
+def sprich(text, ziel_mp3, anbieter_name=None):
+    """Text -> mp3 ueber den eingestellten Anbieter der festen Ansagen."""
+    if (anbieter_name or anbieter("ansagen")) == "voicestudio":
+        import dialog          # Aussprache-Kruecken (Folme, Akademi, inkl. ...)
+        return voicestudio_sprich(dialog.fuer_die_stimme(text), ziel_mp3, format="mp3")
     voice = core.cfg("elevenlabs", "voiceId", default="")
     if not voice:
         raise RuntimeError("Keine voiceId in config.json hinterlegt")
@@ -91,13 +178,49 @@ def nach_asterisk(quelle, ziel_wav):
     return ziel_wav
 
 
-def baue(name, text):
+def baue(name, text, ordner=None, anbieter_name=None):
     """Eine Ansage komplett erzeugen: mp3 (Vorschau) + wav (Asterisk)."""
-    mp3 = os.path.join(core.SOUNDS, f"{name}.mp3")
-    wav = os.path.join(core.SOUNDS, f"{name}.wav")
-    sprich(text, mp3)
+    ordner = ordner or core.SOUNDS
+    mp3 = os.path.join(ordner, f"{name}.mp3")
+    wav = os.path.join(ordner, f"{name}.wav")
+    sprich(text, mp3, anbieter_name)
     nach_asterisk(mp3, wav)
     return {"mp3": mp3, "wav": wav}
+
+
+def dialog_ansagen():
+    """Alle festen Saetze des Gespraechsmodus: Dateiname -> Text.
+
+    Dieselben Namen, die asterisk/install.sh nach /var/lib/asterisk
+    kopiert und strom.py per ansage() abspielt.
+    """
+    d = core.cfg("dialog", default={}) or {}
+    texte = {}
+    for name in ("nachfrage", "stoerung"):
+        if d.get(name):
+            texte[name] = d[name]
+    if d.get("begruessung"):
+        texte["dialog-begruessung"] = d["begruessung"]
+    for gruppe in ("fueller", "kurzfueller", "dankfueller", "wochenfueller"):
+        texte.update({k: v for k, v in (d.get(gruppe) or {}).items() if v})
+    for i, t in enumerate(d.get("gruesse") or [], 1):
+        texte[f"gruss{i}"] = t
+    for name, schluessel in (("ansage", "text"), ("danke", "danke")):
+        t = (core.cfg("ansage", schluessel, default="") or "").strip()
+        if t:
+            texte[name] = t
+    return texte
+
+
+def baue_dialog_ansagen(ordner, anbieter_name):
+    """Alle festen Ansagen in einen EIGENEN Ordner erzeugen (nie direkt in
+    data/sounds — dort liegen die ElevenLabs-Fassungen, die bei eleven_v3
+    jedes Mal anders klingen und nicht verloren gehen sollen)."""
+    os.makedirs(ordner, exist_ok=True)
+    ergebnis = {}
+    for name, text in dialog_ansagen().items():
+        ergebnis[name] = baue(name, text, ordner, anbieter_name)
+    return ergebnis
 
 
 def baue_alle():
@@ -110,7 +233,13 @@ def baue_alle():
 
 
 if __name__ == "__main__":
-    if "--stimmen" in sys.argv:
+    if "--dialog-ansagen" in sys.argv:
+        # python tts.py --dialog-ansagen <ordner> <elevenlabs|voicestudio>
+        i = sys.argv.index("--dialog-ansagen")
+        ordner, name = sys.argv[i + 1], sys.argv[i + 2]
+        for n, pfade in baue_dialog_ansagen(ordner, name).items():
+            print(f"{n}: {pfade['wav']}")
+    elif "--stimmen" in sys.argv:
         for v in stimmen():
             print(f"{v['id']}  {v['name']:<22} {v['labels']}")
     else:

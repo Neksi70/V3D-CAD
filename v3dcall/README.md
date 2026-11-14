@@ -131,3 +131,24 @@ echtes Web-Push kommt dagegen sofort.
 Gesperrte Nummern: `blocklist` in `config.json` (Liste von Rufnummern,
 exakt wie sie in der Oberfläche erscheinen). Aufnahmen liegen unter
 `data/recordings/`, die Ablage in `data/calls.db`.
+
+## Stimme: ElevenLabs oder VoiceStudio (lokal)
+
+Seit 14.11.2026 umschaltbar über den Block `tts` in `config.json`
+(fehlt er, bleibt alles bei ElevenLabs):
+
+```json
+"tts": {"anbieter": "elevenlabs", "ansagen": null, "live": null,
+        "voicestudio": {"url": "http://127.0.0.1:8840", "keyDatei": "~/voicestudio/.env",
+                        "stimme": "Volker", "modell": "omnivoice", "sprache": "de", "speed": 1.0}}
+```
+
+Umschalten: `bash asterisk/tts-anbieter.sh voicestudio|elevenlabs [ansagen|live|alles]`,
+Spracherkennung im Datenstrom: `bash asterisk/tts-anbieter.sh stt whisper|scribe`,
+Stand: `bash asterisk/tts-anbieter.sh status`. Die ElevenLabs-Ansagen werden beim
+ersten Wechsel nach `data/sounds-elevenlabs/` gesichert und beim Zurückschalten
+von dort geholt (keine Zeichen, gleicher Klang).
+
+Stimmenvergleich: `.venv/bin/python vergleich.py [--nur voicestudio]` →
+`/anrufe/vergleich`. VoiceStudio-Klon „Volker“ = Profil aus
+`data/stimme/voicestudio-referenz.wav` (+ `.txt`).

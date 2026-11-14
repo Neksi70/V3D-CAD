@@ -38,6 +38,7 @@ import numpy as np
 
 import core
 import dialog
+import tts
 
 log = logging.getLogger("strom")
 
@@ -252,6 +253,12 @@ class Scribe:
         self._leser = None
 
     async def verbinde(self):
+        if self.e["sttModell"] in ("whisper", "lokal"):
+            # Ohne ElevenLabs: gar nicht erst versuchen, jede Runde geht an
+            # das lokale Whisper (dialog.hoere) — langsamer, aber kostenlos.
+            log.info("Spracherkennung lokal (Whisper), Scribe abgeschaltet")
+            self.kaputt = True
+            return False
         url = ("wss://api.elevenlabs.io/v1/speech-to-text/realtime"
                f"?model_id={self.e['sttModell']}&audio_format=pcm_8000"
                "&language_code=de&commit_strategy=manual&enable_logging=false")
@@ -778,6 +785,9 @@ class Anruf:
         gesprochen = dialog.fuer_die_stimme(satz)
         if not gesprochen:
             return
+        if tts.anbieter("live") == "voicestudio":
+            await self._sage_lokal(satz, gesprochen, vorher)
+            return
         v = core.cfg("elevenlabs", "voiceId")
         koerper = {"text": gesprochen,
                    "model_id": core.cfg("dialog", "ttsModel", default="eleven_turbo_v2_5"),
@@ -797,11 +807,7 @@ class Anruf:
             # Nachlauf — direkt aneinandergehaengt klang es, als fehlten alle
             # Punkte. Darum vor jedem Folgesatz Stille einschieben; nach einem
             # Komma (der erste Satz darf dort trennen) nur eine kurze.
-            if vorher:
-                ms = core.cfg("dialog", "satzpauseMs", default=450)
-                if not vorher.rstrip().endswith((".", "!", "?")):
-                    ms //= 3
-                self.sprecher.ton(b"\0\0" * (RATE * ms // 1000))
+            self._satzpause(vorher)
             rest = b""
             async for happen in r.content.iter_chunked(1600):
                 if self.denk_abbruch:
@@ -812,6 +818,28 @@ class Anruf:
                 if n and self.antwort_ton is None:
                     self.antwort_ton = time.monotonic()
                 self.sprecher.ton(verstaerke(happen[:n], self.e["gainDb"]))
+        self.sprecher.satz_fertig(satz)
+
+    def _satzpause(self, vorher):
+        if vorher:
+            ms = core.cfg("dialog", "satzpauseMs", default=450)
+            if not vorher.rstrip().endswith((".", "!", "?")):
+                ms //= 3
+            self.sprecher.ton(b"\0\0" * (RATE * ms // 1000))
+
+    async def _sage_lokal(self, satz, gesprochen, vorher):
+        """Wie sage(), aber ueber VoiceStudio: der Satz kommt am Stueck
+        (kein Streaming), wird auf 8 kHz und gleiche Lautheit gebracht und
+        dann in den Anruf gegeben."""
+        pcm = await asyncio.get_running_loop().run_in_executor(
+            None, tts.voicestudio_pcm8k, gesprochen)
+        if self.denk_abbruch:
+            return
+        self.sprecher.satz_beginn(satz)
+        self._satzpause(vorher)
+        if self.antwort_ton is None:
+            self.antwort_ton = time.monotonic()
+        self.sprecher.ton(verstaerke(pcm, self.e["gainDb"]))
         self.sprecher.satz_fertig(satz)
 
     async def anrufbeantworter(self):
