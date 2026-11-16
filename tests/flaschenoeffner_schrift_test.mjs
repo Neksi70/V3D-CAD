@@ -61,11 +61,33 @@ try {
   await p.waitForTimeout(800);
   const r = await p.evaluate(() => ({ f: _foeP.font, rows: [...document.querySelectorAll('#foe-flist .fli-row')].map(x => x.dataset.k).filter(k => /^user_/.test(k)).length }));
   ok(/^user_dejavu/.test(r.f) && r.rows === 1, 'nach Neuladen: eigene Schrift weiter da und gewählt');
+  // Installierte Schriften des PCs (Local Font Access) – Knopf, Liste, Suche, Übernehmen
+  await ctx.grantPermissions(['local-fonts'], { origin: `http://127.0.0.1:${PORT}` }).catch(e => console.log('grant:', e.message));
+  ok(await p.evaluate(() => typeof window.queryLocalFonts === 'function'), 'Browser kennt queryLocalFonts');
+  await p.locator('#foe-pcbtn').click();
+  await p.waitForFunction(() => _fliPC && _fliPC.length > 3 && document.querySelectorAll('#foe-flist .fli-row.pc').length === _fliPC.length, null, { timeout: 15000 }).catch(() => {});
+  const pc = await p.evaluate(() => ({ n: _fliPC ? _fliPC.length : 0, rows: document.querySelectorAll('#foe-flist .fli-row.pc').length, q: getComputedStyle(document.getElementById('foe-fq')).display, b: getComputedStyle(document.getElementById('foe-pcbtn')).display,
+    fams: (_fliPC || []).map(f => f.family).slice(0, 8).join(', ') }));
+  ok(pc.n > 3 && pc.rows === pc.n && pc.q !== 'none' && pc.b === 'none', `PC-Schriften gelistet: ${pc.n} Familien (${pc.fams} …), Suchfeld da, Knopf weg`);
+  await p.locator('#foe-fq').fill('dejavu serif');
+  await p.waitForTimeout(400);
+  const vis = await p.evaluate(() => [...document.querySelectorAll('#foe-flist .fli-row')].filter(r => r.style.display !== 'none').map(r => r.querySelector('.fli-name').textContent));
+  ok(vis.length >= 1 && vis.every(v => /dejavu serif/i.test(v)), `Suche „dejavu serif“: ${vis.join(' | ')}`);
+  await p.waitForTimeout(600);
+  const pink = await p.evaluate(() => { const cv = [...document.querySelectorAll('#foe-flist .fli-row.pc')].find(r => r.style.display !== 'none').querySelector('canvas'); const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data; let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 200) n++; return n; });
+  ok(pink > 50, `PC-Schrift-Vorschau gezeichnet (${pink} Pixel)`);
+  await p.screenshot({ path: `${SHOTS}/foe-pc-schriften.png`, clip: await p.locator('#foe-modal .g3box').boundingBox() });
+  await p.locator('#foe-flist .fli-row.pc:not([style*="none"])').first().click();
+  await p.waitForFunction(() => /^user_dejavu_serif/.test(_foeP.font), null, { timeout: 15000 }).catch(() => {});
+  const ad = await p.evaluate(() => ({ f: _foeP.font, ue: (() => { try { return window['_threeFont_' + _foeP.font].generateShapes('Grüße', 100).length; } catch (e) { return -1; } })(), n: _ufFonts.length }));
+  ok(/^user_dejavu_serif/.test(ad.f) && ad.ue >= 6 && ad.n === 2, `PC-Schrift übernommen + gewählt (${ad.f}), „Grüße“ = ${ad.ue} Formen, gespeichert`);
+  await p.evaluate(() => { _ufRemove(_foeP.font); _foeSet('font', _ufFonts[0].key); document.getElementById('foe-fq').value = ''; _fliFilter(_FOE_FLI); });
   // Geldgeschenk: dieselbe Liste, eigene Schrift dort auch verfügbar
   await p.evaluate(() => { _foeClose(); localStorage.removeItem('v3d_ggp'); _ggpReset(); _ggpOpen(); });
   await p.waitForTimeout(800);
-  const gg = await p.evaluate(() => { const rows = [...document.querySelectorAll('#ggp-flist .fli-row')];
-    return { n: rows.length, on: rows.filter(r => r.classList.contains('on')).map(r => r.dataset.k), user: rows.filter(r => /^user_dejavu/.test(r.dataset.k)).length, sel: getComputedStyle(document.getElementById('ggp-font')).display }; });
+  const gg = await p.evaluate(() => { const rows = [...document.querySelectorAll('#ggp-flist .fli-row:not(.pc)')];
+    return { n: rows.length, on: rows.filter(r => r.classList.contains('on')).map(r => r.dataset.k), user: rows.filter(r => /^user_dejavu/.test(r.dataset.k)).length, sel: getComputedStyle(document.getElementById('ggp-font')).display, pc: document.querySelectorAll('#ggp-flist .fli-row.pc').length === _fliPC.length && getComputedStyle(document.getElementById('ggp-fq')).display !== 'none' }; });
+  ok(gg.pc, 'Geldgeschenk zeigt dieselben PC-Schriften + Suchfeld');
   ok(gg.n === 6 && gg.on.length === 1 && gg.user === 1 && gg.sel === 'none', `Geldgeschenk: ${gg.n} Schriften mit Vorschau (inkl. eigener DejaVu), aktiv ${gg.on}`);
   await p.locator('#ggp-flist .fli-row[data-k^="user_dejavu"]').click();
   await p.evaluate(() => { _ggpSet('text1', 'Für Jürgen'); _ggpSet('text2', 'Größe ✓'); });
