@@ -41,15 +41,16 @@ function _hhoBuild(w, pIn, textFn) {
     const motiv = k(CS.union([rot, weiss, hutAlles].filter(Boolean)));
     let schwarz = rund(k(motiv.offset(rand, 'Round', 2, 24)), Math.min(4, rand * 0.6));
     const mb = schwarz.bounds();
-    // ── L-Winkel: Leiste oben (auf der Türzarge), Schenkel an der Seite; Motiv hängt in der Ecke ──
-    // rechte Ecke: nur der Winkel wird gespiegelt, Schrift/Mütze bleiben lesbar und rücken links neben den Schenkel
+    // ── L-Winkel: Leiste oben + Schenkel liegen auf der Türzarge; Schrift und Mütze sitzen AUSSEN neben dem Schenkel
+    // auf der Wand (nicht in der Türöffnung), die Mütze schaut oben über die Ecke. Rechte Ecke: nur der Winkel wird gespiegelt.
     const re = ecke && p.ecke === 'rechts';
     let dx = 0, dy = 0, info = {}, Lw = null, lippe = null;
     if (ecke) {
-      dx = re ? -hb + 1 - mb.max[0] : hb - mb.min[0] - 1; dy = -hb - mb.max[1] + 1;   // Kontur überlappt Leiste und Schenkel um 1 mm
-      const oben = Math.max(p.oben || 0, mb.max[0] - mb.min[0] + hb + 20), seite = Math.max(p.seite || 0, mb.max[1] - mb.min[1] + hb + 20);
+      dx = re ? -mb.min[0] - 1 : -mb.max[0] + 1;                                // Kontur überlappt die Außenkante des Schenkels um 1 mm
+      dy = -mb.max[1] + (p.hut ? 0.35 * H * p.hut_gr : 0);                       // Oberkante bündig mit der Zarge, Mütze ragt darüber
+      const oben = Math.max(p.oben || 0, 60), seite = Math.max(p.seite || 0, mb.max[1] - mb.min[1] - (p.hut ? 0.35 * H * p.hut_gr : 0) + 10);
       Lw = k(CS.union([k(CS.square([oben, hb], false).translate([0, -hb])), k(CS.square([hb, seite], false).translate([0, -seite]))]));
-      if (p.lippe > 0) lippe = k(CS.union([k(CS.square([oben, 1.6], false).translate([0, -1.6])), k(CS.square([1.6, seite], false).translate([0, -seite]))]));
+      if (p.lippe > 0) lippe = k(CS.union([k(CS.square([oben - hb, 1.6], false).translate([hb, -hb])), k(CS.square([1.6, seite - hb + 1.6], false).translate([hb - 1.6, -seite]))]));   // Lippe an der Innenkante (Türöffnung)
       if (re) { Lw = k(Lw.mirror([1, 0])); if (lippe) lippe = k(lippe.mirror([1, 0])); }
       info = { oben, seite };
     }
