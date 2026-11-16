@@ -19,6 +19,15 @@ try {
   await p.waitForFunction(() => typeof _mfWasm !== 'undefined' && _mfWasm, null, { timeout: 40000 }).catch(() => {});
   ok(await p.evaluate(() => _STARTERS.some(s => s.t === 'Flaschenöffner-Gravur (Laser)') && _GEN_THEMEN.some(([n, l]) => n === 'Laser & Werkstatt' && l.includes('Flaschenöffner-Gravur (Laser)'))), 'Generator in Liste + Rubrik „Laser & Werkstatt“');
   ok(await p.evaluate(() => document.querySelectorAll('#foe-vorlage option').length >= 7), 'Vorlagen-Auswahl gefüllt');
+  // Echtes Foto als Vorschau-Hintergrund (nur Anzeige)
+  await p.waitForFunction(() => _foeFoto(), null, { timeout: 10000 }).catch(() => {});
+  ok(await p.evaluate(() => { const f = _foeFoto(); return !!f && f.naturalWidth === 640 && f.naturalHeight === 204; }), 'Foto geladen (640×204)');
+  // Vorschau nutzt das Foto: Pixel mitten auf dem Holz ist holzfarben (hell, warm), nicht der gezeichnete Verlauf
+  const px = await p.evaluate(async () => { _foeVorlage(''); _foeSet('text', ''); await new Promise(r => setTimeout(r, 200));
+    const cv = document.getElementById('foe-canvas'), d = Math.min(devicePixelRatio || 1, 2), fk = 412 / 640;
+    const x = Math.round((14 + 400 * fk) * d), y = Math.round((26 + 105 * fk) * d);
+    return Array.from(cv.getContext('2d').getImageData(x, y, 1, 1).data); });
+  ok(px[0] > 170 && px[0] - px[2] > 40, `Vorschau zeigt das Foto (Holzpixel rgb ${px.slice(0, 3).join(',')})`);
   // Schriften aller Vorlagen vorladen
   await p.evaluate(() => Object.values(_FOE_VORLAGEN).forEach(v => _foeFont(v.font)));
   await p.waitForFunction(() => Object.values(_FOE_VORLAGEN).every(v => window['_threeFont_' + v.font]), null, { timeout: 40000 }).catch(() => {});
@@ -67,6 +76,7 @@ try {
   ok(sv.gp === 5 && sv.kp === 6, `SVG: ${sv.gp} verschweißte Gravur-Pfade (5 Sprüche, 1 Platz leer), ${sv.kp} Konturen`);
   ok(/1 von 6 Plätzen ohne Spruch/.test(sv.warn), 'Hinweis auf leeren Platz');
   ok(/width="335mm" height="72mm" viewBox="0 0 335 72"/.test(sv.svg) && /inkscape:label="Gravur"/.test(sv.svg) && /inkscape:label="Kontur"/.test(sv.svg) && /stroke-width="0.1"/.test(sv.svg), 'SVG in mm mit Ebenen Gravur + Kontur (0,1 mm rot)');
+  ok(!/<image|data:image|base64/i.test(sv.svg), 'Laser-SVG enthält kein Foto (<image>/data-URL)');
   writeFileSync(`${SHOTS}/beispiel_serie_3x2.svg`, sv.svg);
   await p.waitForTimeout(200);
   await p.screenshot({ path: `${SHOTS}/foe-serie-3x2.png`, clip: await p.locator('#foe-cvwrap').boundingBox() });
