@@ -25,7 +25,7 @@ try {
         aufliegen: V(R.schwarz.translate([0, 0, 0.1]), R.rot) > 1, sx: bb(R.schwarz), rx: bb(R.rot), info: R.info };
       for (const k of ['schwarz', 'rot', 'weiss']) R[k].delete(); }
     return out; });
-  ok(r.links.st === 1 && r.links.ueb < 1e-3 && r.links.aufliegen && r.links.rotSt >= 3, `Linke Ecke: Schwarz 1 Stück, Rot ${r.links.rotSt} Stück(e) (Zeilen getrennt, Kontur verbindet), keine Überschneidung, Rot liegt auf (${Math.round(r.links.info.breite)} × ${Math.round(r.links.info.hoehe)} mm)`);
+  ok(r.links.st === 1 && r.links.ueb < 1e-3 && r.links.aufliegen && r.links.rotSt >= 1, `Linke Ecke: Schwarz 1 Stück, Rot ${r.links.rotSt} Stück(e) (Zeilen greifen ineinander wie im Vorbild), keine Überschneidung, Rot liegt auf (${Math.round(r.links.info.breite)} × ${Math.round(r.links.info.hoehe)} mm)`);
   ok(r.tx_links[1] < 0 && r.tx_links[1] > -5 && r.rechts.st === 1 && r.rechts.ueb < 1e-3 && r.tx_rechts[0] > 0 && r.tx_rechts[0] < 5, `Zeilen direkt außen am Schenkel (links bis x = ${r.tx_links[1].toFixed(1)}, rechts ab x = ${r.tx_rechts[0].toFixed(1)}), rechte Ecke 1 Stück, keine Überschneidung`);
   const sz = await p.evaluate(async () => { await _hhoCreate(); return objects.map(o => o.userData.name); });
   ok(sz.length === 3 && sz.every(n => /^HO HO HO/.test(n)), 'Erstellen: ' + sz.join(', '));

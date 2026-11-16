@@ -2,7 +2,7 @@
 // Flach, mm, Vorderseite oben (z), y oben. Schwarz = L-Winkel für die Türecke + Kontur um Schrift und Mütze (ein Teil),
 // Rot = Buchstaben + Mütze, Weiß = Krempe + Bommel – beide erhaben auf der schwarzen Platte (stützfrei).
 // textFn(CS, keep, txt, fontKey, h, cx, yb, maxW) → { cs } (App: _lttText); ohne textFn (Node) nur Mütze + Winkel.
-const HHO_DEF = { text: 'HO\nHO\nHO', font: 'helvetiker_bold', hoehe: 40, zeilen: 1.1, sperren: -6, rand: 3, dicke: 4, erhaben: 2.5,
+const HHO_DEF = { text: 'HO\nHO\nHO', font: 'helvetiker_bold', hoehe: 40, zeilen: 0.86, luecke: 1.5, kippen: 12, sperren: -6, rand: 3, dicke: 4, erhaben: 2.5,
   hut: 1, hut_gr: 1.35, hut_winkel: 14, modus: 'ecke', ecke: 'rechts', leiste: 12, lippe: 2, oben: 0, seite: 0 };
 // Anordnung wie im Vorbild (rechte Türecke): Winkel = Leiste nach links + Schenkel nach unten; die Zeilen stehen AUSSEN
 // rechts neben dem Schenkel und beginnen an seiner Kante; die große Mütze sitzt oben auf der Ecke, Spitze zur Leiste,
@@ -20,7 +20,7 @@ function _hhoBuild(w, pIn, textFn) {
       const ref = textFn(CS, k, 'H', p.font, 50, 0, 0, 1e6), rb = ref && ref.cs ? ref.cs.bounds() : null;
       const s = rb ? H / (rb.max[1] - rb.min[1]) : 1, gap = H * p.sperren / 100;
       zeilen.forEach((z, i) => {
-        const yb = yTop - H - i * H * p.zeilen, glyphen = [];
+        const yb = yTop - H, glyphen = [];
         let x = 0;
         for (const ch of [...z]) {
           if (ch === ' ') { x += H * 0.35; continue; }
@@ -31,7 +31,18 @@ function _hhoBuild(w, pIn, textFn) {
         if (!glyphen.length) return;
         const lw = x - gap; breite = Math.max(breite, lw);
         let zl = k(CS.union(glyphen));
-        zl = k(zl.translate([li ? -x0 - lw : x0, 0]));                        // rechte Ecke: links bündig am Schenkel, linke Ecke: rechts bündig
+        // wie im Vorbild: Zeilen abwechselnd gekippt (1. O tiefer, 2. O höher …), Drehpunkt = Grundlinie an der Schenkelseite
+        const a = (i % 2 ? 1 : -1) * p.kippen * (li ? -1 : 1), px = li ? lw : 0;
+        if (a) zl = k(k(k(zl.translate([-px, -yb])).rotate(a)).translate([px, yb]));
+        const zb = zl.bounds();
+        zl = k(zl.translate([li ? -x0 - zb.max[0] : x0 - zb.min[0], 0]));      // rechte Ecke: links bündig am Schenkel, linke Ecke: rechts bündig
+        if (L.length) {                                                        // so weit hochrücken, bis die Zeile die obere gerade nicht berührt (Abstand „luecke“)
+          const oben = k(k(CS.union(L)).offset(Math.max(0.01, p.luecke), 'Round', 2, 16)), ob = oben.bounds(), cb = zl.bounds();
+          let lo = 0, hi = Math.max(0, ob.min[1] - cb.max[1]) + (cb.max[1] - cb.min[1]) * 2;   // hi = sicher frei (unter allem)
+          const frei = d => { const t = k(zl.translate([0, -d])), a = k(t.intersect(oben)).area(); return a < 0.01; };
+          if (frei(lo)) hi = lo; else for (let it = 0; it < 18; it++) { const m = (lo + hi) / 2; if (frei(m)) hi = m; else lo = m; }
+          zl = k(zl.translate([0, -hi]));
+        }
         L.push(zl);
       });
     }
@@ -55,8 +66,7 @@ function _hhoBuild(w, pIn, textFn) {
     const mb = schwarz.bounds();
     let info = {}, lippe = null;
     if (ecke) {                                                                // Winkel: Leiste zur Türmitte, Schenkel nach unten (rechte Ecke: Leiste nach links)
-      const zeilenH = zeilen.length ? (zeilen.length - 1) * H * p.zeilen + H : H;
-      const oben = Math.max(p.oben || 0, 80), seite = Math.max(p.seite || 0, -yTop + zeilenH + rand + 15);
+      const oben = Math.max(p.oben || 0, 80), seite = Math.max(p.seite || 0, -mb.min[1] + 5);   // Schenkel bis knapp unter die Schrift
       let Lw = k(CS.union([k(CS.square([oben, hb], false).translate([-oben, -hb])), k(CS.square([hb, seite], false).translate([-hb, -seite]))]));
       if (p.lippe > 0) lippe = k(CS.union([k(CS.square([oben - hb, 1.6], false).translate([-oben, -hb])), k(CS.square([1.6, seite - hb + 1.6], false).translate([-hb, -seite]))]));   // Lippe an der Innenkante (Türöffnung)
       if (li) { Lw = k(Lw.mirror([1, 0])); if (lippe) lippe = k(lippe.mirror([1, 0])); }
