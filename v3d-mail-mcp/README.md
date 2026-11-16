@@ -101,11 +101,16 @@ G-Code-Endungen aus den freigegebenen Ordnern; die gerade gedruckte Datei lässt
 Während eines Makros (z. B. Heat Soak) stellt Klipper G-Code hinten an → `fertig: false`, läuft später.
 
 ## Claude Code headless: code_* (11.11.2026)
-`code_auftrag(auftrag, ordner?, titel?)` → sofort `job_id`; `code_status`, `code_ergebnis`, `code_liste`, `code_abbrechen`.
+`code_auftrag(auftrag, ordner?, titel?, ressource?, zeitlimit_min?)` → sofort `job_id`; `code_status`, `code_ergebnis`, `code_liste`, `code_abbrechen`.
 - Jobs unter `~/code-auftraege/<id>/` (auftrag.md, meta.json, ausgabe.jsonl = stream-json, ergebnis.md, stderr.txt).
 - Jeder Job = eigene systemd-User-Unit `code-auftrag-<id>` (`systemd-run --user`): überlebt MCP-Neustarts,
-  RuntimeMaxSec = Zeitlimit + 2 min, Abbruch = `systemctl --user stop`. Höchstens 1 parallel (CODE_AUFTRAG_PARALLEL),
-  60 min (CODE_AUFTRAG_MINUTEN); der fertige Läufer startet den nächsten wartenden.
+  RuntimeMaxSec = Zeitlimit + 2 min, Abbruch = `systemctl --user stop`; der fertige Läufer startet die nächsten wartenden.
+- **Parallelbetrieb (16.11.2026):** bis zu 3 Jobs gleichzeitig (`CODE_AUFTRAG_PARALLEL` in `.env`, Standard 3).
+  **Ressourcen-Sperre:** Jobs mit derselben `ressource` laufen nacheinander, andere ziehen vorbei. Ohne Angabe
+  erkennt `RESSOURCEN_STICHWORTE` in code.py „drucker“ (SV08, Drucker, Klipper, Moonraker, G-Code, Mesh, Gantry);
+  `ressource="keine"` schaltet die Erkennung ab. Steht in meta.json (`ressource`, `zeitlimit_min`).
+- **Zeitlimit je Job:** `zeitlimit_min` (Standard `CODE_AUFTRAG_MINUTEN`=60, max. `CODE_AUFTRAG_MINUTEN_MAX`=180).
+- Test ohne systemd/Claude: `.venv/bin/python -m tests.test_code_queue`.
 - `claude -p --permission-mode auto --output-format stream-json` + angehängte Regel „folgenreiche Schritte nur
   unter ‚Wartet auf Bestätigung‘ listen“ + `--disallowedTools` (sudo, git push, ssh/rsync, ausrollen, Drucker-Neustart/
   Druckstart, Mail senden, code_auftrag selbst gegen Rekursion …).

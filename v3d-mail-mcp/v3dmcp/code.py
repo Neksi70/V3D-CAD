@@ -3,8 +3,11 @@
 code_auftrag legt einen Job unter ~/code-auftraege/<id>/ an und startet ihn als eigene
 systemd-User-Unit (`systemd-run --user`): so überlebt er einen Neustart des MCP-Dienstes,
 hat ein hartes Zeitlimit (RuntimeMaxSec) und lässt sich mit `systemctl --user stop` abbrechen.
-Gleichzeitig laufen höchstens MAX_PARALLEL Jobs, der Rest wartet; jeder fertige Job startet
-den nächsten (zusätzlich räumen code_status/code_liste auf, falls ein Läufer hart beendet wurde).
+Gleichzeitig laufen höchstens MAX_PARALLEL Jobs (Standard 3), der Rest wartet; jeder fertige Job
+startet den nächsten (zusätzlich räumen code_status/code_liste auf, falls ein Läufer hart beendet wurde).
+Ressourcen-Sperre: Jobs mit derselben `ressource` (z. B. "drucker") laufen nur nacheinander; ohne
+Angabe wird "drucker" per Stichwort (SV08, Klipper, Moonraker, G-Code, Mesh, Gantry …) erkannt,
+ressource="keine" schaltet die Erkennung ab. Zeitlimit je Job (zeitlimit_min, Standard 60, max. 180).
 
 Je Job-Ordner: auftrag.md (Text), meta.json (Zustand), ausgabe.jsonl (stream-json von Claude),
 ergebnis.md (Abschlussbericht), stderr.txt. Kurzbericht zusätzlich ins gemeinsame Gedächtnis
@@ -31,8 +34,15 @@ else:
 HOME = os.path.expanduser('~')
 BASIS = os.path.expanduser(os.environ.get('CODE_AUFTRAG_DIR') or '~/code-auftraege')
 CLAUDE = os.environ.get('CODE_AUFTRAG_CLAUDE') or os.path.join(HOME, '.npm-global/bin/claude')
-MAX_PARALLEL = int(os.environ.get('CODE_AUFTRAG_PARALLEL') or 1)
-MAX_MINUTEN = int(os.environ.get('CODE_AUFTRAG_MINUTEN') or 60)
+MAX_PARALLEL = max(1, int(os.environ.get('CODE_AUFTRAG_PARALLEL') or 3))
+MAX_MINUTEN = int(os.environ.get('CODE_AUFTRAG_MINUTEN') or 60)          # Standard-Zeitlimit je Job
+MAX_MINUTEN_OBERGRENZE = int(os.environ.get('CODE_AUFTRAG_MINUTEN_MAX') or 180)
+# Automatische Ressourcen-Erkennung (Fallback, wenn code_auftrag keine ressource angibt)
+RESSOURCEN_STICHWORTE = {
+    'drucker': re.compile(r'(?i)\bsv\s*0?8\b|drucker|\bklipper|\bmoonraker|\bg-?code|\bmesh\b'
+                          r'|\bbed[ _-]?mesh|\bgantry'),
+}
+_RESSOURCE = re.compile(r'^[a-z0-9_-]{1,30}$')
 MAX_ZEICHEN = 20000
 GEDAECHTNIS = os.path.join(os.path.expanduser(os.environ.get('GEDAECHTNIS_DIR')
                                               or '~/.claude/projects/-home-v3da/memory'),
@@ -136,10 +146,24 @@ def _pruefen_ordner(ordner):
 
 # --- Aufräumen + Warteschlange -------------------------------------------------
 
-def _aufraeumen():
-    """Hart beendete Läufer (Zeitlimit, Absturz) als Fehler markieren, wartende Jobs starten.
-    Muss unter _Sperre laufen."""
-    laufend, wartend = 0, []
+def _zeitlimit(meta):
+    return int(meta.get('zeitlimit_min') or MAX_MINUTEN)
+
+
+def ressource_erkennen(*texte):
+    """Ressource per Stichwort aus Titel/Auftrag (None = keine)."""
+    t = '\n'.join(x for x in texte if x)
+    for name, muster in RESSOURCEN_STICHWORTE.items():
+        if muster.search(t):
+            return name
+    return None
+
+
+def _aufraeumen(ohne=None):
+    """Hart beendete Läufer (Zeitlimit, Absturz) als Fehler markieren, wartende Jobs starten:
+    höchstens MAX_PARALLEL gleichzeitig, je Ressource nur einer. `ohne` = eigene, gerade endende
+    Läufer-Unit (zählt nicht als laufend). Muss unter _Sperre laufen."""
+    laufend, belegt, wartend = 0, set(), []
     for job_id in _alle_ids():
         d = os.path.join(BASIS, job_id)
         try:
@@ -147,25 +171,53 @@ def _aufraeumen():
         except (OSError, ValueError):
             continue
         if meta['status'] == 'läuft':
+            if job_id == ohne:
+                continue
             if _unit_aktiv(job_id):
                 laufend += 1
+                if meta.get('ressource'):
+                    belegt.add(meta['ressource'])
             else:
                 meta.update(status='fehler', ende=_jetzt(),
                             fehler=meta.get('fehler') or 'Läufer beendet ohne Abschluss '
-                            '(Zeitlimit %d min oder Absturz).' % MAX_MINUTEN)
+                            '(Zeitlimit %d min oder Absturz).' % _zeitlimit(meta))
                 _meta_schreiben(d, meta)
         elif meta['status'] == 'wartet':
             wartend.append((job_id, d, meta))
-    for job_id, d, meta in sorted(wartend, key=lambda x: x[0]):
+    for job_id, d, meta in sorted(wartend, key=lambda x: x[0]):   # älteste zuerst
         if laufend >= MAX_PARALLEL:
             break
+        res = meta.get('ressource')
+        if res and res in belegt:
+            continue                       # Ressource belegt → später; andere Jobs dürfen vorbei
         _starten(job_id, d, meta)
-        laufend += 1
+        if _status_kurz(job_id) == 'läuft':
+            laufend += 1
+            if res:
+                belegt.add(res)
+
+
+def _wartegrund(job_id, meta):
+    """Warum ein wartender Job (noch) nicht läuft – für code_status/code_liste."""
+    laufend = [m for m in (_meta_oder_none(i) for i in _alle_ids()) if m and m['status'] == 'läuft']
+    res = meta.get('ressource')
+    if res and any(m.get('ressource') == res for m in laufend):
+        return 'Ressource „%s“ ist belegt – wartet auf den laufenden %s-Auftrag.' % (res, res)
+    if len(laufend) >= MAX_PARALLEL:
+        return 'Alle %d Plätze belegt – startet, sobald ein Auftrag fertig ist.' % MAX_PARALLEL
+    return 'Startet gleich.'
+
+
+def _meta_oder_none(job_id):
+    try:
+        return _meta_lesen(os.path.join(BASIS, job_id))
+    except (OSError, ValueError):
+        return None
 
 
 def _starten(job_id, d, meta):
     cmd = ['systemd-run', '--user', '--unit=' + _unit(job_id), '--collect', '--quiet',
-           '--property=RuntimeMaxSec=%d' % (MAX_MINUTEN * 60 + 120),
+           '--property=RuntimeMaxSec=%d' % (_zeitlimit(meta) * 60 + 120),
            '--property=KillMode=control-group',
            '--working-directory=' + meta['ordner'],
            '--setenv=PATH=%s/.npm-global/bin:%s/.local/bin:/usr/local/bin:/usr/bin:/bin' % (HOME, HOME),
@@ -182,7 +234,32 @@ def _starten(job_id, d, meta):
 
 # --- Werkzeuge -------------------------------------------------------------------
 
-def auftrag(text, ordner=None, titel=None):
+def _pruefen_ressource(ressource, titel, text):
+    """→ (ressource oder None, Herkunft). "keine" schaltet die Stichwort-Erkennung ab."""
+    r = (ressource or '').strip().lower()
+    if r in ('keine', 'none', '-'):
+        return None, 'ausdrücklich keine'
+    if r:
+        if not _RESSOURCE.match(r):
+            raise MailError('Ressource "%s" ungültig (nur a-z, 0-9, _ und -, max. 30 Zeichen).' % ressource)
+        return r, 'angegeben'
+    r = ressource_erkennen(titel, text)
+    return r, ('erkannt per Stichwort' if r else None)
+
+
+def _pruefen_zeitlimit(zeitlimit_min):
+    if zeitlimit_min in (None, ''):
+        return MAX_MINUTEN
+    try:
+        z = int(zeitlimit_min)
+    except (TypeError, ValueError):
+        raise MailError('zeitlimit_min muss eine ganze Zahl sein.')
+    if not 1 <= z <= MAX_MINUTEN_OBERGRENZE:
+        raise MailError('zeitlimit_min muss zwischen 1 und %d liegen.' % MAX_MINUTEN_OBERGRENZE)
+    return z
+
+
+def auftrag(text, ordner=None, titel=None, ressource=None, zeitlimit_min=None):
     text = (text or '').strip()
     if not text:
         raise MailError('Auftragstext fehlt.')
@@ -190,6 +267,8 @@ def auftrag(text, ordner=None, titel=None):
         raise MailError('Auftrag zu lang (max. %d Zeichen).' % MAX_ZEICHEN)
     pfad = _pruefen_ordner(ordner)
     titel = re.sub(r'\s+', ' ', (titel or text.splitlines()[0])).strip()[:100]
+    res, res_herkunft = _pruefen_ressource(ressource, titel, text)
+    zeit = _pruefen_zeitlimit(zeitlimit_min)
     with _Sperre():
         job_id = time.strftime('%Y%m%d-%H%M%S-') + secrets.token_hex(2)
         d = os.path.join(BASIS, job_id)
@@ -197,15 +276,23 @@ def auftrag(text, ordner=None, titel=None):
         with open(os.path.join(d, 'auftrag.md'), 'w', encoding='utf-8') as fh:
             fh.write(text + '\n')
         meta = {'id': job_id, 'titel': titel, 'ordner': pfad, 'status': 'wartet',
-                'angelegt': _jetzt(), 'start': None, 'ende': None}
+                'angelegt': _jetzt(), 'start': None, 'ende': None,
+                'ressource': res, 'zeitlimit_min': zeit}
         _meta_schreiben(d, meta)
         _aufraeumen()
         meta = _meta_lesen(d)
         vor = sum(1 for i in _alle_ids() if i < job_id and _status_kurz(i) in ('wartet', 'läuft'))
-    return {'job_id': job_id, 'status': meta['status'], 'titel': titel, 'ordner': pfad,
-            'auftraege_davor': vor,
-            'hinweis': 'Läuft im Hintergrund (bis %d min). Später code_status("%s") bzw. code_ergebnis("%s") '
-                       'aufrufen – nicht in einer Schleife warten.' % (MAX_MINUTEN, job_id, job_id)}
+        grund = _wartegrund(job_id, meta) if meta['status'] == 'wartet' else None
+    antwort = {'job_id': job_id, 'status': meta['status'], 'titel': titel, 'ordner': pfad,
+               'ressource': res, 'zeitlimit_min': zeit, 'max_parallel': MAX_PARALLEL,
+               'auftraege_davor': vor,
+               'hinweis': 'Läuft im Hintergrund (bis %d min). Später code_status("%s") bzw. code_ergebnis("%s") '
+                          'aufrufen – nicht in einer Schleife warten.' % (zeit, job_id, job_id)}
+    if res_herkunft:
+        antwort['ressource_herkunft'] = res_herkunft
+    if grund:
+        antwort['wartegrund'] = grund
+    return antwort
 
 
 def _status_kurz(job_id):
@@ -253,15 +340,17 @@ def status(job_id):
     with _Sperre():
         _aufraeumen()
         meta = _meta_lesen(d)
+        grund = _wartegrund(job_id, meta) if meta['status'] == 'wartet' else None
     antwort = {'job_id': job_id, 'titel': meta['titel'], 'status': meta['status'],
                'angelegt': meta['angelegt'], 'start': meta.get('start'), 'ende': meta.get('ende'),
-               'laufzeit': _dauer(meta), 'letzte_schritte': _verlauf(d)}
+               'laufzeit': _dauer(meta), 'ressource': meta.get('ressource'),
+               'zeitlimit_min': _zeitlimit(meta), 'letzte_schritte': _verlauf(d)}
     if meta.get('fehler'):
         antwort['fehler'] = meta['fehler']
     if meta['status'] in ('fertig', 'fehler', 'abgebrochen'):
         antwort['hinweis'] = 'Bericht mit code_ergebnis("%s").' % job_id
     elif meta['status'] == 'wartet':
-        antwort['hinweis'] = 'Wartet, bis der laufende Auftrag fertig ist.'
+        antwort['hinweis'] = grund
     return antwort
 
 
@@ -293,9 +382,17 @@ def liste(anzahl=10):
                 meta = _meta_lesen(os.path.join(BASIS, job_id))
             except (OSError, ValueError):
                 continue
-            jobs.append({'job_id': job_id, 'titel': meta['titel'], 'status': meta['status'],
-                         'angelegt': meta['angelegt'], 'laufzeit': _dauer(meta)})
-    return {'jobs': jobs, 'max_parallel': MAX_PARALLEL, 'zeitlimit_min': MAX_MINUTEN}
+            eintrag = {'job_id': job_id, 'titel': meta['titel'], 'status': meta['status'],
+                       'angelegt': meta['angelegt'], 'laufzeit': _dauer(meta),
+                       'ressource': meta.get('ressource'), 'zeitlimit_min': _zeitlimit(meta)}
+            if meta['status'] == 'wartet':
+                eintrag['wartegrund'] = _wartegrund(job_id, meta)
+            jobs.append(eintrag)
+        laufend = sum(1 for i in _alle_ids() if _status_kurz(i) == 'läuft')
+    return {'jobs': jobs, 'max_parallel': MAX_PARALLEL, 'laufend': laufend,
+            'zeitlimit_standard_min': MAX_MINUTEN, 'zeitlimit_max_min': MAX_MINUTEN_OBERGRENZE,
+            'regel': 'Bis zu %d Aufträge parallel; Aufträge mit derselben Ressource (z. B. "drucker") '
+                     'laufen nacheinander.' % MAX_PARALLEL}
 
 
 def abbrechen(job_id):
@@ -329,11 +426,11 @@ def _laeufer(job_id):
         with open(os.path.join(d, 'ausgabe.jsonl'), 'w') as aus, \
                 open(os.path.join(d, 'stderr.txt'), 'w') as err:
             p = subprocess.run(cmd, input=text, stdout=aus, stderr=err, text=True,
-                               cwd=meta['ordner'], timeout=MAX_MINUTEN * 60)
+                               cwd=meta['ordner'], timeout=_zeitlimit(meta) * 60)
         if p.returncode != 0:
             fehler = 'Claude Code endete mit Code %d.' % p.returncode
     except subprocess.TimeoutExpired:
-        fehler = 'Zeitlimit von %d min erreicht – abgebrochen.' % MAX_MINUTEN
+        fehler = 'Zeitlimit von %d min erreicht – abgebrochen.' % _zeitlimit(meta)
 
     bericht, kosten, dateien = '', None, []
     with open(os.path.join(d, 'ausgabe.jsonl'), encoding='utf-8', errors='replace') as fh:
@@ -371,18 +468,7 @@ def _laeufer(job_id):
         _protokoll(meta, bericht)
     # nächsten Job erst starten, wenn diese Unit gleich endet: kurz als eigener Schritt
     with _Sperre():
-        _aufraeumen_ohne(job_id)
-
-
-def _aufraeumen_ohne(eigene_id):
-    """Wie _aufraeumen, zählt aber die eigene (gerade endende) Unit nicht als laufend."""
-    laufend = sum(1 for i in _alle_ids() if i != eigene_id and _status_kurz(i) == 'läuft' and _unit_aktiv(i))
-    for job_id in sorted(i for i in _alle_ids() if _status_kurz(i) == 'wartet'):
-        if laufend >= MAX_PARALLEL:
-            break
-        d = os.path.join(BASIS, job_id)
-        _starten(job_id, d, _meta_lesen(d))
-        laufend += 1
+        _aufraeumen(ohne=job_id)
 
 
 def _protokoll(meta, bericht):

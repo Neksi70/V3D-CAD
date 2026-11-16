@@ -61,7 +61,9 @@ ANLEITUNG = (
     'Einen Druck startet Claude NUR, wenn Volker im Gespräch bestätigt hat, dass das Bett frei ist. '
     'CLAUDE CODE (code_*): Programmier-/Server-Aufgaben auf V3DA direkt an Claude Code geben statt sie '
     'Volker zum Kopieren zu schreiben. ASYNCHRON: code_auftrag liefert sofort eine job_id; der Auftrag '
-    'läuft im Hintergrund (Minuten bis 1 h). Später code_status bzw. code_ergebnis aufrufen — nicht in '
+    'läuft im Hintergrund (Minuten bis 1 h, per zeitlimit_min bis 3 h); mehrere laufen parallel, '
+    'Drucker-Aufträge (ressource "drucker", wird auch per Stichwort erkannt) nacheinander. Später '
+    'code_status bzw. code_ergebnis aufrufen — nicht in '
     'einer Schleife warten, sondern Volker sagen, dass er nachfragen kann. Folgenreiche Schritte (löschen, '
     'Drucker-Neustart, Druck, Mails, git push, netcup) führt Claude Code nicht aus, sondern listet sie '
     'unter „Wartet auf Bestätigung"; nach Volkers OK einen neuen code_auftrag damit schicken. '
@@ -501,12 +503,25 @@ def code_auftrag(auftrag: Annotated[str, Field(description='Vollständiger Auftr
                                                            'Kontext – Claude Code kann NICHT zurückfragen)')],
                  ordner: Annotated[str | None, Field(description='Arbeitsordner unter /home/v3da, z. B. "~/v3dtodo" '
                                                                  '(Standard: ~)')] = None,
-                 titel: Annotated[str | None, Field(description='Kurztitel für Liste/Protokoll')] = None) -> CallToolResult:
+                 titel: Annotated[str | None, Field(description='Kurztitel für Liste/Protokoll')] = None,
+                 ressource: Annotated[str | None, Field(description='Gemeinsam genutzte Ressource, z. B. "drucker" '
+                                                                    '(SV08 Max/Klipper/Moonraker): Aufträge mit derselben '
+                                                                    'Ressource laufen nacheinander. Ohne Angabe wird '
+                                                                    '"drucker" per Stichwort erkannt (SV08, Drucker, Klipper, '
+                                                                    'Moonraker, G-Code, Mesh, Gantry); "keine" schaltet '
+                                                                    'die Erkennung ab.')] = None,
+                 zeitlimit_min: Annotated[int | None, Field(ge=1, le=180, description='Zeitlimit in Minuten '
+                                                                                      '(Standard 60, max. 180 – z. B. für '
+                                                                                      'lange Hardware-Tests)')] = None) -> CallToolResult:
     """Auftrag an Claude Code auf Volkers Server V3DA übergeben (headless, im Hintergrund). Kehrt SOFORT
-    mit job_id zurück; der Auftrag läuft bis zu 60 min, höchstens einer gleichzeitig (weitere warten).
-    Ergebnis später mit code_status / code_ergebnis abholen. Folgenreiches (löschen, Neustarts, Druck,
-    Mails, git push, netcup) wird nicht ausgeführt, sondern im Bericht unter „Wartet auf Bestätigung" gelistet."""
-    return code.auftrag(auftrag, ordner, titel)
+    mit job_id zurück. Mehrere Aufträge laufen PARALLEL (Standard 3, max_parallel steht in code_liste;
+    weitere warten); Aufträge mit derselben
+    ressource (z. B. "drucker") laufen nur nacheinander, verschiedene/keine parallel. Zeitlimit Standard
+    60 min, per zeitlimit_min bis 180. Ergebnis später mit code_status / code_ergebnis abholen.
+    Folgenreiches (löschen, Neustarts, Druck, Mails, git push, netcup) wird nicht ausgeführt, sondern im
+    Bericht unter „Wartet auf Bestätigung" gelistet."""
+    return code.auftrag(auftrag, ordner, titel, ressource, zeitlimit_min)
+
 
 
 @werkzeug(LESEN)
@@ -523,7 +538,8 @@ def code_ergebnis(job_id: JobId) -> CallToolResult:
 
 @werkzeug(LESEN)
 def code_liste(anzahl: Annotated[int, Field(ge=1, le=50, description='wie viele (neueste zuerst)')] = 10) -> CallToolResult:
-    """Die letzten code_auftrag-Jobs mit Status."""
+    """Die letzten code_auftrag-Jobs mit Status, Ressource, Zeitlimit und Wartegrund; dazu max_parallel
+    und wie viele gerade laufen."""
     return code.liste(anzahl)
 
 
