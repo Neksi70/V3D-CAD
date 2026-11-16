@@ -6128,11 +6128,18 @@ HO</textarea></div>
     <div class="g3body">
       <canvas id="zwi-canvas" width="200" height="320"></canvas>
       <div class="g3ctrl">
+        <div class="vbg" id="zwi-stil" style="margin-bottom:7px"><button class="vtb" data-v="klassisch" onclick="_zwiStil('klassisch')" title="Holzrillen-Körper, Mütze mit weißem Umschlag und Bommel">Klassisch</button><button class="vtb" data-v="skandi" onclick="_zwiStil('skandi')" title="Weißer Rillenkörper, große glatte Mütze mit gebogener Spitze, Strukturbart, ovale Nase – stützfrei">Skandi (glatte Mütze)</button></div>
         <div class="vrow"><label>Höhe</label> <input type="range" id="zwi-hoehe" min="60" max="300" value="160" step="5" oninput="_zwiSet('hoehe',this.value)"><span class="vv" id="zwiv-hoehe">160</span><span class="vu">mm</span></div>
         <div class="vrow"><label>Rillen</label> <input type="range" id="zwi-rillen" min="16" max="80" value="44" step="2" oninput="_zwiSet('rillen',this.value)"><span class="vv" id="zwiv-rillen">44</span></div>
         <div class="vrow"><label title="0 = glatt">Rillentiefe</label> <input type="range" id="zwi-rillenTief" min="0" max="200" value="100" step="10" oninput="_zwiSet('rillenTief',this.value)"><span class="vv" id="zwiv-rillenTief">100</span><span class="vu">%</span></div>
         <div class="vrow"><label title="Wie weit die Mützenspitze zur Seite kippt (in % der Höhe)">Zipfel</label> <input type="range" id="zwi-zipfel" min="0" max="12" value="0" step="1" oninput="_zwiSet('zipfel',this.value)"><span class="vv" id="zwiv-zipfel">0</span></div>
         <div class="vrow"><label>Nase</label> <input type="range" id="zwi-nase" min="60" max="160" value="100" step="10" oninput="_zwiSet('nase',this.value)"><span class="vv" id="zwiv-nase">100</span><span class="vu">%</span></div>
+        <div class="vrow" id="zwi-row-bart" style="display:none"><label title="Wie stark der Bart genoppt ist (0 = glatt)">Bartstruktur</label> <input type="range" id="zwi-bart" min="0" max="200" value="100" step="10" oninput="_zwiSet('bart',this.value)"><span class="vv" id="zwiv-bart">100</span><span class="vu">%</span></div>
+        <div class="vtbrow" id="zwi-koerper-bg" style="display:flex;gap:4px;margin-bottom:5px">
+          <button class="vtb" data-v="#eeebe2" onclick="_zwiStr('koerperFarbe','#eeebe2')">Körper weiß</button>
+          <button class="vtb" data-v="#c99a6b" onclick="_zwiStr('koerperFarbe','#c99a6b')">Holz</button>
+          <button class="vtb" data-v="#8f9499" onclick="_zwiStr('koerperFarbe','#8f9499')">grau</button>
+        </div>
         <div class="vtbrow" id="zwi-farbe-bg" style="display:flex;gap:4px;margin-bottom:7px">
           <button class="vtb on" data-v="#a8262f" onclick="_zwiStr('muetzeFarbe','#a8262f')">Mütze rot</button>
           <button class="vtb" data-v="#2f5f4a" onclick="_zwiStr('muetzeFarbe','#2f5f4a')">grün</button>
@@ -37693,7 +37700,52 @@ function _zwiPolyD(P, x, y) {                                               // v
   }
   return inn ? -Math.sqrt(d) : Math.sqrt(d);
 }
+// Stil „Skandi" (nach Foto 16.11.): weißer Rillenkörper als Rotationsprofil, große glatte Mütze ohne Umschlag
+// mit gebogener Spitze (stützfrei aufgestapelt), Bart als eigenes Teil mit Hammerschlag-Struktur, ovale Nase.
+// Einheiten: Gesamthöhe 100 u. Mützenkante bei 44 u.
+const _ZWI_SK_PROF = [[24, 0], [25.2, 1.5], [26.5, 4.5], [27.5, 10], [28, 17], [27.6, 25], [26, 32], [23.5, 38], [20, 43.5], [15, 49], [8, 53], [0, 55]];
+function _zwiSkR(y){                                                       // Körperradius (u) in Höhe y (u)
+  const P = _ZWI_SK_PROF; if (y <= 0) return P[0][0]; if (y >= P[P.length - 1][1]) return 0;
+  for (let i = 1; i < P.length; i++) if (y <= P[i][1]) { const [r0, y0] = P[i - 1], [r1, y1] = P[i]; return r0 + (r1 - r0) * (y - y0) / (y1 - y0); }
+  return 0;
+}
+function _zwiFelderSkandi(p) {
+  const u = p.hoehe / 100, nR = Math.max(12, Math.round(p.rillen)), aR = 0.85 * u * p.rillenTief / 100;
+  const rip = (x, z) => Math.sqrt(Math.abs(Math.cos(nR * Math.atan2(z, x) / 2)));
+  const PR = _ZWI_SK_PROF.map(([r, y]) => [r * u, y * u]), SIL = [...PR, ...PR.slice(0, -1).reverse().map(([r, y]) => [-r, y])];   // volle Silhouette (keine Achsenkante)
+  const koerperGlatt = (x, y, z) => _zwiPolyD(SIL, _dklH(x, z), y);
+  // Rillen über die ersten 4 u weich einblenden (sonst Kante über dem Fuß)
+  const koerper = (x, y, z) => { let d = koerperGlatt(x, y, z); const f = Math.min(1, Math.max(0, (y - 0.8 * u) / (3.2 * u)));
+    if (aR > 0 && f > 0 && Math.abs(d) < 3 * aR) d -= aR * f * f * (3 - 2 * f) * (rip(x, z) - 0.6); return d; };
+  // Mütze: Kegel mit gekrümmter Achse (Versatz ~ t²), leicht bauchig, runde Spitze; Kante 1 u über den Körper hinaus
+  const yB = 44 * u, yT = 98.1 * u, L = yT - yB, rB = (_zwiSkR(44) + 1.1) * u, rS = 1.9 * u,   // yT + rS = 100 u = Höhe
+        bend = (p.zipfel || 0) * u, dX = -0.88, dZ = 0.47;   // Spitze kippt nach links vorn (wie Foto)
+  const muetze = (x, y, z) => {
+    const t = Math.min(1, Math.max(0, (y - yB) / L)), o = bend * t * t, cx = o * dX, cz = o * dZ;
+    let d;
+    if (y > yT) d = _dklH(x - bend * dX, y - yT, z - bend * dZ) - rS;
+    else d = (_dklH(x - cx, z - cz) - (rS + (rB - rS) * Math.pow(1 - t, 0.66))) / 1.08;
+    return Math.max(d, yB - y);
+  };
+  // Bart: Schild vorn, Schicht auf dem glatten Körper; Dicke mit Knubbel-Struktur (Periode ≈ 2,3 mm)
+  const B = [[-16.5, 44], [16.5, 44], [18.8, 36], [18, 27], [14, 17.5], [7.5, 10.5], [0, 7.5], [-7.5, 10.5], [-14, 17.5], [-18, 27], [-18.8, 36]].map(([x, y]) => [x * u, y * u]);
+  const k = 2.7, amp = 0.75 * u * (p.bart == null ? 100 : p.bart) / 100;
+  const knubbel = (x, y, z) => Math.abs(Math.sin(k * x + 1.7 * Math.sin(0.73 * k * y)) * Math.sin(1.13 * k * y + 1.3 * Math.sin(0.61 * k * z)) * Math.sin(0.89 * k * z + 1.1 * Math.sin(0.57 * k * x)));
+  // Rand unter 45° abgeschrägt (Dicke wächst mit dem Abstand zum Umriss) → kein Überhang am unteren Bartrand
+  const bart = (x, y, z) => { if (z < 0) return 10 * u; const dB = koerperGlatt(x, y, z), dP = _zwiPolyD(B, x, y);
+    const th = Math.min(1.15 * u + amp * knubbel(x, y, z), 0.15 * u - dP);
+    return Math.max(Math.max(dB - th, -dB - 0.6 * u), dP); };
+  // Nase: liegendes Oval oben auf dem Bart, knapp unter der Mützenkante
+  const nk = (p.nase || 100) / 100, nY = 40.5 * u, nZ = (_zwiSkR(40.5) + 1.15 + 2.6 * nk) * u;
+  // stützfrei: das Oval wird unter 45° schräg nach hinten unten in den Körper gezogen (Unterseite ≤ 45°)
+  const nase = (x, y, z) => { const rx = 6.6 * u * nk, ry = 4.4 * u * nk, rz = 4.2 * u * nk, sw = 8 * u * nk;
+    let d = Infinity; for (let i = 0; i <= 28; i++){ const t = sw * i / 28; d = Math.min(d, _dklEll(x, y, z, [0, nY - t, nZ - t], [rx, ry, rz])); } return d; };
+  const Bx = (x0, y0, z0, x1, y1, z1) => [x0 * u, y0 * u, z0 * u, x1 * u, y1 * u, z1 * u], bx = Math.max(0, p.zipfel || 0);
+  return { u, stil: 'skandi', nasePrio: 'muetze', teile: [['koerper', koerper, Bx(-30, 0, -30, 30, 56, 30)], ['muetze', muetze, Bx(-23 - bx * 0.88, 43.5, -23, 23, 101.5, 23 + bx * dZ)],
+    ['weiss', bart, Bx(-21, 6, 0, 21, 45, 32)], ['nase', nase, Bx(-8, 26, 8, 8, 47, 36)]] };
+}
 function _zwiFelder(p) {
+  if (p.stil === 'skandi') return _zwiFelderSkandi(p);
   const u = p.hoehe / 104.5, nR = Math.max(12, Math.round(p.rillen)), aR = 0.7 * u * p.rillenTief / 100;
   const rip = (x, z) => Math.sqrt(Math.abs(Math.cos(nR * Math.atan2(z, x) / 2)));
   const kE = { c: [0, 30 * u, 0], r: [17 * u, 34 * u, 17 * u] };
@@ -37720,6 +37772,7 @@ function _zwiBuild(w, p, q) {
       const V = (bb[3] - bb[0]) * (bb[4] - bb[1]) * (bb[5] - bb[2]), ziel = q === 'fein' ? (n === 'nase' ? 2e5 : 1.6e6) : 1.2e5;
       mf[n] = keep(_lgfLevel(w, f, bb, Math.max(0.3, Math.cbrt(V / ziel))));
     }
+    if (F.nasePrio === 'muetze') mf.nase = keep(M.difference(mf.nase, mf.muetze));   // Nase steckt unter der Mützenkante
     mf.weiss = keep(M.difference(mf.weiss, mf.nase));
     mf.muetze = keep(M.difference(mf.muetze, mf.weiss));
     mf.koerper = keep(M.difference(keep(M.difference(keep(M.difference(mf.koerper, mf.weiss)), mf.nase)), mf.muetze));
@@ -37731,10 +37784,16 @@ function _zwiBuild(w, p, q) {
   } finally { for (const x of tmp) { try { x.delete(); } catch (e) {} } }
 }
 
-const _zwiP = { hoehe: 160, rillen: 44, rillenTief: 100, zipfel: 0, nase: 100, koerperFarbe: '#c99a6b', muetzeFarbe: '#a8262f' };
+const _zwiP = { stil: 'klassisch', hoehe: 160, rillen: 44, rillenTief: 100, zipfel: 0, nase: 100, bart: 100, koerperFarbe: '#c99a6b', muetzeFarbe: '#a8262f' };
 const _ZWI_DEF = { ..._zwiP };
-const _ZWI_FARBE = p => ({ koerper: p.koerperFarbe, muetze: p.muetzeFarbe, weiss: '#f4f2ec', nase: '#d9b08c' });
+// Stil-Voreinstellungen (Knopf „Stil" setzt sie)
+const _ZWI_STIL = { klassisch: { stil: 'klassisch', rillen: 44, rillenTief: 100, zipfel: 0, nase: 100, koerperFarbe: '#c99a6b' },
+                    skandi:    { stil: 'skandi', rillen: 40, rillenTief: 110, zipfel: 14, nase: 100, bart: 100, koerperFarbe: '#eeebe2' } };
+const _ZWI_FARBE = p => p.stil === 'skandi' ? { koerper: p.koerperFarbe, muetze: p.muetzeFarbe, weiss: _zwiTon(p.koerperFarbe, 0.97), nase: _zwiTon(p.koerperFarbe, 0.94) }
+                                             : { koerper: p.koerperFarbe, muetze: p.muetzeFarbe, weiss: '#f4f2ec', nase: '#d9b08c' };
+function _zwiTon(hex, f){ const c = new THREE.Color(hex); c.multiplyScalar(f); return '#' + c.getHexString(); }
 const _ZWI_NAME = { koerper: 'Zipfel-Wichtel Körper', muetze: 'Zipfel-Wichtel Mütze', weiss: 'Zipfel-Wichtel Bart + Umschlag', nase: 'Zipfel-Wichtel Nase' };
+const _ZWI_NAME_SK = { koerper: 'Skandi-Wichtel Körper', muetze: 'Skandi-Wichtel Mütze', weiss: 'Skandi-Wichtel Bart', nase: 'Skandi-Wichtel Nase' };
 let _zwiRT = null;
 function _zwiPreviewGeo(){
   if (!_mfWasm) throw new Error('Manifold lädt noch');
@@ -37746,19 +37805,27 @@ function _zwiPreviewGeo(){
   const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
   geo.scale(0.1, 0.1, 0.1); geo.computeVertexNormals(); return geo;
 }
-function _zwiOpen(){ document.getElementById('zwi-modal').classList.add('show'); _zwiSync(); _mfInit().then(_zwiBoot).catch(() => notify('Rechenkern konnte nicht geladen werden', 'w')); }
+function _zwiOpen(stil){ if (stil && _ZWI_STIL[stil] && _zwiP.stil !== stil) Object.assign(_zwiP, _ZWI_STIL[stil]); document.getElementById('zwi-modal').classList.add('show'); _zwiSync(); _mfInit().then(_zwiBoot).catch(() => notify('Rechenkern konnte nicht geladen werden', 'w')); }
 function _zwiBoot(){ const m = document.getElementById('zwi-modal'); if (!m || !m.classList.contains('show')) return;
   if (!_gpv['zwi']) _gpvInit('zwi', () => _zwiPreviewGeo()); else { _gpvUpdate('zwi'); if (!_gpv['zwi'].anim) _gpvLoop('zwi'); } }
 function _zwiClose(){ document.getElementById('zwi-modal').classList.remove('show'); _gpvStop('zwi'); }
 function _zwiRepaint(){ if (_zwiRT) clearTimeout(_zwiRT); _zwiRT = setTimeout(() => { _zwiRT = null; if (!_mfWasm) return; if (_gpv['zwi']) _gpvUpdate('zwi'); else _zwiBoot(); }, 300); }
 function _zwiSet(k, v){ _zwiP[k] = parseFloat(v); _zwiSync(); _zwiRepaint(); }
 function _zwiStr(k, v){ _zwiP[k] = v; _zwiSync(); _zwiRepaint(); }
-function _zwiReset(){ Object.assign(_zwiP, _ZWI_DEF); _zwiSync(); _zwiRepaint(); }
+function _zwiReset(){ const st = _zwiP.stil; Object.assign(_zwiP, _ZWI_DEF, _ZWI_STIL[st] || {}); _zwiSync(); _zwiRepaint(); }
+function _zwiStil(st){ if (!_ZWI_STIL[st] || _zwiP.stil === st) return; Object.assign(_zwiP, _ZWI_STIL[st]); _zwiSync(); _zwiRepaint(); }
 function _zwiSync(){
-  for (const k of ['hoehe', 'rillen', 'rillenTief', 'zipfel', 'nase']) { const s = document.getElementById('zwi-' + k), t = document.getElementById('zwiv-' + k); if (s) s.value = _zwiP[k]; if (t) t.textContent = _zwiP[k]; }
+  const sk = _zwiP.stil === 'skandi';
+  document.querySelectorAll('#zwi-stil .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === _zwiP.stil));
+  document.querySelectorAll('#zwi-koerper-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === _zwiP.koerperFarbe));
+  { const r = document.getElementById('zwi-row-bart'); if (r) r.style.display = sk ? '' : 'none'; const z = document.getElementById('zwi-zipfel'); if (z) z.max = sk ? 30 : 12;
+    const h = document.querySelector('#zwi-modal .g3hdr'); if (h && h.firstChild) h.firstChild.nodeValue = sk ? '🧑‍🎄 Skandi-Wichtel' : '🧑‍🎄 Zipfel-Wichtel'; }
+  for (const k of ['hoehe', 'rillen', 'rillenTief', 'zipfel', 'nase', 'bart']) { const s = document.getElementById('zwi-' + k), t = document.getElementById('zwiv-' + k); if (s) s.value = _zwiP[k]; if (t) t.textContent = _zwiP[k]; }
   document.querySelectorAll('#zwi-farbe-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === _zwiP.muetzeFarbe));
   const el = document.getElementById('zwi-info'); if (!el) return;
-  el.innerHTML = `Zipfel-Wichtel ca. ${_zwiP.hoehe} mm hoch. Teile je Farbe: Körper (Holz), Mütze, Weiß (Bart, Umschlag, Bommel), Nase – mit AMS zusammen drucken.` +
+  el.innerHTML = sk ? `Skandi-Wichtel ca. ${_zwiP.hoehe} mm hoch. Teile: Körper (Rillen), Mütze, Bart (Struktur), Nase – jedes Teil einzeln einfärbbar, mit AMS zusammen drucken.` +
+    '<br><b>Druck stehend ohne Stützen</b>: die Mütze sitzt flach auf dem Körper (Kante nur ' + (_zwiP.hoehe / 100).toFixed(1).replace('.', ',') + ' mm über­stehend), die Spitze neigt sich höchstens leicht. Tipp: <b>Fuzzy Skin</b> nur auf dem Bart verstärkt die Struktur, Seide-PLA (rot) für die glänzende Mütze.'
+    : `Zipfel-Wichtel ca. ${_zwiP.hoehe} mm hoch. Teile je Farbe: Körper (Holz), Mütze, Weiß (Bart, Umschlag, Bommel), Nase – mit AMS zusammen drucken.` +
     '<br><b>Druck stehend</b>: Körper und Mütze ohne Stützen; unter dem Umschlag-Rand und der Bommel helfen <b>Baumstützen</b>. Holz-PLA für den Körper, Fuzzy Skin für Mütze und Bart wirkt wie Filz.';
 }
 async function _zwiCreate(){
@@ -37769,15 +37836,16 @@ async function _zwiCreate(){
     const r = _zwiBuild(w, p, 'fein'), F = _ZWI_FARBE(p);
     saveUndo();
     typeCounts['zipfelwichtel'] = (typeCounts['zipfelwichtel'] || 0) + 1;
+    const NM = p.stil === 'skandi' ? _ZWI_NAME_SK : _ZWI_NAME;
     const nr = typeCounts['zipfelwichtel'], meshes = [];
     for (const k of Object.keys(F)) { if (!r[k]) continue;
       const geo = _mfToGeo(r[k]).toNonIndexed(); r[k].delete(); geo.scale(0.1, 0.1, 0.1); _creaseNormals(geo, 70);
       const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(F[k]), roughness: 0.8, metalness: 0.02, side: THREE.DoubleSide }));
       mesh.castShadow = mesh.receiveShadow = true;
-      mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: _ZWI_NAME[k] + ' #' + nr, color: F[k], isHole: false, fillet: 0, chamfer: 0, displacementPattern: 'keine', zipfelWichtelParams: p, edgeAngle: 85, noEdgeLines: k === 'koerper' };
+      mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: NM[k] + ' #' + nr, color: F[k], isHole: false, fillet: 0, chamfer: 0, displacementPattern: 'keine', zipfelWichtelParams: p, edgeAngle: 85, noEdgeLines: k === 'koerper' || (p.stil === 'skandi' && k === 'weiss') };
       scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh); meshes.push(mesh); }
     selectObjs(meshes); updateTree(); fitToObjects(meshes);
-    _progressDone(); notify('🧑‍🎄 Zipfel-Wichtel erstellt ✓ Teile je Farbe mit AMS', 'ok'); _zwiClose();
+    _progressDone(); notify(p.stil === 'skandi' ? '🧑‍🎄 Skandi-Wichtel erstellt ✓ stehend ohne Stützen, Teile je Farbe' : '🧑‍🎄 Zipfel-Wichtel erstellt ✓ Teile je Farbe mit AMS', 'ok'); _zwiClose();
   } catch (e) { console.error('Zipfel-Wichtel:', e); _progressHide(); notify('Zipfel-Wichtel fehlgeschlagen: ' + (e && e.message || e), 'w'); }
 }
 
@@ -53344,7 +53412,8 @@ const _STARTERS = [
   {i:'🌀',t:'Spiral-Baum',d:'Weihnachtsbaum als Spiralband um einen Kegel, Fußring unten, Stern oben – stehend mit Baumstützen',run:()=>_spbOpen()},
   {i:'🎅',t:'HO HO HO Türecke',d:'Rote Schrift (HO HO HO oder eigener Text) mit Weihnachtsmütze auf schwarzer Kontur, als Türecke mit L-Winkel oder als Schild',run:()=>_hhoOpen()},
   {i:'🚪',t:'Wichtel-Türecke',d:'Wichtel-Silhouetten als Türecke (L-Rahmen für die Türzarge) oder Aufsteller mit Steckfuß – Bart, Mützen-Streifen und Nasen als erhabene zweite Farbe',run:()=>_wsiOpen()},
-  {i:'🧑‍🎄',t:'Zipfel-Wichtel',d:'Hoher Wichtel (Christmas Gnome): Holzrillen-Körper, rote Zipfelmütze mit weißem Umschlag und Bommel, Bart vorn, Holznase – Teile je Farbe',run:()=>_zwiOpen()},
+  {i:'🧑‍🎄',t:'Skandi-Wichtel',d:'Wichtel nach Foto: weißer Rillenkörper, große glatte rote Mütze mit gebogener Spitze, Bart mit Struktur, ovale Nase – stützfrei, Teile je Farbe',run:()=>_zwiOpen('skandi')},
+  {i:'🧑‍🎄',t:'Zipfel-Wichtel',d:'Hoher Wichtel (Christmas Gnome): Holzrillen-Körper, rote Zipfelmütze mit weißem Umschlag und Bommel, Bart vorn, Holznase – Teile je Farbe',run:()=>_zwiOpen('klassisch')},
   {i:'🧱',t:'Kamin-Adventskalender',d:'Kamin mit nummerierten Schiebe-Steinen 1–24: Stein rausziehen, der Inhalt fällt in die Feuerstelle; Blindsteine für freie Schlitze, stützfrei druckbar',run:()=>_kakOpen()},
   {i:'🎅',t:'Weihnachtsmann',d:'Sitzender Weihnachtsmann mit Mütze, V-Bart, Gesichtsband, Armen und Stiefeln – vier Farbteile',run:()=>_wmnOpen()},
   {i:'🦌',t:'Hirsch-Deckel',d:'Aufsatz für den Schraubdeckel eines Glases (aufkleben) mit Hirsch-Topper: Silhouette mit Tupfen, schlicht oder plastischer Hirschkopf',run:()=>_hidOpen()},
@@ -53535,7 +53604,7 @@ function _maybeShowStarter(){
 // 🎄 Rubrik Weihnachten (Volker 9.11.26: „solche Sachen in eine Rubrik Weihnachten schieben, da kommt
 // noch einiges hinterher“). Neue Weihnachts-Generatoren NUR hier eintragen — die Liste speist das
 // Thema auf der Generatoren-Seite und den Block oben im Generator-Menü.
-const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Blätterkranz', 'HO HO HO Türecke', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Stern-Anhänger', 'Schneemann', 'Kugelkranz', 'Spiral-Baum', 'Wichtel-Türecke', 'Zipfel-Wichtel', 'Weihnachtsmann', 'Kamin-Adventskalender', 'Hirsch-Deckel', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
+const _GEN_WEIHNACHTEN = ['Weihnachts-Studio', 'Blätterkranz', 'HO HO HO Türecke', 'Faltenbaum (Weihnachten)', 'Strick-Stern', 'Schutzengel', 'Wichtel', 'Lichtbox', 'Häuser-Ring', 'Wort-Tanne', 'Geld-Engel', 'Strick-Elch', 'Strick-Engel', 'Kugel-Anhänger', 'Stern-Anhänger', 'Schneemann', 'Kugelkranz', 'Spiral-Baum', 'Wichtel-Türecke', 'Zipfel-Wichtel', 'Skandi-Wichtel', 'Weihnachtsmann', 'Kamin-Adventskalender', 'Hirsch-Deckel', 'Schrift-Aufsteller', 'Adventskalender', 'Geflochtener Kranz', 'Faltkranz', 'Lichttüte', 'Lichthaus', 'Motivlicht',
   'Dackel-Kerzenhalter', 'Mops-Kerzenhalter', 'Schwein-Kerzenhalter', 'Spaniel-Kerzenhalter', 'Islandpferd-Kerzenhalter'];
 const _GEN_THEMEN = [
   ['🎄 Weihnachten', _GEN_WEIHNACHTEN],
@@ -89287,8 +89356,11 @@ async function _druckSenden(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.419';
+const VOLME3D_VERSION = '1.18.420';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.420', date:'2026-11-16', changes:[
+    ['🧑‍🎄','<b>Neu: Skandi-Wichtel</b> (Weihnachten) – nach Foto: weißer Körper mit Rillen, große glatte Zipfelmütze mit nach vorn gebogener Spitze, Bart mit Noppen-Struktur und ovale Nase. Druckt stehend ohne Stützen (Mütze flach aufgesetzt, Nase und Bartrand unter 45°), jedes Teil einzeln einfärbbar – Tipp: Fuzzy Skin nur auf den Bart. Auch im Zipfel-Wichtel als Stil „Skandi“ wählbar.'],
+  ] },
   { version:'1.18.419', date:'2026-11-16', changes:[
     ['💻','<b>Schriften dieses PCs</b> im Flaschenöffner und in den Geldgeschenk-Platten: ein Klick auf „💻 Schriften dieses PCs“ holt alle installierten Schriften (Windows: C:\\Windows\\Fonts und selbst installierte) mit Vorschau deines Textes in die Liste – samt Suchfeld. Klick auf eine Schrift übernimmt sie, kein einzelnes Hochladen mehr. Geht in Chrome und Edge; der Browser fragt beim ersten Mal um Erlaubnis, danach erscheinen die Schriften automatisch.'],
   ] },
@@ -102169,7 +102241,8 @@ const CMDK = [
   {i:'🌀',g:'Generator',t:'Spiral-Baum',k:'spiral baum weihnachtsbaum tannenbaum spirale band stern deko modern',run:()=>_spbOpen()},
   {i:'🎅',g:'Generator',t:'HO HO HO Türecke',k:'ho ho ho hohoho türecke tür ecke türzarge schrift text weihnachtsmütze mütze schild weihnachten deko',run:()=>_hhoOpen()},
   {i:'🚪',g:'Generator',t:'Wichtel-Türecke',k:'türecke tür ecke türzarge wichtel gnome silhouette aufsteller weihnachten deko zwerge',run:()=>_wsiOpen()},
-  {i:'🧑‍🎄',g:'Generator',t:'Zipfel-Wichtel',k:'wichtel gnome christmas zipfelmütze bart holz rillen weihnachten figur skandinavisch tomte',run:()=>_zwiOpen()},
+  {i:'🧑‍🎄',g:'Generator',t:'Skandi-Wichtel',k:'wichtel gnome skandi tomte nisse rillen mütze bart struktur weihnachten figur',run:()=>_zwiOpen('skandi')},
+  {i:'🧑‍🎄',g:'Generator',t:'Zipfel-Wichtel',k:'wichtel gnome christmas zipfelmütze bart holz rillen weihnachten figur skandinavisch tomte',run:()=>_zwiOpen('klassisch')},
   {i:'🌿',g:'Generator',t:'Blätterkranz',k:'blätterkranz kranz wedel farn tanne zweig kerze kerzenglas glas windlicht deko tischdeko weihnachten adventskranz blätter',run:()=>_wdkOpen()},
   {i:'🧱',g:'Generator',t:'Kamin-Adventskalender',k:'advent adventskalender kalender kamin schornstein feuerstelle schieber steine türchen weihnachten',run:()=>_kakOpen()},
   {i:'🎅',g:'Generator',t:'Weihnachtsmann',k:'weihnachtsmann santa claus nikolaus figur sitzend bart mütze weihnachten',run:()=>_wmnOpen()},
