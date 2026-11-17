@@ -116,12 +116,12 @@ def main():
             seite.click("#wfInhalt [data-aktion=mpTolModus]")
             seite.select_option("#mpA", str(oben["id"]))
             seite.select_option("#mpTol", "ebenheit")
-            seite.fill("#mpGrenze", "0,05")
+            seite.fill("#mpGrenze", "0,1")
             seite.click("#wfInhalt [data-aktion=mpHinzu]")
             leer()
             seite.select_option("#mpB", str(unten["id"]))
             seite.select_option("#mpTol", "parallelitaet")
-            seite.fill("#mpGrenze", "0,05")
+            seite.fill("#mpGrenze", "0,1")
             seite.click("#wfInhalt [data-aktion=mpHinzu]")
             leer()
             mpl = seite.evaluate("v3dscan.S.messplan")
@@ -144,6 +144,20 @@ def main():
                 if seite.input_value("#mpA") != "":
                     break
             pruefe(seite.input_value("#mpA") != "", "Klick in die Ansicht wählt A (%s)" % seite.input_value("#mpA"))
+            n_vor = seite.evaluate("v3dscan.S.erkennung.elemente.length")
+            seite.select_option("#mpKlickArt", "ebene")
+            for x, y in ziele[:6]:
+                seite.mouse.click(x, y)
+                seite.mouse.click(x, y)            # Doppelklick darf nur einen Bereich anlegen
+                try:
+                    seite.wait_for_function("(n) => v3dscan.S.erkennung.elemente.length > n && !v3dscan.S.mpEinpassen", arg=n_vor, timeout=30000)
+                    break
+                except Exception:
+                    continue
+            neu = seite.evaluate("v3dscan.S.erkennung.elemente.at(-1)")
+            pruefe(seite.evaluate("v3dscan.S.erkennung.elemente.length") == n_vor + 1 and neu["art"] == "ebene" and seite.input_value("#mpA") == str(neu["id"]),
+                   "Klick passt eine Ebene ein und wählt sie als A (RMS %.4f; %d→%d Bereiche, A=%s, neu=%s)" % (neu["rms"], n_vor, seite.evaluate("v3dscan.S.erkennung.elemente.length"), seite.input_value("#mpA"), neu["id"]))
+            seite.select_option("#mpKlickArt", "")
             bericht = seite.evaluate("(id) => v3dscan.api('messplan/bericht', { id })", sid)
             pruefe("Ergebnis:" in bericht["text"] and "Ebenheit" in bericht["text"] and bericht["csv"].count("\n") == 5, "Bericht + CSV")
             seite.click("#wfInhalt [data-aktion=mpAbw]")

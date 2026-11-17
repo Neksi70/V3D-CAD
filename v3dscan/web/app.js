@@ -4481,7 +4481,24 @@ async function mpAbw() {
   S.abweichung = { id, koerper: true, werte: b64.float32(j.werte), max: Math.max(0.02, (k.p95 || 0.2) * 1.5), tol: 0.05, aus: 1e5, kennwerte: k, titel: 'Abweichung zu ' + j.titel, nurElement: true };
   alleFarbenSetzen();
 }
+async function mpEinpassenKlick(x, y, art) {
+  const id = Number($('#mpScan').value), p = punktAn(x, y, id);
+  if (!p) return;
+  const z = await api('auswahl/zauberstab', { id, index: p.index, winkel: 15 });
+  const j = await api('formen/auswahl', { id, art, masken: { [id]: z.maske } }, 'Passe Form ein…');
+  erkennungUebernehmen(j.erkennung);
+  const neu = j.erkennung.elemente[j.erkennung.elemente.length - 1];
+  mpFuellen();
+  $('#mpA').value = neu.id; $('#mpB').value = '';
+  meldung(`Eingepasst: ${mpElName(neu)}${neu.durchmesser ? ' · Ø ' + zk(neu.durchmesser) : ''} · RMS ${zk(neu.rms, 4)} mm${neu.form ? ' · ' + neu.form.art + ' ' + zk(neu.form.wert, 4) : ''} – als A gewählt`, 'ok');
+}
 function mpKlick(x, y) {
+  if ($('#mpKlickArt').value) {
+    if (S.mpEinpassen) return;                 // ein Einpassen zur Zeit – Doppelklick legt sonst zwei Bereiche an
+    S.mpEinpassen = true;
+    sicher(() => mpEinpassenKlick(x, y, $('#mpKlickArt').value)).finally(() => { S.mpEinpassen = false; });
+    return;
+  }
   const id = Number($('#mpScan').value), erk = mpErk();
   if (!erk) { meldung('Erst Bereiche erkennen (BEREICHE).', 'warn'); return; }
   const p = punktAn(x, y, id);
