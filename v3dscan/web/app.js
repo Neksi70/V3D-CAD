@@ -565,7 +565,13 @@ function farbenSetzen(e, min, max, achse) {
   const f = e.farbe, n = e.n;
   const eigen = hexZuRgb(e.meta.farbe);
   const abw = S.abweichung && S.abweichung.id === e.id ? S.abweichung : null;
-  if (abw && abw.koerper) {
+  if (abw && abw.wand) {
+    // Wandstärke: dünn = rot (Turbo-Ende), dick = blau, ohne Gegenseite grau
+    for (let i = 0; i < n; i++) {
+      const w = abw.werte[i];
+      if (!Number.isFinite(w)) { f[i * 3] = f[i * 3 + 1] = f[i * 3 + 2] = 120; } else farbskala(1 - Math.min(1, w / abw.max), f, i * 3);
+    }
+  } else if (abw && abw.koerper) {
     // Scan <-> Koerper: mit Vorzeichen, Turbo-Mitte = 0, Toleranzband gruen
     const grau = 150;
     for (let i = 0; i < n; i++) {
@@ -612,13 +618,20 @@ function legendeZeichnen() {
   const stops = TURBO.map((c, i) => `rgb(${c}) ${(i / (TURBO.length - 1) * 100).toFixed(0)}%`).join(',');
   const a = S.abweichung;
   el.hidden = false;
+  if (a.wand) {
+    const rueck = TURBO.slice().reverse().map((c, i) => `rgb(${c}) ${(i / (TURBO.length - 1) * 100).toFixed(0)}%`).join(',');
+    el.innerHTML = `<div>Wandstärke</div><div class="balken" style="background:linear-gradient(90deg,${rueck})"></div>
+    <div class="skala"><span>0</span><span>${(a.max / 2).toFixed(2)}</span><span>${a.max.toFixed(2)} mm</span></div>
+    <div>dünnste ${a.kennwerte.min.toFixed(2)} · Median ${a.kennwerte.median.toFixed(2)} mm<br><small>rot = dünn · grau = keine Gegenseite gefunden</small></div>`;
+    return;
+  }
   if (a.koerper) {
     const k = a.kennwerte, z = (x) => (x > 0 ? '+' : '') + x.toFixed(3);
-    el.innerHTML = `<div>Abweichung Scan ↔ Körper</div>
+    el.innerHTML = `<div>${a.titel || 'Abweichung Scan ↔ Körper'}</div>
     <div class="balken" style="background:linear-gradient(90deg,${stops})"></div>
     <div class="skala"><span>−${a.max.toFixed(2)}</span><span>0</span><span>+${a.max.toFixed(2)} mm</span></div>
     <div>${k.anzahl ? `Mittel ${z(k.mittel)} · σ ${k.std.toFixed(3)} · ${k.in_toleranz.toFixed(1)} % in ±${a.tol}` : 'keine Punkte am Körper'}<br>
-    <small>grün = ±${a.tol} mm · rot = mehr Material · grau = weiter als ${a.aus} mm</small></div>`;
+    <small>grün = ±${a.tol} mm · rot = mehr Material · ${a.nurElement ? 'grau = andere Bereiche' : `grau = weiter als ${a.aus} mm`}</small></div>`;
     return;
   }
   el.innerHTML = `<div>Abweichung zum festen Scan</div>
@@ -1027,6 +1040,8 @@ leinwand.addEventListener('pointerup', (ev) => {
   if (WF.haupt && WF.haupt.id === 'w-3dskizze') { s3Klick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-uebergang') { ueKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-koerper-abw' && S.abweichung && S.abweichung.koerper) { wertLabel(x, y); return; }
+  if (WF.haupt && WF.haupt.id === 'w-wand' && S.abweichung && S.abweichung.wand) { wertLabel(x, y); return; }
+  if (WF.haupt && WF.haupt.id === 'w-messplan') { mpKlick(x, y); return; }
   if (griffZieht) return;
   if (WF.haupt && WF.haupt.id === 'w-auto-flaechen' && (S.kaefig || $('#kgModus').value === 'viereck') && !['ziehen', 'pinsel', 'griff'].includes($('#kgModus').value)) {
     kaefigKlick(x, y);
@@ -4062,13 +4077,14 @@ function wertLabel(x, y) {
   const p = punktAn(x, y, S.abweichung.id);
   if (!p) return false;
   const w = S.abweichung.werte[p.index];
-  const text = `${w > 0 ? '+' : ''}${zahlText(w, 3)}`;
+  const wand = !!S.abweichung.wand;
+  const text = wand ? (Number.isFinite(w) ? `${zahlText(w, 2)} mm` : '—') : `${w > 0 ? '+' : ''}${zahlText(w, 3)}`;
   const c = document.createElement('canvas');
   c.width = 160; c.height = 44;
   const g = c.getContext('2d');
   g.fillStyle = 'rgba(255,255,255,0.92)'; g.strokeStyle = '#333'; g.lineWidth = 2;
   g.fillRect(1, 1, 158, 42); g.strokeRect(1, 1, 158, 42);
-  g.fillStyle = Math.abs(w) <= (S.abweichung.tol || 0) ? '#1d8a3a' : w > 0 ? '#c0331f' : '#1f4fc0';
+  g.fillStyle = wand ? '#222' : Math.abs(w) <= (S.abweichung.tol || 0) ? '#1d8a3a' : w > 0 ? '#c0331f' : '#1f4fc0';
   g.font = 'bold 24px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
   g.fillText(text, 80, 23);
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false, sizeAttenuation: false }));
@@ -4357,6 +4373,204 @@ window.addEventListener('drop', (ev) => {
 // ---------------------------------------------------------------------------
 // Aktionen + Tastenkürzel
 // ---------------------------------------------------------------------------
+// --- Messplan + Prüfen (v1.6) ---------------------------------------------------------------
+const MP_MASSE = { auto: 'automatisch', abstand: 'Abstand', winkel: 'Winkel', durchmesser: 'Durchmesser', radius: 'Radius',
+  kegelwinkel: 'Kegelwinkel', spalt: 'Spalt (Kugel–Kugel)', spannweite: 'Spannweite (Kugel–Kugel)' };
+const MP_TOL = { ebenheit: '⏥ Ebenheit', zylinderform: '⌭ Zylinderform', kugelform: 'Kugelform', kegelform: 'Kegelform',
+  parallelitaet: '∥ Parallelität', rechtwinkligkeit: '⊥ Rechtwinkligkeit', neigung: '∠ Neigung', koaxialitaet: '◎ Koaxialität' };
+S.messplan = null; S.mpModus = 'mass'; S.schatten = null;
+const zk = (v, st = 3) => (v === null || v === undefined || v === '' ? '' : Number(v).toLocaleString('de-DE', { minimumFractionDigits: st, maximumFractionDigits: st }));
+const kommaZahl = (s) => String(s || '').trim().replace(',', '.');
+function scanAuswahlFuellen(sel) {
+  const scans = S.zustand ? S.zustand.scans : [], alt = Number(sel.value);
+  sel.innerHTML = scans.map((s) => `<option value="${s.id}"></option>`).join('');
+  [...sel.options].forEach((o, i) => { o.textContent = scans[i].name; });
+  if (scans.some((s) => s.id === alt)) sel.value = alt; else if (S.aktiv) sel.value = S.aktiv;
+}
+function dateiAnbieten(blob, name) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+function mpErk() {
+  const id = Number($('#mpScan').value), e = S.scans.get(id);
+  return S.erkennung && e && S.erkennung.id === id && S.erkennung.rev === e.meta.rev ? S.erkennung : null;
+}
+const mpElName = (el) => `${TYP_NAME[el.typ] || el.art} ${el.id + 1}`;
+function mpFuellen() {
+  const scan = $('#mpScan');
+  scanAuswahlFuellen(scan);
+  if (!scan.dataset.gebunden) {
+    scan.dataset.gebunden = '1';
+    scan.addEventListener('change', mpFuellen);
+    $('#mpTol').addEventListener('change', mpModusSetzen);
+    $('#mpListe').addEventListener('click', (ev) => { const b = ev.target.closest('[data-mpweg]'); if (b) sicher(() => mpWeg(Number(b.dataset.mpweg))); });
+  }
+  if (!$('#mpMass').options.length) {
+    $('#mpMass').innerHTML = Object.entries(MP_MASSE).map(([k, t]) => `<option value="${k}">${t}</option>`).join('');
+    $('#mpTol').innerHTML = Object.entries(MP_TOL).map(([k, t]) => `<option value="${k}">${t}</option>`).join('');
+  }
+  const erk = mpErk(), els = erk ? erk.elemente : [];
+  for (const [sel, leer] of [[$('#mpA'), '— wählen oder in die Ansicht klicken —'], [$('#mpB'), '— keins —']]) {
+    const alt = sel.value;
+    sel.innerHTML = `<option value="">${leer}</option>` + els.map((el) => `<option value="${el.id}">${mpElName(el)}</option>`).join('');
+    if ([...sel.options].some((o) => o.value === alt)) sel.value = alt;
+  }
+  $('#mpLeer').hidden = els.length > 0;
+  mpModusSetzen();
+  if (S.scans.has(Number(scan.value))) sicher(mpLaden);
+}
+function mpModusSetzen(m) {
+  if (typeof m === 'string') S.mpModus = m;
+  $('#mpMassFeld').hidden = S.mpModus !== 'mass';
+  $('#mpTolFeld').hidden = S.mpModus !== 'tol';
+  $('#mpTabMass').classList.toggle('an', S.mpModus === 'mass');
+  $('#mpTabTol').classList.toggle('an', S.mpModus === 'tol');
+  $('#mpWinkelZeile').hidden = $('#mpTol').value !== 'neigung';
+}
+async function mpLaden() {
+  const j = await api('messplan/liste', { id: Number($('#mpScan').value) });
+  S.messplan = j.messplan; mpListe();
+}
+function mpListe() {
+  const L = S.messplan || [];
+  if (!L.length) { $('#mpListe').innerHTML = '<p class="hilfe">Noch keine Merkmale. A (und B) wählen, Maß oder Toleranz einstellen, „Hinzufügen“.</p>'; return; }
+  const soll = (w) => w.art === 'mass'
+    ? (w.nenn !== null && w.nenn !== undefined && w.nenn !== '' ? `${zk(w.nenn)} +${zk(Math.abs(w.plus || 0))}/−${zk(Math.abs(w.minus || 0))}` : '')
+    : (w.grenze !== null && w.grenze !== undefined && w.grenze !== '' ? `≤ ${zk(w.grenze)}` : '');
+  const ok = L.filter((w) => w.status === 'ok').length, nok = L.filter((w) => w.status === 'nok').length;
+  $('#mpListe').innerHTML = `<table>${L.map((w) => `<tr class="${w.status || ''}"><td>${w.nr}</td><td>${w.titel || (w.art === 'mass' ? 'Maß' : 'Toleranz')}${w.fehler ? `<br><small class="fehlertext">${w.fehler}</small>` : ''}</td>` +
+    `<td class="zahl">${w.wert !== undefined && w.wert !== null ? zk(w.wert) + ' ' + w.einheit : ''}</td><td>${soll(w)}</td><td>${w.status === 'ok' ? '✔' : w.status === 'nok' ? '✘' : ''}</td>` +
+    `<td><button data-mpweg="${w.nr}" title="Merkmal löschen">×</button></td></tr>`).join('')}</table>` +
+    (ok + nok ? `<p class="hilfe"><b>${ok} von ${ok + nok}</b> bewerteten Merkmalen in Toleranz${nok ? ` – <b style="color:#c0331f">${nok} außerhalb</b>` : ''}.</p>` : '');
+}
+async function mpHinzu() {
+  const id = Number($('#mpScan').value), a = $('#mpA').value;
+  if (!mpErk()) throw new Error('Für diesen Scan gibt es noch keine Bereiche (BEREICHE → Automatisch oder Auswahl → Einpassen).');
+  if (a === '') throw new Error('Element A wählen – in der Liste oder per Klick in die Ansicht.');
+  const d = { id, art: S.mpModus, a: Number(a), b: $('#mpB').value === '' ? null : Number($('#mpB').value) };
+  if (S.mpModus === 'mass') Object.assign(d, { mass: $('#mpMass').value, nenn: kommaZahl($('#mpNenn').value), plus: kommaZahl($('#mpPlus').value), minus: kommaZahl($('#mpMinus').value) });
+  else Object.assign(d, { tol: $('#mpTol').value, grenze: kommaZahl($('#mpGrenze').value), winkel: kommaZahl($('#mpWinkel').value) });
+  const j = await api('messplan/neu', d, 'Messe…');
+  S.messplan = j.messplan; mpListe();
+  const w = S.messplan[S.messplan.length - 1];
+  meldung(`${w.titel}: ${zk(w.wert)} ${w.einheit}${w.status ? (w.status === 'ok' ? ' ✔ i.O.' : ' ✘ n.i.O.') : ''}`, w.status === 'nok' ? 'warn' : 'ok');
+}
+async function mpWeg(nr) {
+  const j = await api('messplan/entfernen', { id: Number($('#mpScan').value), nr });
+  S.messplan = j.messplan; mpListe();
+}
+async function mpLeeren() {
+  if (!(S.messplan || []).length || !confirm('Alle Merkmale dieses Messplans löschen?')) return;
+  const j = await api('messplan/leeren', { id: Number($('#mpScan').value) });
+  S.messplan = j.messplan; mpListe();
+}
+async function mpBericht() {
+  const j = await api('messplan/bericht', { id: Number($('#mpScan').value) }, 'Messbericht…');
+  try { await navigator.clipboard.writeText(j.text); meldung('Messbericht in der Zwischenablage.', 'ok'); }
+  catch (e) { dateiAnbieten(new Blob([j.text], { type: 'text/plain' }), j.name + '.txt'); }
+}
+async function mpCsv() {
+  const j = await api('messplan/bericht', { id: Number($('#mpScan').value) });
+  dateiAnbieten(new Blob([j.csv], { type: 'text/csv' }), j.name + '.csv');
+}
+async function mpAbw() {
+  const id = Number($('#mpScan').value), a = $('#mpA').value;
+  if (a === '') throw new Error('Element A wählen.');
+  const j = await api('messplan/abweichung', { id, element: Number(a), toleranz: 0.05 }, 'Berechne Abweichung…');
+  const k = j.kennwerte;
+  S.abweichung = { id, koerper: true, werte: b64.float32(j.werte), max: Math.max(0.02, (k.p95 || 0.2) * 1.5), tol: 0.05, aus: 1e5, kennwerte: k, titel: 'Abweichung zu ' + j.titel, nurElement: true };
+  alleFarbenSetzen();
+}
+function mpKlick(x, y) {
+  const id = Number($('#mpScan').value), erk = mpErk();
+  if (!erk) { meldung('Erst Bereiche erkennen (BEREICHE).', 'warn'); return; }
+  const p = punktAn(x, y, id);
+  if (!p) return;
+  const l = erk.labels[p.index];
+  if (l < 0) { meldung('Dieser Punkt gehört zu keinem Bereich.', 'warn'); return; }
+  if ($('#mpA').value === '' || $('#mpB').value !== '') { $('#mpA').value = l; $('#mpB').value = ''; }
+  else if (Number($('#mpA').value) !== l) $('#mpB').value = l;
+  const el = (id2) => erk.elemente.find((e) => e.id === Number(id2));
+  meldung(`A = ${mpElName(el($('#mpA').value))}${$('#mpB').value !== '' ? ' · B = ' + mpElName(el($('#mpB').value)) : ''}`, '');
+}
+
+async function wdMessen() {
+  const id = Number($('#wdScan').value);
+  if (!S.scans.has(id)) throw new Error('Erst einen Scan laden.');
+  const max = Math.max(0.5, Number($('#wdMax').value) || 10);
+  const j = await api('pruefen/wandstaerke', { id, methode: $('#wdMethode').value, max, strahlen: Number($('#wdStrahlen').value),
+    rueckseite: $('#wdRueck').checked, winkel: Number($('#wdWinkel').value) || 30 }, 'Messe Wandstärke…');
+  const k = j.kennwerte;
+  if (!k.anzahl) throw new Error('Kein Punkt hat bis ' + max + ' mm ein Gegenüber – Grenze erhöhen oder Netz prüfen.');
+  const skala = Number($('#wdSkala').value) || k.max;
+  S.abweichung = { id, wand: true, werte: b64.float32(j.werte), max: skala, kennwerte: k };
+  alleFarbenSetzen();
+  const hmax = Math.max(...k.histogramm, 1);
+  $('#wdInfo').innerHTML = `<table><tr><td>dünnste Stelle</td><td><b>${zk(k.min, 2)} mm</b></td></tr><tr><td>5 % dünner als</td><td>${zk(k.p5, 2)} mm</td></tr>
+    <tr><td>Median</td><td>${zk(k.median, 2)} mm</td></tr><tr><td>dickste Stelle</td><td>${zk(k.max, 2)} mm</td></tr>
+    <tr><td>ohne Gegenseite</td><td>${k.ohne.toLocaleString('de-DE')} Punkte (grau)</td></tr></table>
+    <div class="wdHisto" title="Verteilung ${zk(k.kanten[0], 1)} … ${zk(k.kanten[k.kanten.length - 1], 1)} mm">${k.histogramm.map((h) => `<div style="height:${(h / hmax * 100).toFixed(0)}%"></div>`).join('')}</div>`;
+}
+
+async function kaVolumen() {
+  const id = Number($('#kaScan').value);
+  const kid = $('#kaKoerper').value === '' ? null : Number($('#kaKoerper').value);
+  const j = await api('pruefen/volumenfehler', { id, kid, toleranz: Math.max(0, Number($('#kaTol').value) || 0.1), ausblenden: Math.max(0, Number($('#kaAus').value) || 0) }, 'Suche Volumenfehler…');
+  const e = S.scans.get(id);
+  wertGruppe.children.slice().forEach(objektEntsorgen);
+  if (!j.gebiete.length) { $('#kaGebiete').innerHTML = '<p class="hilfe">Kein zusammenhängendes Gebiet außerhalb der Toleranz.</p>'; return; }
+  $('#kaGebiete').innerHTML = `<table>${j.gebiete.map((g, i) => `<tr><td>${i + 1}</td><td style="color:${g.art === 'mehr' ? '#c0331f' : '#1f4fc0'}">${g.art === 'mehr' ? 'zu viel Material' : 'zu wenig Material'}</td>` +
+    `<td class="zahl">${zk(g.volumen, 1)} mm³</td><td class="zahl">${zk(g.flaeche, 0)} mm²</td><td class="zahl">max ${g.max > 0 ? '+' : ''}${zk(g.max, 2)}</td></tr>`).join('')}</table>`;
+  j.gebiete.forEach((g, i) => {
+    const p = new THREE.Vector3(...g.mitte);
+    if (e) e.obj.localToWorld(p);
+    textSprite(`${i + 1}: ${g.max > 0 ? '+' : ''}${zk(g.max, 2)}`, g.art === 'mehr' ? '#c0331f' : '#1f4fc0', p);
+  });
+}
+function textSprite(text, farbe, welt) {
+  const c = document.createElement('canvas'); c.width = 200; c.height = 44;
+  const g = c.getContext('2d');
+  g.fillStyle = 'rgba(255,255,255,0.92)'; g.strokeStyle = farbe; g.lineWidth = 3;
+  g.fillRect(1, 1, 198, 42); g.strokeRect(1, 1, 198, 42);
+  g.fillStyle = farbe; g.font = 'bold 22px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(text, 100, 23);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false, sizeAttenuation: false }));
+  sp.position.copy(welt); sp.center.set(0.5, -0.2); sp.renderOrder = 11;
+  const sk = 2 * Math.tan(THREE.MathUtils.degToRad(kamera.fov / 2)) / (leinwand.clientHeight || 1);
+  sp.scale.set(200 * sk * 0.6, 44 * sk * 0.6, 1);
+  wertGruppe.add(sp);
+}
+
+async function srRechnen() {
+  const id = Number($('#srScan').value), e = S.scans.get(id);
+  if (!e) throw new Error('Erst einen Scan laden.');
+  const achse = $('#srAchse').value;
+  const j = await api('pruefen/schattenriss', { id, achse, abstand: Math.max(0, Number($('#srAbstand').value) || 0) }, 'Berechne Umriss…');
+  S.schatten = j;
+  srZeichnen(e, j, achse);
+  const b = j.box;
+  $('#srInfo').innerHTML = `Umriss <b>${zk(b[2] - b[0], 1)} × ${zk(b[3] - b[1], 1)} mm</b> (mit Abstand) · ${j.konturen.length} Kontur${j.konturen.length === 1 ? '' : 'en'} – unten am Teil eingezeichnet`;
+}
+function srZeichnen(e, j, achse) {
+  srAus(true);
+  const bb = e.geo.boundingBox, k = { z: 2, y: 1, x: 0 }[achse], tiefe = bb.min.getComponent(k);
+  const grp = new THREE.Group();
+  for (const c of j.konturen) {
+    const pts = c.map(([u, v]) => { const q = [0, 0, 0], ax = { z: [0, 1], y: [0, 2], x: [1, 2] }[achse]; q[ax[0]] = u; q[ax[1]] = v; q[k] = tiefe; return e.obj.localToWorld(new THREE.Vector3(...q)); });
+    const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0xff8a00, depthTest: false }));
+    line.renderOrder = 12; grp.add(line);
+  }
+  S.schattenGruppe = grp; szene.add(grp);
+}
+function srAus(still) {
+  if (S.schattenGruppe) { szene.remove(S.schattenGruppe); S.schattenGruppe.traverse((o) => { if (o.geometry) o.geometry.dispose(); }); S.schattenGruppe = null; }
+  if (still !== true) { S.schatten = null; $('#srInfo').innerHTML = ''; }
+}
+function srExport(art) {
+  if (!S.schatten) throw new Error('Erst „Umriss berechnen“.');
+  dateiAnbieten(new Blob([S.schatten[art]], { type: art === 'svg' ? 'image/svg+xml' : 'application/dxf' }), S.schatten.name + '.' + art);
+}
+
 const AKTIONEN = {
   neu: { text: 'Neues Projekt', fn: async () => {
     if (S.zustand.scans.length && !confirm('Alle Scans schließen? Nicht gespeicherte Änderungen gehen verloren.')) return;
@@ -4677,6 +4891,19 @@ const AKTIONEN = {
   flVorschau: { text: 'Fläche aus Auswahl: Vorschau', fn: flVorschau },
   flAnwenden: { text: 'Fläche aus Auswahl', fn: flAnwenden },
   kaAus: { text: 'Abweichungskarte aus', fn: kaAus },
+  kaVolumen: { text: '', fn: kaVolumen },
+  mpMass: { text: '', fn: () => mpModusSetzen('mass') },
+  mpTolModus: { text: '', fn: () => mpModusSetzen('tol') },
+  mpHinzu: { text: '', fn: mpHinzu },
+  mpBericht: { text: '', fn: mpBericht },
+  mpCsv: { text: '', fn: mpCsv },
+  mpAbw: { text: '', fn: mpAbw },
+  mpLeeren: { text: '', fn: mpLeeren },
+  wdMessen: { text: '', fn: wdMessen },
+  srRechnen: { text: '', fn: srRechnen },
+  srSvg: { text: '', fn: () => srExport('svg') },
+  srDxf: { text: '', fn: () => srExport('dxf') },
+  srAus: { text: '', fn: srAus },
   zebraAn: { text: 'Zebra-Streifen', fn: () => analyseSetzen($('#koerperAnalyse').value === 'zebra' ? '' : 'zebra') },
   schraegeAn: { text: 'Formschräge', fn: () => analyseSetzen($('#koerperAnalyse').value === 'schraege' ? '' : 'schraege') },
   umgebungAn: { text: 'Umgebung', fn: () => analyseSetzen($('#koerperAnalyse').value === 'umgebung' ? '' : 'umgebung') },
@@ -4969,6 +5196,10 @@ function werkzeugOeffnen(liste, knopf = null) {
   inhalt.scrollTop = 0;
   if (haupt && haupt.id === 'w-grundkoerper') gkFeldZeichnen();
   if (haupt && haupt.id === 'w-koerper-abw') kaFuellen();
+  if (haupt && haupt.id === 'w-messplan') mpFuellen();
+  if (haupt && haupt.id === 'w-wand') scanAuswahlFuellen($('#wdScan'));
+  if (haupt && haupt.id === 'w-schatten') scanAuswahlFuellen($('#srScan'));
+  if (haupt && haupt.id === 'w-flachbett' && window.V3DFlachbett) window.V3DFlachbett.oeffnen();
   if (haupt && ['w-skizze', 'w-extrudieren', 'w-drehen', 'w-kanten'].includes(haupt.id)) featureAuswahlFuellen();
   if (haupt && haupt.id === 'w-skizze') skFelderZeigen();
   if (haupt && haupt.id === 'w-extrudieren') $('#exLaengeReihe').hidden = ['auto', 'auswahl'].includes($('#exModus').value);
@@ -5099,7 +5330,7 @@ async function start() {
   setInterval(() => fetch('/api/puls').catch(() => status('Verbindung zum Dienst verloren – Programm neu starten.')), 10000);
   fetch('/api/puls');
   steuerung.addEventListener('change', kameraGrenzen);
-  window.v3dscan = { S, api, einpassen, werkzeugSetzen, punktAn, auswahlAnwenden, kamera, steuerung, renderer, wuerfelTreffer, griffTest: () => ({ griff, griffObjekt }),
+  window.v3dscan = { S, api, meldung, erkennungUebernehmen, einpassen, werkzeugSetzen, punktAn, auswahlAnwenden, kamera, steuerung, renderer, wuerfelTreffer, griffTest: () => ({ griff, griffObjekt }),
     werkzeugOeffnen, werkzeugSchliessen, bandSetzen, formWaehlen, kaefigEckeAn, kaefigKanteAn, kaefigFlaecheAn, aktionAusfuehren };
   konsole('V3D Scan ' + z.fassung + ' bereit.');
 }
@@ -5191,6 +5422,10 @@ $('#dateiEinheit').addEventListener('change', () => { try { localStorage.setItem
 // Hilfe (v1.4): Arbeitsablauf + alle Werkzeuge, erzeugt aus den Werkzeugfenstern (veraltet nicht);
 // F1 springt zum gerade offenen Werkzeug
 const HILFE_ABLAUF = [
+  ['Messen und Prüfen (v1.6)', ['Bereiche erkennen (BEREICHE) oder aus einer Auswahl einpassen – das sind die Messelemente',
+    'ANALYSE → 📏 Messplan: A und B in die Ansicht klicken, Maß oder Form/Lage wählen, Soll ± Toleranz eintragen, „Hinzufügen“',
+    '„Bericht kopieren“ legt den Messbericht mit i.O./n.i.O. in die Zwischenablage, „CSV“ für Excel',
+    'ANALYSE → ▥ Wandstärke (braucht ein Netz), ⬚ Schattenriss (SVG/DXF für Einlagen), 🖼 2D-Messen (Flachbettscan)']],
   ['Scan → CAD in einem Klick', ['Scan laden (Menü → Öffnen; Einheit einheitenloser Dateien im Menü wählen)',
     'START → „🪄 Scan → CAD“: erkennt Grundformen, baut Querschnitte und Körper, meldet die Abweichung',
     'Ergebnis prüfen (ANALYSE → Abweichung), als STEP speichern oder als Bauplan an V3D CAD geben']],

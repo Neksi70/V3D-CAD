@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
-FASSUNG = "1.5.0"
+FASSUNG = "1.6.0"
 HIER = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, "frozen", False):
     HIER = getattr(sys, "_MEIPASS", HIER)
@@ -43,6 +43,9 @@ from kern import koordinaten as ko  # noqa: E402
 from kern import netz as nz  # noqa: E402
 from kern import features as sk_feat  # noqa: E402
 from kern import referenz as rf  # noqa: E402
+from kern import messplan as mp  # noqa: E402
+from kern import pruefen as pr  # noqa: E402
+from kern import schattenriss as sr  # noqa: E402
 from kern import registrierung as rg  # noqa: E402
 from kern import skizze as sk  # noqa: E402
 from kern import werkzeuge as wz  # noqa: E402
@@ -400,6 +403,10 @@ def befehl(name, d):
         return koordinaten(name.split("/", 1)[1], d)
     if name.startswith("formen/"):
         return formen_befehl(name.split("/", 1)[1], d)
+    if name.startswith("messplan/"):
+        return messplan_befehl(name.split("/", 1)[1], d)
+    if name.startswith("pruefen/"):
+        return pruefen_befehl(name.split("/", 1)[1], d)
     if name.startswith("koerper/"):
         return koerper_befehl(name.split("/", 1)[1], d)
     if name.startswith("skizze/"):
@@ -1764,6 +1771,111 @@ def freiform_befehl(was, d):
 
 def _zusammenfassung_neu(erk):
     erk["zusammenfassung"] = er.zusammenfassung(erk["elemente"], erk["freiform"])
+
+# --- Messplan + Prüfen (v1.6) ---------------------------------------------------------------
+def _messplan_erk(s):
+    erk = projekt.erkennung.get(s.id)
+    if not erk or erk["rev"] != s.rev:
+        raise Fehler("Erst Bereiche erkennen oder aus einer Auswahl einpassen (BEREICHE).")
+    return erk
+
+
+def _messplan_antwort(s, erk):
+    werte = mp.auswerten(projekt.messplan.get(s.id, []), erk["elemente"], s.xyz, erk["labels"])
+    return {"messplan": werte, "id": s.id}
+
+
+def messplan_befehl(was, d):
+    s = projekt.scan(d.get("id"))
+    liste = projekt.messplan.setdefault(s.id, [])
+    if was == "bericht":
+        erk = _messplan_erk(s)
+        werte = mp.auswerten(liste, erk["elemente"], s.xyz, erk["labels"])
+        return {"text": mp.bericht_text(s.name, werte, time.strftime("%d.%m.%Y %H:%M")),
+                "csv": mp.bericht_csv(werte).decode("utf-8"),
+                "name": os.path.splitext(s.name)[0] + "_messbericht"}
+    if was == "abweichung":
+        erk = _messplan_erk(s)
+        el = next((e for e in erk["elemente"] if e["id"] == int(d.get("element", -1))), None)
+        if el is None:
+            raise Fehler("Element wählen.")
+        werte = mp.abweichung_element(el, s.xyz)
+        werte[erk["labels"] != el["id"]] = 1e6          # nur die Punkte des Elements – der Rest wird grau
+        kw = kp.abweichung_kennwerte(werte, zahl(d, "toleranz", 0.05), 1e5)
+        return {"werte": _b64(werte, np.float32), "kennwerte": kw, "titel": mp.name(el)}
+    if was == "leeren":
+        liste.clear()
+    elif was == "entfernen":
+        nr = int(d.get("nr"))
+        liste[:] = [e for e in liste if e["nr"] != nr]
+    elif was in ("neu", "aendern"):
+        art = d.get("art")
+        if art not in ("mass", "tol"):
+            raise Fehler("Art muss Maß oder Toleranz sein.")
+        if art == "mass" and d.get("mass", "auto") not in mp.MASSE:
+            raise Fehler("Unbekannte Maßart.")
+        if art == "tol" and d.get("tol") not in mp.TOLERANZEN:
+            raise Fehler("Unbekannte Toleranzart.")
+        if d.get("a") is None:
+            raise Fehler("Element A wählen.")
+        e = {"art": art, "mass": d.get("mass", "auto") if art == "mass" else None, "tol": d.get("tol") if art == "tol" else None,
+             "a": int(d["a"]), "b": None if d.get("b") in (None, "", -1, "-1") else int(d["b"])}
+        for k in ("nenn", "plus", "minus", "grenze", "winkel"):
+            v = d.get(k)
+            e[k] = None if v in (None, "") else float(str(v).replace(",", "."))
+        erk = _messplan_erk(s)
+        probe = mp.auswerten([dict(e, nr=0)], erk["elemente"], s.xyz, erk["labels"])[0]
+        if probe.get("fehler"):
+            raise Fehler(probe["fehler"])
+        if was == "aendern":
+            nr = int(d.get("nr"))
+            alt = next((x for x in liste if x["nr"] == nr), None)
+            if alt is None:
+                raise Fehler("Eintrag %d gibt es nicht." % nr)
+            alt.update(e)
+        else:
+            e["nr"] = max([x["nr"] for x in liste] + [0]) + 1
+            liste.append(e)
+    elif was != "liste":
+        raise Fehler("Unbekannter Messplan-Befehl %s" % was)
+    erk = projekt.erkennung.get(s.id)
+    if not erk or erk["rev"] != s.rev:
+        return {"messplan": [dict(e, fehler="Bereiche fehlen – neu erkennen") for e in liste], "id": s.id}
+    return _messplan_antwort(s, erk)
+
+
+def pruefen_befehl(was, d):
+    s = projekt.scan(d.get("id"))
+    if was == "wandstaerke":
+        if s.tri is None:
+            raise Fehler("Wandstärke braucht ein Netz – Punktwolke erst vernetzen (NETZ → Netz aus Punktwolke).")
+        werte = pr.wandstaerke(s.xyz, s.tri, d.get("methode", "strahl"), zahl(d, "max", 10), int(zahl(d, "strahlen", 1)),
+                               bool(d.get("rueckseite", True)), zahl(d, "winkel", 30))
+        return {"werte": _b64(werte, np.float32), "kennwerte": pr.kennwerte(werte)}
+    if was == "volumenfehler":
+        if d.get("element") is not None:
+            erk = _messplan_erk(s)
+            el = next((e for e in erk["elemente"] if e["id"] == int(d["element"])), None)
+            if el is None:
+                raise Fehler("Element gibt es nicht.")
+            werte = mp.abweichung_element(el, s.xyz)
+        else:
+            koerper = [projekt.koerper_holen(d["kid"])] if d.get("kid") is not None else [k for k in projekt.koerper.values() if k.sichtbar]
+            if not koerper or koerper[0] is None:
+                raise Fehler("Es gibt keinen (sichtbaren) Körper zum Vergleichen.")
+            werte = kp.abweichung([k.shape for k in koerper], s.xyz)
+        aus = zahl(d, "ausblenden", 0)
+        if aus > 0:
+            werte = np.where(np.abs(werte) > aus, np.nan, werte)
+        return {"gebiete": pr.volumenfehler(s.xyz, werte, zahl(d, "toleranz", 0.1), wz.punktabstand(s))}
+    if was == "schattenriss":
+        r = sr.schattenriss(s.xyz, d.get("achse", "z"), zahl(d, "abstand", 1.0), tri=s.tri)
+        if not r["konturen"]:
+            raise Fehler("Kein Umriss gefunden.")
+        return {"konturen": [[[round(float(x), 3), round(float(y), 3)] for x, y in c] for c in r["konturen"]],
+                "achsen": r["achsen"], "box": r["box"], "svg": sr.svg(r["konturen"]), "dxf": sr.dxf(r["konturen"]),
+                "name": os.path.splitext(s.name)[0] + "_umriss_" + r["achsen"]}
+    raise Fehler("Unbekannter Prüf-Befehl %s" % was)
 
 
 def elementliste_csv(sid):

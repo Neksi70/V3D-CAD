@@ -40,6 +40,7 @@ class Projekt:
         self.skizzen = {}               # id -> {"id","name","sichtbar","ebene","ketten","schnitt",...} (JSON)
         self.naechste_skizze = 1
         self.referenzen = {}            # id -> {"id","name","sichtbar","art","punkt","normale"|"richtung"}
+        self.messplan = {}              # Scan-id -> [Eintrag] (v1.6: Maße/Toleranzen, Werte werden neu gerechnet)
         self.auswahlen = {}             # id -> {"id","name","scan","anzahl","maske"(b64)} gespeicherte Auswahl
         self.naechste_auswahl = 1
         self.naechste_referenz = 1
@@ -620,6 +621,8 @@ class Projekt:
             if self.referenzen:
                 info["referenzen"] = list(self.referenzen.values())
                 info["naechste_referenz"] = self.naechste_referenz
+            if any(self.messplan.values()):
+                info["messplan"] = {str(k): v for k, v in self.messplan.items() if v}
             info["zaehler"] = self.zaehler
             z.writestr("projekt.json", json.dumps(info, ensure_ascii=False, indent=1))
         return puffer.getvalue()
@@ -667,6 +670,7 @@ class Projekt:
             for r in info.get("referenzen") or []:
                 p.referenzen[int(r["id"])] = r
             p.naechste_referenz = max([info.get("naechste_referenz", 1)] + [k + 1 for k in p.referenzen])
+            p.messplan = {int(k): list(v) for k, v in (info.get("messplan") or {}).items() if int(k) in p.scans}
         return p
 
 
