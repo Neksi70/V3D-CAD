@@ -27,6 +27,8 @@ try {
     return out; });
   ok(r.links.st === 1 && r.links.ueb < 1e-3 && r.links.aufliegen && r.links.rotSt >= 1, `Linke Ecke: Schwarz 1 Stück, Rot ${r.links.rotSt} Stück(e) (Zeilen greifen ineinander wie im Vorbild), keine Überschneidung, Rot liegt auf (${Math.round(r.links.info.breite)} × ${Math.round(r.links.info.hoehe)} mm)`);
   ok(r.tx_links[1] < 0 && r.tx_links[1] > -5 && r.rechts.st === 1 && r.rechts.ueb < 1e-3 && r.tx_rechts[0] > 0 && r.tx_rechts[0] < 5, `Zeilen direkt außen am Schenkel (links bis x = ${r.tx_links[1].toFixed(1)}, rechts ab x = ${r.tx_rechts[0].toFixed(1)}), rechte Ecke 1 Stück, keine Überschneidung`);
+  const viel = await p.evaluate(async () => { const w = await _mfInit(), R = _hhoBuild(w, { ...HHO_DEF, text: 'HO\nHO\nHO\nHO\nHO', hut: 0 }, _hhoText), n = R.rot.decompose().length; R.schwarz.delete(); R.rot.delete(); return n; });
+  ok(viel === 5, `5 Zeilen: jede Zeile eigenes Stück, keine Überlappung (${viel} Stücke)`);
   const sz = await p.evaluate(async () => { await _hhoCreate(); return objects.map(o => o.userData.name); });
   ok(sz.length === 3 && sz.every(n => /^HO HO HO/.test(n)), 'Erstellen: ' + sz.join(', '));
   await p.evaluate(() => { const box = new THREE.Box3(); objects.forEach(m => box.expandByObject(m)); const c = box.getCenter(new THREE.Vector3()), rr = box.getSize(new THREE.Vector3()).length() * 1.15;

@@ -38,7 +38,7 @@ function _hhoBuild(w, pIn, textFn) {
         zl = k(zl.translate([li ? -x0 - zb.max[0] : x0 - zb.min[0], 0]));      // rechte Ecke: links bündig am Schenkel, linke Ecke: rechts bündig
         if (L.length) {                                                        // so weit hochrücken, bis die Zeile die obere gerade nicht berührt (Abstand „luecke“)
           const oben = k(k(CS.union(L)).offset(Math.max(0.01, p.luecke), 'Round', 2, 16)), ob = oben.bounds(), cb = zl.bounds();
-          let lo = 0, hi = Math.max(0, ob.min[1] - cb.max[1]) + (cb.max[1] - cb.min[1]) * 2;   // hi = sicher frei (unter allem)
+          let lo = 0, hi = Math.max(0, cb.max[1] - ob.min[1]) + 1;   // hi = sicher frei: Oberkante der Zeile unter dem bisherigen Block (auch bei > 3 Zeilen)
           const frei = d => { const t = k(zl.translate([0, -d])), a = k(t.intersect(oben)).area(); return a < 0.01; };
           if (frei(lo)) hi = lo; else for (let it = 0; it < 18; it++) { const m = (lo + hi) / 2; if (frei(m)) hi = m; else lo = m; }
           zl = k(zl.translate([0, -hi]));
