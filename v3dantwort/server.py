@@ -259,12 +259,17 @@ def prompt_bauen(daten, kandidaten, conf, belegt=None):
     zeilen = ['Chat mit: %s' % absender]
     verlauf = [v for v in (daten.get('verlauf') or []) if isinstance(v, dict) and v.get('text')]
     if verlauf:
-        zeilen.append('Letzte Nachrichten (älteste zuerst):')
+        zeilen.append('Weitere Nachrichten im Chat (zur Einordnung, älteste zuerst):')
         for v in verlauf[-12:]:
             zeilen.append('- %s: %s' % ((v.get('von') or absender)[:60], str(v['text'])[:1500]))
     zeilen.append('')
-    zeilen.append('Neue Nachricht, auf die geantwortet wird:')
+    zeilen.append('Nachricht, auf die geantwortet wird:')
     zeilen.append('"""%s"""' % str(daten.get('text') or '')[:4000])
+    if daten.get('aelter'):
+        zeilen.append('ACHTUNG: Das ist eine ÄLTERE Nachricht, danach ging der Chat weiter. Nimm am Anfang kurz Bezug '
+                      'darauf (z. B. „Zu deiner Frage wegen …“ / „Regarding your question about …“), damit klar ist, '
+                      'worauf sich die Antwort bezieht. Antworte NUR auf diese Nachricht – die übrigen Nachrichten sind '
+                      'reiner Kontext, geh nicht auf sie ein und biete Termine nur an, wenn DIESE Nachricht danach fragt.')
     zeilen.append('')
     jetzt = datetime.datetime.now(BERLIN)
     zeilen.append('Heute ist %s, %s.' % (WOCHENTAGE[jetzt.weekday()], jetzt.strftime('%d.%m.%Y %H:%M')))
@@ -273,6 +278,7 @@ def prompt_bauen(daten, kandidaten, conf, belegt=None):
             zeilen.append('Freie Zeiten laut Kalender (je %d Minuten):' % conf['dauer_min'])
             zeilen += ['- ' + zeit_text(t) for t in kandidaten]
             zeilen.append(
+                ('NUR falls die zu beantwortende Nachricht selbst nach einem Treffen/Termin fragt: ' if daten.get('aelter') else '') +
                 'Schlag 2 bis 3 dieser Zeiten vor (möglichst an verschiedenen Tagen; wenn die Nachricht '
                 'einen Wunsch nennt wie „nächste Woche“ oder „nachmittags“, richte dich danach). '
                 'Nenne sie genau EINMAL als kurze Liste mit „•“ (nicht zusätzlich im Fließtext) '

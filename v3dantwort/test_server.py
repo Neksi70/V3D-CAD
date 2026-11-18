@@ -103,6 +103,11 @@ class Prompt(unittest.TestCase):
         self.assertIn('https://kurse.example/k/schnupper', p)
         self.assertNotIn('Aktuelle Kurse', server.prompt_bauen({'text': 'Hi'}, [], server.CONF))
 
+    def test_aeltere_nachricht(self):
+        p = server.prompt_bauen({'text': 'Wie teuer?', 'aelter': True}, [], server.CONF)
+        self.assertIn('ÄLTERE Nachricht', p)
+        self.assertNotIn('ÄLTERE', server.prompt_bauen({'text': 'Wie teuer?'}, [], server.CONF))
+
     def test_aufraeumen(self):
         self.assertEqual(server.aufraeumen('"Hallo **du**"'), 'Hallo du')
 

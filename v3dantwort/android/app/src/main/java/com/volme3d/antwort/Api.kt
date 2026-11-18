@@ -12,13 +12,13 @@ object Api {
     /** Blockiert – nur aus einem Hintergrund-Thread aufrufen. */
     fun vorschlag(
         c: Context, absender: String, text: String, verlauf: List<Nachricht>,
-        termine: Boolean, wunsch: String = "", vorher: String = "",
+        termine: Boolean, wunsch: String = "", vorher: String = "", aelter: Boolean = false,
     ): Vorschlag {
         val key = Speicher.key(c)
         if (key.isBlank()) throw Exception("Noch nicht eingerichtet – Einrichtungs-Link öffnen")
         val body = JSONObject()
             .put("absender", absender).put("text", text).put("termine", termine)
-            .put("wunsch", wunsch).put("vorher", vorher)
+            .put("wunsch", wunsch).put("vorher", vorher).put("aelter", aelter)
             .put("verlauf", JSONArray().apply {
                 verlauf.forEach { put(JSONObject().put("von", it.von ?: "Ich (Volker)").put("text", it.text)) }
             })

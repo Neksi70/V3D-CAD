@@ -35,6 +35,10 @@ class AntwortActivity : Activity() {
     private var absender = ""
     private var nachricht = ""
     private var verlauf: List<Nachricht> = emptyList()
+    /** Alle gelesenen Nachrichten des Chats; auswahl = Indizes, auf die geantwortet wird. */
+    private var alle: List<Nachricht> = emptyList()
+    private val auswahl = sortedSetOf<Int>()
+    private var aelter = false
 
     private lateinit var feld: EditText
     private lateinit var status: TextView
@@ -73,17 +77,61 @@ class AntwortActivity : Activity() {
         val c = chat
         if (c != null) {
             absender = c.titel
-            // Alles seit meiner letzten eigenen Nachricht ist „die neue Nachricht“
-            val abMir = c.verlauf.indexOfLast { it.von == null }
-            val neu = c.verlauf.drop(abMir + 1).ifEmpty { listOf(c.verlauf.last()) }
-            nachricht = neu.joinToString("\n") { if (c.gruppe && it.von != null) "${it.von}: ${it.text}" else it.text }
-            verlauf = c.verlauf.take(c.verlauf.size - neu.size)
+            alle = c.verlauf
+            // Vorauswahl: alles seit meiner letzten eigenen Nachricht
+            val abMir = alle.indexOfLast { it.von == null }
+            auswahl.clear()
+            auswahl += ((abMir + 1) until alle.size)
+            if (auswahl.isEmpty()) auswahl += alle.indices.last
+            auswahlUebernehmen()
         } else {
             // Geteilter oder markierter Text
             absender = i.getStringExtra(Intent.EXTRA_SUBJECT) ?: ""
             nachricht = (i.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)
                 ?: i.getCharSequenceExtra(Intent.EXTRA_TEXT))?.toString() ?: ""
             verlauf = emptyList()
+            alle = emptyList()
+            auswahl.clear()
+            aelter = false
+        }
+    }
+
+    /** nachricht/verlauf aus der Auswahl ableiten. */
+    private fun auswahlUebernehmen() {
+        val gruppe = chat?.gruppe == true
+        nachricht = auswahl.map { alle[it] }
+            .joinToString("\n") { if (gruppe && it.von != null) "${it.von}: ${it.text}" else it.text }
+        verlauf = alle.filterIndexed { i, _ -> i !in auswahl }
+        // Ältere Nachricht gewählt? (danach kam noch etwas vom Gegenüber)
+        val letzteVonIhm = alle.indexOfLast { it.von != null }
+        aelter = auswahl.isNotEmpty() && auswahl.last() < letzteVonIhm
+    }
+
+    /** Liste der Chat-Nachrichten zum Antippen. */
+    private fun listeZeichnen(liste: LinearLayout) {
+        val c = this
+        liste.removeAllViews()
+        alle.forEachIndexed { i, m ->
+            val ich = m.von == null
+            val gewaehlt = i in auswahl
+            val t = Ui.text(c, (if (gewaehlt) "✓ " else "") + (if (ich) "Ich: " else "") + m.text,
+                if (ich) 13f else 15f, farbe = if (ich) Ui.leise(c) else null).apply {
+                setTextIsSelectable(false)
+                background = Ui.rund(if (ich) Ui.hinter(c) else Ui.karte(c), Ui.dp(c, 12).toFloat(),
+                    if (gewaehlt) Ui.GRUEN else null)
+                setPadding(Ui.dp(c, 12), Ui.dp(c, 8), Ui.dp(c, 12), Ui.dp(c, 8))
+                if (!ich) setOnClickListener {
+                    if (laeuft) return@setOnClickListener
+                    if (gewaehlt && auswahl.size > 1) auswahl -= i else if (!gewaehlt) auswahl += i
+                    auswahlUebernehmen()
+                    listeZeichnen(liste)
+                }
+            }
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            lp.topMargin = Ui.dp(c, 6)
+            lp.gravity = if (ich) Gravity.END else Gravity.START
+            if (ich) lp.leftMargin = Ui.dp(c, 48) else lp.rightMargin = Ui.dp(c, 24)
+            liste.addView(t, lp)
         }
     }
 
@@ -118,10 +166,21 @@ class AntwortActivity : Activity() {
             setContentView(ScrollView(c).apply { addView(wurzel); setBackgroundColor(Ui.hinter(c)) })
             return
         }
-        wurzel.addView(Ui.text(c, nachricht).apply {
-            background = Ui.rund(Ui.karte(c), Ui.dp(c, 12).toFloat())
-            setPadding(Ui.dp(c, 12), Ui.dp(c, 10), Ui.dp(c, 12), Ui.dp(c, 10))
-        })
+        if (alle.size > 1) {
+            (wurzel.getChildAt(wurzel.childCount - 1) as TextView).text = "Worauf antworten? – Nachricht antippen"
+            val liste = Ui.spalte(c)
+            listeZeichnen(liste)
+            wurzel.addView(liste)
+            val aufAuswahl = Ui.knopf(c, "↻ Auf Auswahl antworten") { fragen() }
+            knoepfe += aufAuswahl
+            wurzel.addView(Ui.raster(c, 1, listOf(aufAuswahl)))
+            (wurzel.getChildAt(wurzel.childCount - 1)).let { Ui.abstand(it, oben = 8) }
+        } else {
+            wurzel.addView(Ui.text(c, nachricht).apply {
+                background = Ui.rund(Ui.karte(c), Ui.dp(c, 12).toFloat())
+                setPadding(Ui.dp(c, 12), Ui.dp(c, 10), Ui.dp(c, 12), Ui.dp(c, 10))
+            })
+        }
 
         termine = CheckBox(c).apply {
             text = "Terminvorschläge aus dem Kalender"
@@ -210,7 +269,7 @@ class AntwortActivity : Activity() {
         knoepfe += w
         wurzel.addView(Ui.raster(c, 3, w))
 
-        if (!verlauf.isEmpty()) {
+        if (alle.size <= 1 && verlauf.isNotEmpty()) {
             wurzel.addView(Ui.ueberschrift(c, "Davor im Chat"))
             wurzel.addView(Ui.text(c, verlauf.takeLast(6).joinToString("\n") { "${it.von ?: "Ich"}: ${it.text}" }, 13f, farbe = Ui.leise(c)))
         }
@@ -235,7 +294,7 @@ class AntwortActivity : Activity() {
         val mitTerminen = termine.isChecked && !wunsch.startsWith("Bitte freundlich absagen")
         Thread {
             try {
-                val v = Api.vorschlag(this, absender, nachricht, verlauf, mitTerminen, wunsch, vorher)
+                val v = Api.vorschlag(this, absender, nachricht, verlauf, mitTerminen, wunsch, vorher, aelter)
                 runOnUiThread {
                     feld.setText(v.antwort)
                     status.text = "Fertig in ${"%.0f".format(v.dauer)} s"
