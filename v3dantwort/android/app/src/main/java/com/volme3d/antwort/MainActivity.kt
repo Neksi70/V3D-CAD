@@ -56,7 +56,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Ui.hinter(c))
         }
         w.addView(Ui.text(c, "🤖 V3D Antwort", 24f, true))
-        w.addView(Ui.text(c, "Bei jeder WhatsApp-Nachricht erscheint ein Knopf „Mit Claude antworten“. " +
+        w.addView(Ui.text(c, "In jedem WhatsApp-Chat schwebt ein 🤖-Knopf, und bei neuen Nachrichten kommt eine Benachrichtigung. " +
             "Claude schlägt eine nette Antwort mit freien Terminen aus deinem Kalender vor – " +
             "gesendet wird erst, wenn du „Senden“ tippst.", 14f, farbe = Ui.leise(c)))
 
@@ -66,9 +66,21 @@ class MainActivity : Activity() {
         w.addView(Ui.knopf(c, if (zugriff) "✔ Benachrichtigungen lesen: erlaubt" else "① Benachrichtigungen lesen erlauben", !zugriff) {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         })
+        val blaseAn = BlaseService.instanz != null
+        w.addView(Ui.knopf(c, if (blaseAn) "✔ 🤖-Knopf in WhatsApp: an" else "② 🤖-Knopf in WhatsApp einschalten (Bedienungshilfe)", !blaseAn) {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }.also { Ui.abstand(it, oben = 8) })
+        if (!zugriff || !blaseAn) {
+            w.addView(Ui.text(c, "Schalter grau / „Eingeschränkte Einstellung“? Dann: App-Info öffnen → oben rechts ⋮ → " +
+                "„Eingeschränkte Einstellungen zulassen“, danach nochmal hier tippen.", 13f, farbe = Ui.leise(c))
+                .also { Ui.abstand(it, oben = 6) })
+            w.addView(Ui.knopf(c, "App-Info öffnen") {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName")))
+            }.also { Ui.abstand(it, oben = 4) })
+        }
         val eingerichtet = Speicher.key(c).isNotBlank()
         w.addView(Ui.text(c, if (eingerichtet) "✔ Server verbunden: ${Speicher.url(c)}"
-            else "② Den Einrichtungs-Link aus dem Chat mit Claude antippen (oder unten Schlüssel eintragen).",
+            else "③ Den Einrichtungs-Link aus dem Chat mit Claude antippen (oder unten Schlüssel eintragen).",
             13f, farbe = Ui.leise(c)).also { Ui.abstand(it, oben = 8) })
 
         // Schalter
@@ -78,7 +90,8 @@ class MainActivity : Activity() {
             setPadding(0, Ui.dp(c, 6), 0, Ui.dp(c, 6))
             setOnCheckedChangeListener { _, an -> Speicher.setzen(c, name, an) }
         }
-        w.addView(schalter("Knopf bei jeder WhatsApp-Nachricht", Speicher.knopf(c), "knopf"))
+        w.addView(schalter("🤖 schwebend in WhatsApp-Chats", Speicher.blase(c), "blase"))
+        w.addView(schalter("Benachrichtigung bei jeder WhatsApp-Nachricht", Speicher.knopf(c), "knopf"))
         w.addView(schalter("Auch bei Gruppen", Speicher.gruppen(c), "gruppen"))
         w.addView(schalter("Termine standardmäßig vorschlagen", Speicher.termine(c), "termine"))
 

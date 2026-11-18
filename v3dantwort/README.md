@@ -7,11 +7,11 @@ WhatsApp-Nachricht → Knopf „🤖 Mit Claude antworten“ → nette Antwort m
   V3D-Mail-Kalender + Familienkalender (über `~/v3d-mail-mcp/v3dmcp`) und fragt `claude -p` ohne Werkzeuge
   in einem leeren Ordner (`/tmp/v3dantwort-leer`, damit kein Projekt-CLAUDE.md/Hooks mitlaufen). ~4–8 s.
   Protokolliert nur Längen/Dauer, keine Inhalte. Schlüssel in `config.json` (600, nicht im git).
-- `android/` (com.volme3d.antwort): NotificationListener liest WhatsApp + WhatsApp Business, legt eine
+- `android/` (com.volme3d.antwort): BlaseService (Bedienungshilfe) zeigt in WhatsApp-Chats einen schwebenden 🤖 (TYPE_ACCESSIBILITY_OVERLAY), liest sichtbare Nachrichten (links = Gegenüber) und fügt die Antwort per ACTION_SET_TEXT ins Feld `entry` ein. Dazu NotificationListener liest WhatsApp + WhatsApp Business, legt eine
   eigene Benachrichtigung mit Knopf daneben. „Senden“ nutzt den Antworten-Knopf (RemoteInput) der
   WhatsApp-Benachrichtigung; ist die weg → Kopieren + Chat öffnen. Außerdem Teilen-Ziel / Text markieren.
   `keystore.jks` + `signing.properties` NIE löschen (gitignored).
-- `android-test-wa/`: Attrappe mit Paketname com.whatsapp – NUR für den Emulator (Ende-zu-Ende-Test).
+- `android-test-wa/`: Attrappe mit Paketname com.whatsapp – NUR Emulator. `.Start` = Benachrichtigung mit Antworten-Knopf, `.Chat` = Chat-Bildschirm mit WhatsApps View-IDs (entry, message_text, conversation_contact_name) für den schwebenden Knopf.
 - `index.html`: Web-Variante (Text einfügen → Antwort), `https://v3da.tailf05fe9.ts.net/antwort/?key=…`
 
 ## Terminregeln (config.json überschreibt STANDARD in server.py)

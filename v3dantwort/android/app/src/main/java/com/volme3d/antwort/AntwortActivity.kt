@@ -150,12 +150,15 @@ class AntwortActivity : Activity() {
         wurzel.addView(zeile)
         Ui.abstand(zeile, oben = 6)
 
-        // Senden / Kopieren
+        // Einfügen / Senden / Kopieren
         val hatAktion = chat?.antwortAktion != null
-        sendenKnopf = Ui.knopf(c, if (hatAktion) "✅ Senden" else "📋 Kopieren & öffnen", haupt = true) {
-            if (hatAktion) senden() else kopierenUndOeffnen()
+        val vomBildschirm = chat?.vomBildschirm == true
+        sendenKnopf = when {
+            vomBildschirm -> Ui.knopf(c, "📝 In WhatsApp einfügen", haupt = true) { einfuegen() }
+            hatAktion -> Ui.knopf(c, "✅ Senden", haupt = true) { senden() }
+            else -> Ui.knopf(c, "📋 Kopieren & öffnen", haupt = true) { kopierenUndOeffnen() }
         }
-        val zweit = if (hatAktion) Ui.knopf(c, "📋 Kopieren & öffnen") { kopierenUndOeffnen() } else null
+        val zweit = if (hatAktion || vomBildschirm) Ui.knopf(c, "📋 Kopieren") { kopieren() } else null
         knoepfe += sendenKnopf
         zweit?.let { knoepfe += it }
         wurzel.addView(if (zweit != null) Ui.reihe(c, sendenKnopf, zweit) else Ui.reihe(c, sendenKnopf))
@@ -249,10 +252,27 @@ class AntwortActivity : Activity() {
         }
     }
 
-    private fun kopierenUndOeffnen() {
-        val text = feld.text.toString().trim()
-        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Antwort", text))
+    private fun kopieren() {
+        getSystemService(ClipboardManager::class.java)
+            .setPrimaryClip(ClipData.newPlainText("Antwort", feld.text.toString().trim()))
         Toast.makeText(this, "Kopiert – im Chat lange drücken → Einfügen", Toast.LENGTH_LONG).show()
+    }
+
+    /** Zurück in den WhatsApp-Chat; die Bedienungshilfe schreibt den Text ins Eingabefeld. */
+    private fun einfuegen() {
+        val text = feld.text.toString().trim()
+        val c = chat ?: return
+        if (text.isEmpty()) return
+        val dienst = BlaseService.instanz
+        if (dienst == null) { kopieren(); finish(); return }
+        // Zur Sicherheit auch in die Zwischenablage
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Antwort", text))
+        dienst.spaeterEinfuegen(c.paket, text)
+        finish()
+    }
+
+    private fun kopierenUndOeffnen() {
+        kopieren()
         val c = chat
         try {
             if (c?.oeffnen != null) {

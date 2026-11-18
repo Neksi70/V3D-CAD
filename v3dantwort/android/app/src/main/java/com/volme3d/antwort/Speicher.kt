@@ -20,6 +20,8 @@ data class Chat(
     /** Öffnet genau diesen Chat in WhatsApp. */
     val oeffnen: PendingIntent?,
     val zeit: Long,
+    /** Vom Bildschirm gelesen (schwebender Knopf) → Antwort wird ins Eingabefeld eingefügt. */
+    val vomBildschirm: Boolean = false,
 ) {
     val letzte: String get() = verlauf.lastOrNull { it.von != null }?.text ?: verlauf.lastOrNull()?.text ?: ""
 }
@@ -40,6 +42,10 @@ object Speicher {
     fun key(c: Context): String = prefs(c).getString("key", "")!!
     fun gruppen(c: Context): Boolean = prefs(c).getBoolean("gruppen", false)
     fun knopf(c: Context): Boolean = prefs(c).getBoolean("knopf", true)
+    fun blase(c: Context): Boolean = prefs(c).getBoolean("blase", true)
+    fun blaseX(c: Context, standard: Int) = prefs(c).getInt("blaseX", standard)
+    fun blaseY(c: Context, standard: Int) = prefs(c).getInt("blaseY", standard)
+    fun blasePos(c: Context, x: Int, y: Int) = prefs(c).edit().putInt("blaseX", x).putInt("blaseY", y).apply()
     fun termine(c: Context): Boolean = prefs(c).getBoolean("termine", true)
     fun setzen(c: Context, name: String, wert: Any) {
         val e = prefs(c).edit()
