@@ -54,6 +54,10 @@ const SETTINGS_DEF = {
   firma: { name: 'Volme 3D', inhaber: '', strasse: '', plz: '', ort: '', email: '', telefon: '+49 1512 0164288', web: '', slogan: '3D-Druck · Konstruktion · Kurse' },
   briefkopf: 'band', // 'band' | 'linie' | 'seite'
   bank: { iban: '', bic: '', institut: '' },
+  // Zweite Bankverbindung (optional). ab = Stichtag: auf festgeschriebenen Belegen
+  // erscheint sie nur, wenn sie AB diesem Tag festgeschrieben wurden (GoBD — Altbelege
+  // bleiben so, wie sie ausgestellt wurden). Die erste bleibt Hauptverbindung (GiroCode, E-Rechnung zuerst).
+  bank2: { iban: '', bic: '', institut: '', ab: '' },
   steuer: { modus: 'klein', steuernummer: '', ustId: '' }, // 'klein' = §19 UStG, 'regel' = mit USt
   zahlungszielTage: 14,
   angebotGueltigTage: 30,
@@ -218,6 +222,16 @@ function rabattLabel(doc) {
   return doc.rabattArt === 'betrag' ? txt : `${txt} (${doc.rabattProzent} %)`;
 }
 
+// Zweite Bankverbindung für diesen Beleg (null = nicht anzeigen).
+// Entwürfe und Mahnungen: immer. Festgeschriebene Belege: nur wenn ab Stichtag festgeschrieben —
+// ältere Belege haben kein festgeschriebenAm und bleiben unverändert.
+function bank2Fuer(doc, mahnung) {
+  const b = settings.data.bank2 || {};
+  if (!String(b.iban || '').trim()) return null;
+  if (mahnung || !doc.festgeschrieben) return b;
+  return (doc.festgeschriebenAm && b.ab && String(doc.festgeschriebenAm).slice(0, 10) >= b.ab) ? b : null;
+}
+
 // --- GiroCode-SVG (EPC069-12 Version 002) -----------------------------------
 function giroSvg(doc) {
   const s = settings.data;
@@ -284,6 +298,7 @@ function belegHtml(doc) {
   const ziel = new Date(doc.datum); ziel.setDate(ziel.getDate() + (Number(doc.zahlungszielTage) || (re ? s.zahlungszielTage : s.angebotGueltigTage) || 14));
   const zielStr = ziel.toLocaleDateString('de-DE');
   const giro = re && !['bezahlt', 'storniert'].includes(doc.status) ? giroSvg(doc) : null;
+  const b2 = bank2Fuer(doc);
   let nr = 0;
   const zeilen = (doc.positionen || []).map((p) => {
     if (p.typ === 'text') return `<tr class="txt"><td></td><td colspan="4">${p.name ? `<b>${hesc(p.name)}</b> ` : ''}${hesc(p.beschreibung || '')}</td></tr>`;
@@ -341,7 +356,7 @@ ${ustZeilen}
 <div class="end"><span>${re ? 'Rechnungsbetrag' : 'Gesamtbetrag'}</span><span>${eurS(t.brutto)}</span></div>
 </div>
 ${klein ? '<div class="hin">Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.</div>' : ''}
-${re && !['bezahlt', 'storniert'].includes(doc.status) ? `<div class="hin">Bitte überweisen Sie den Betrag bis zum <b>${zielStr}</b> unter Angabe der Rechnungsnummer${s.bank.iban ? ` auf:<br><b>IBAN ${hesc(s.bank.iban)}</b>${s.bank.bic ? ' · BIC ' + hesc(s.bank.bic) : ''} (${hesc(s.firma.name)})` : '.'}</div>` : ''}
+${re && !['bezahlt', 'storniert'].includes(doc.status) ? `<div class="hin">Bitte überweisen Sie den Betrag bis zum <b>${zielStr}</b> unter Angabe der Rechnungsnummer${s.bank.iban ? ` auf:<br><b>IBAN ${hesc(s.bank.iban)}</b>${s.bank.bic ? ' · BIC ' + hesc(s.bank.bic) : ''} (${hesc(s.firma.name)})${b2 ? `<br>oder: <b>IBAN ${hesc(b2.iban)}</b>${b2.bic ? ' · BIC ' + hesc(b2.bic) : ''}${b2.institut ? ' (' + hesc(b2.institut) + ')' : ''}` : ''}` : '.'}</div>` : ''}
 ${giro ? `<div class="giro">${giro}<div><b>Mit Banking-App zahlen:</b><br>GiroCode scannen — Empfänger, Betrag und Verwendungszweck sind schon ausgefüllt.</div></div>` : ''}
 ${doc.fusstext ? `<div class="hin" style="white-space:pre-wrap">${hesc(doc.fusstext)}</div>
 ` : ''}${doc.status === 'bezahlt' ? '<div class="hin">✅ Diese Rechnung ist bereits bezahlt — vielen Dank!</div>' : ''}
@@ -352,6 +367,8 @@ ${doc.fusstext ? `<div class="hin" style="white-space:pre-wrap">${hesc(doc.fusst
 <span>${hesc(s.firma.telefon || '')}</span><span>${hesc(s.firma.email || '')}</span>
 ${s.steuer.steuernummer ? `<span>St-Nr. ${hesc(s.steuer.steuernummer)}</span>` : ''}
 ${s.steuer.ustId ? `<span>USt-IdNr. ${hesc(s.steuer.ustId)}</span>` : ''}
+${b2 && s.bank.iban ? `<span>IBAN ${hesc(s.bank.iban)}${s.bank.bic ? ' · BIC ' + hesc(s.bank.bic) : ''}${s.bank.institut ? ' · ' + hesc(s.bank.institut) : ''}</span>` : ''}
+${b2 ? `<span>IBAN ${hesc(b2.iban)}${b2.bic ? ' · BIC ' + hesc(b2.bic) : ''}${b2.institut ? ' · ' + hesc(b2.institut) : ''}</span>` : ''}
 </div>
 </div></div></body></html>`;
 }
@@ -438,6 +455,8 @@ function eDaten(doc) {
     // BR-CO-26: ohne USt-IdNr. dient die Steuernummer als Verkäuferkennung (BT-29)
     sellerId: s.steuer.ustId ? '' : s.steuer.steuernummer,
     iban: String(s.bank.iban || '').replace(/\s/g, '').toUpperCase(),
+    // weitere Überweisungskonten (BG-17 ist 0..n); die erste bleibt vorn
+    ibans2: [bank2Fuer(doc)].filter(Boolean).map((b) => String(b.iban).replace(/\s/g, '').toUpperCase()),
     grund: 'Kleinunternehmerregelung § 19 UStG',
     notizen,
   };
@@ -504,7 +523,10 @@ ${L.datum ? `<cac:Delivery><cbc:ActualDeliveryDate>${L.datum}</cbc:ActualDeliver
 <cac:PaymentMeans><cbc:PaymentMeansCode>58</cbc:PaymentMeansCode><cbc:PaymentID>${xesc(doc.nummer)}</cbc:PaymentID>
   <cac:PayeeFinancialAccount><cbc:ID>${xesc(e.iban)}</cbc:ID><cbc:Name>${xesc(s.firma.name)}</cbc:Name></cac:PayeeFinancialAccount>
 </cac:PaymentMeans>
-<cac:PaymentTerms><cbc:Note>Zahlbar bis ${e.faellig} ohne Abzug.</cbc:Note></cac:PaymentTerms>
+${e.ibans2.map((i) => `<cac:PaymentMeans><cbc:PaymentMeansCode>58</cbc:PaymentMeansCode><cbc:PaymentID>${xesc(doc.nummer)}</cbc:PaymentID>
+  <cac:PayeeFinancialAccount><cbc:ID>${xesc(i)}</cbc:ID><cbc:Name>${xesc(s.firma.name)}</cbc:Name></cac:PayeeFinancialAccount>
+</cac:PaymentMeans>
+`).join('')}<cac:PaymentTerms><cbc:Note>Zahlbar bis ${e.faellig} ohne Abzug.</cbc:Note></cac:PaymentTerms>
 ${rabatte}
 <cac:TaxTotal><cbc:TaxAmount currencyID="EUR">${geld(e.ust)}</cbc:TaxAmount>
 ${subtotals}
@@ -559,7 +581,8 @@ function ciiXml(doc) {
   // Lieferblock darf nicht leer sein (PEPPOL-R008): bei Zeiträumen gilt das Ende als Leistungsdatum
   x.push(`<ram:ApplicableHeaderTradeDelivery><ram:ActualDeliverySupplyChainEvent><ram:OccurrenceDateTime>${d102(L.datum || L.bis)}</ram:OccurrenceDateTime></ram:ActualDeliverySupplyChainEvent></ram:ApplicableHeaderTradeDelivery>`);
   x.push('<ram:ApplicableHeaderTradeSettlement>', `<ram:PaymentReference>${xesc(doc.nummer)}</ram:PaymentReference>`, '<ram:InvoiceCurrencyCode>EUR</ram:InvoiceCurrencyCode>',
-    `<ram:SpecifiedTradeSettlementPaymentMeans><ram:TypeCode>58</ram:TypeCode><ram:PayeePartyCreditorFinancialAccount><ram:IBANID>${xesc(e.iban)}</ram:IBANID><ram:AccountName>${xesc(s.firma.name)}</ram:AccountName></ram:PayeePartyCreditorFinancialAccount></ram:SpecifiedTradeSettlementPaymentMeans>`);
+    `<ram:SpecifiedTradeSettlementPaymentMeans><ram:TypeCode>58</ram:TypeCode><ram:PayeePartyCreditorFinancialAccount><ram:IBANID>${xesc(e.iban)}</ram:IBANID><ram:AccountName>${xesc(s.firma.name)}</ram:AccountName></ram:PayeePartyCreditorFinancialAccount></ram:SpecifiedTradeSettlementPaymentMeans>`,
+    ...e.ibans2.map((i) => `<ram:SpecifiedTradeSettlementPaymentMeans><ram:TypeCode>58</ram:TypeCode><ram:PayeePartyCreditorFinancialAccount><ram:IBANID>${xesc(i)}</ram:IBANID><ram:AccountName>${xesc(s.firma.name)}</ram:AccountName></ram:PayeePartyCreditorFinancialAccount></ram:SpecifiedTradeSettlementPaymentMeans>`));
   for (const g of e.gruppen) x.push(steuer('ApplicableTradeTax', g.cat, g.satz, { pre: `<ram:CalculatedAmount>${geld(g.ust)}</ram:CalculatedAmount>`, grund: true, mid: `<ram:BasisAmount>${geld(g.basis)}</ram:BasisAmount>` }));
   if (L.von) x.push(`<ram:BillingSpecifiedPeriod><ram:StartDateTime>${d102(L.von)}</ram:StartDateTime><ram:EndDateTime>${d102(L.bis)}</ram:EndDateTime></ram:BillingSpecifiedPeriod>`);
   for (const g of e.gruppen.filter((g) => g.rabatt > 0)) {
@@ -724,7 +747,7 @@ function ibanSuchen(text, eigene) {
       if (kand.length !== len) continue;
       // Länder mit rein numerischer IBAN: Buchstaben dahinter = Wortsalat, keine IBAN
       if (['DE', 'AT', 'BE', 'LU', 'DK', 'FI', 'PL', 'CZ', 'SE', 'EE', 'LT', 'PT', 'ES'].includes(land) && !/^\d+$/.test(kand.slice(2))) continue;
-      if (ibanOk(kand) && kand !== eigene) return kand;
+      if (ibanOk(kand) && ![].concat(eigene).includes(kand)) return kand;
     }
   }
   return null;
@@ -745,7 +768,7 @@ const spaces = (s) => String(s || '').replace(/\s+/g, ' ').trim();
 
 function felderAusText(zeilen) {
   const f = settings.data.firma || {};
-  const eigeneIban = String((settings.data.bank || {}).iban || '').replace(/\s/g, '').toUpperCase();
+  const eigeneIban = [settings.data.bank, settings.data.bank2].map((b) => String((b || {}).iban || '').replace(/\s/g, '').toUpperCase()).filter(Boolean);
   const eigen = (z) => {
     const l = z.toLowerCase();
     return [f.name, f.inhaber, f.strasse].filter((x) => x && x.length > 3).some((x) => l.includes(x.toLowerCase()))
@@ -1579,6 +1602,7 @@ Positionen:\n${liste.slice(0, 2000)}`;
           // und der Kunde hätte zwei Nummern für dasselbe Angebot.
           if (!doc.nummer) doc.nummer = nextNumber(doc.art);
           doc.festgeschrieben = true;
+          doc.festgeschriebenAm = now(); // Stichtag-Vergleich für Einstellungsänderungen (bank2)
           doc.datum = doc.datum || now().slice(0, 10);
           doc.status = doc.art === 'rechnung' ? 'offen' : 'offen';
           doc.totals = calcTotals(doc);

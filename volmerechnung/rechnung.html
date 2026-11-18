@@ -1577,7 +1577,15 @@ function renderSettings(m){
     <div><label>IBAN</label><input id="sIban" value="${esc(s.bank.iban)}"></div>
     <div><label>BIC</label><input id="sBic" value="${esc(s.bank.bic)}"></div>
     <div><label>Institut</label><input id="sInstitut" value="${esc(s.bank.institut)}"></div>
-  </div></div>
+  </div>
+  <h3 style="margin-top:14px;font-size:14px">Zweite Bankverbindung (optional)</h3>
+  <div class="grid3">
+    <div><label>IBAN</label><input id="sIban2" value="${esc((s.bank2||{}).iban||'')}"></div>
+    <div><label>BIC</label><input id="sBic2" value="${esc((s.bank2||{}).bic||'')}"></div>
+    <div><label>Institut</label><input id="sInstitut2" value="${esc((s.bank2||{}).institut||'')}"></div>
+  </div>
+  <p style="color:var(--dim);font-size:12.5px;margin-top:6px">Erscheint auf Entwürfen, Mahnungen und Belegen, die ab ${esc(dtDE((s.bank2||{}).ab||today()))} festgeschrieben werden. Bereits ausgestellte Belege bleiben unverändert. GiroCode nutzt immer die erste Verbindung.</p>
+  </div>
   <div class="card"><h3>3D-Druck-Kalkulation</h3>
   <div class="grid3">
     <div><label>Maschinensatz (€/Druckstunde)</label><input id="sKMasch" value="${s.kalkulation.maschineProStd}"></div>
@@ -1609,6 +1617,10 @@ async function saveSettings(){
     briefkopf:$('#sBriefkopf').value,
     steuer:{modus:$('#sModus').value,steuernummer:$('#sStnr').value,ustId:$('#sUstId').value},
     bank:{iban:$('#sIban').value,bic:$('#sBic').value,institut:$('#sInstitut').value},
+    bank2:(()=>{const alt=s.bank2||{},iban=$('#sIban2').value.trim();
+      // Stichtag bleibt, solange die IBAN gleich bleibt; neue/geänderte IBAN gilt ab heute
+      const gleich=iban.replace(/\s/g,'')===String(alt.iban||'').replace(/\s/g,'');
+      return {iban,bic:$('#sBic2').value.trim(),institut:$('#sInstitut2').value.trim(),ab:iban?(gleich&&alt.ab?alt.ab:today()):''};})(),
     kalkulation:{
       maschineProStd:parseFloat(String($('#sKMasch').value).replace(',','.'))||0,
       arbeitProStd:parseFloat(String($('#sKArbeit').value).replace(',','.'))||0,
@@ -1627,6 +1639,14 @@ async function saveSettings(){
 }
 
 // ---------------------------------------------------------------- Druck
+// Zweite Bankverbindung (wie server.js bank2Fuer): Entwürfe + Mahnungen immer,
+// festgeschriebene Belege nur ab Stichtag — Altbelege bleiben unverändert (GoBD)
+function bank2Fuer(d,mahnung){
+  const b=S.settings.bank2||{};
+  if(!String(b.iban||'').trim())return null;
+  if(mahnung||!d.festgeschrieben)return b;
+  return (d.festgeschriebenAm&&b.ab&&String(d.festgeschriebenAm).slice(0,10)>=b.ab)?b:null;
+}
 function sheetHtml(d,mahnung,girocode){
   const s=S.settings,t=calcTotals(d),klein=s.steuer.modus==='klein';
   const re=d.art==='rechnung';
@@ -1708,7 +1728,7 @@ function sheetHtml(d,mahnung,girocode){
   <div class="fuss">
     <div><b>${esc(s.firma.name)}</b><br>${esc(s.firma.inhaber)}<br>${esc(s.firma.strasse)}<br>${esc(s.firma.plz)} ${esc(s.firma.ort)}</div>
     <div>Tel: ${esc(s.firma.telefon)}<br>${esc(s.firma.email)}<br>${esc(s.firma.web)}</div>
-    <div>${s.bank.iban?`IBAN: ${esc(s.bank.iban)}<br>BIC: ${esc(s.bank.bic)}<br>${esc(s.bank.institut)}`:''}</div>
+    <div>${s.bank.iban?`IBAN: ${esc(s.bank.iban)}<br>BIC: ${esc(s.bank.bic)}<br>${esc(s.bank.institut)}`:''}${(b2=>b2?`<div style="margin-top:1.5mm">IBAN: ${esc(b2.iban)}<br>BIC: ${esc(b2.bic||'')}<br>${esc(b2.institut||'')}</div>`:'')(bank2Fuer(d,mahnung))}</div>
     <div>${s.steuer.steuernummer?`Steuernummer:<br>${esc(s.steuer.steuernummer)}`:''}${s.steuer.ustId?`<br>USt-IdNr.: ${esc(s.steuer.ustId)}`:''}</div>
   </div>
   </div>`;
