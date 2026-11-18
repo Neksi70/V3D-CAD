@@ -153,7 +153,7 @@ def firmendaten():
 
 # --- Sitzungen --------------------------------------------------------------
 
-SESSIONS = {}           # sid -> ablaufzeit
+SESSIONS = {}           # sid -> ablaufzeit (voller Zugang) oder {"exp": …, "user": "<name>"}
 SESSION_TTL = 30 * 24 * 3600
 SESS_FILE = os.path.join(CONF_DIR, 'sessions.json')
 _login_fails = {}       # ip -> (anzahl, letzter_versuch)
@@ -171,10 +171,17 @@ def _sess_laden():
         with open(SESS_FILE, 'r', encoding='utf-8') as fh:
             daten = json.load(fh)
         jetzt = time.time()
-        return {k: v for k, v in daten.items()
-                if isinstance(v, (int, float)) and v > jetzt}
+        return {k: v for k, v in daten.items() if _sess_exp(v) > jetzt}
     except Exception:
         return {}
+
+
+def _sess_exp(v):
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, dict) and isinstance(v.get('exp'), (int, float)):
+        return v['exp']
+    return 0
 
 
 def _sess_sichern():
@@ -193,14 +200,15 @@ def _sess_sichern():
 SESSIONS.update(_sess_laden())
 
 
-def new_session():
+def new_session(user=None):
+    """user=None: voller Zugang (adminKey). Sonst Name eines Eintrags aus "benutzer"."""
     sid = secrets.token_urlsafe(24)
     with _sess_lock:
         now = time.time()
-        for k, exp in list(SESSIONS.items()):
-            if exp < now:
+        for k, v in list(SESSIONS.items()):
+            if _sess_exp(v) < now:
                 del SESSIONS[k]
-        SESSIONS[sid] = now + SESSION_TTL
+        SESSIONS[sid] = now + SESSION_TTL if user is None else {'exp': now + SESSION_TTL, 'user': user}
         _sess_sichern()
     return sid
 
@@ -209,14 +217,46 @@ def session_valid(sid):
     if not sid:
         return False
     with _sess_lock:
-        exp = SESSIONS.get(sid)
-        if not exp:
+        v = SESSIONS.get(sid)
+        if not v:
             return False
-        if exp < time.time():
+        if _sess_exp(v) < time.time():
             del SESSIONS[sid]
             _sess_sichern()
             return False
         return True
+
+
+def session_user(sid):
+    """None = voller Zugang, sonst Benutzername. Nur nach session_valid aufrufen."""
+    with _sess_lock:
+        v = SESSIONS.get(sid)
+    return v.get('user') if isinstance(v, dict) else None
+
+
+# --- Benutzer mit eingeschraenktem Zugang ----------------------------------
+# config.json: "benutzer": [{"name": "Lukas", "key": "…", "konten": ["<konto-id>", …]}]
+# Ein solcher Schluessel sieht NUR die genannten Konten. Konten anlegen/aendern,
+# Benachrichtigungen (die melden alle Postfaecher) und KI-Einstellungen bleiben
+# dem adminKey vorbehalten.
+
+def benutzer_zum_schluessel(key):
+    """'' = adminKey, Name = Benutzer, None = falsch. Prueft alle Eintraege zeitkonstant."""
+    treffer = None
+    if CFG.get('adminKey') and hmac.compare_digest(key, CFG['adminKey']):
+        treffer = ''
+    for b in CFG.get('benutzer') or []:
+        if b.get('key') and b.get('name') and hmac.compare_digest(key, b['key']) and treffer is None:
+            treffer = b['name']
+    return treffer
+
+
+def benutzer_konten(name):
+    """Menge der erlaubten Konto-IDs eines Benutzers (leer, wenn es ihn nicht mehr gibt)."""
+    for b in CFG.get('benutzer') or []:
+        if b.get('name') == name:
+            return set(b.get('konten') or [])
+    return set()
 
 
 def login_blocked(ip):
@@ -2453,6 +2493,24 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return session_valid(self._cookies().get('v3dmail_sid'))
 
+    def _erlaubt(self):
+        """None = alle Konten (adminKey/offener Zugang), sonst Menge erlaubter Konto-IDs."""
+        if CFG.get('offenerZugang'):
+            return None
+        sid = self._cookies().get('v3dmail_sid')
+        user = session_user(sid)
+        return None if user is None else benutzer_konten(user)
+
+    def _konten(self):
+        erlaubt = self._erlaubt()
+        return [a for a in CFG.get('accounts', []) if erlaubt is None or a.get('id') in erlaubt]
+
+    def _konto(self, acc_id):
+        erlaubt = self._erlaubt()
+        if erlaubt is not None and acc_id not in erlaubt:
+            return None
+        return account_by_id(acc_id)
+
     def _read_body(self):
         n = int(self.headers.get('Content-Length') or 0)
         if n <= 0:
@@ -2546,11 +2604,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(429, {'error': 'Zu viele Versuche. Bitte 5 Minuten warten.'})
             key = (self._body().get('key') or '').strip()
             time.sleep(0.3)     # Bremse gegen Durchprobieren
-            if not hmac.compare_digest(key, CFG['adminKey']):
+            wer = benutzer_zum_schluessel(key) if key else None
+            if wer is None:
                 login_fail(ip)
                 return self._send(401, {'error': 'Falscher Schlüssel'})
             _login_fails.pop(ip, None)
-            sid = new_session()
+            sid = new_session(wer or None)
             secure = '; Secure' if USE_TLS else ''
             cookie = 'v3dmail_sid=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d%s' % (sid, SESSION_TTL, secure)
             return self._send(200, {'ok': True}, extra=[('Set-Cookie', cookie)])
@@ -2568,11 +2627,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {'authed': False})
             return self._send(200, {
                 'authed': True,
-                'accounts': [public_account(a) for a in CFG.get('accounts', [])],
+                'voll': self._erlaubt() is None,
+                'accounts': [public_account(a) for a in self._konten()],
             })
 
         if not self._authed():
             return self._send(401, {'error': 'nicht angemeldet'})
+
+        # Eingeschraenkter Schluessel: keine Kontenverwaltung, keine Push-Meldungen
+        # (die fassen alle Postfaecher zusammen), keine KI-Einstellungen.
+        if self._erlaubt() is not None and (
+                route == '/account/delete'
+                # Eigenes Postfach pflegen (Name, Signatur, Passwort) ja, neue anlegen nein.
+                or (route in ('/account/test', '/account/save')
+                    and self._body().get('id') not in self._erlaubt())
+                or route.startswith('/push/')
+                or (route == '/ai/settings' and method == 'POST')):
+            return self._send(403, {'error': 'Mit diesem Zugang nicht erlaubt.'})
 
         # --- Konten ---
         if route == '/autoconfig' and method == 'POST':
@@ -2633,7 +2704,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # Senden/Empfangen: alle Postfächer auf einmal prüfen
         if route == '/check':
-            return self._send(200, {'accounts': check_all(CFG.get('accounts', []))})
+            return self._send(200, {'accounts': check_all(self._konten())})
 
         # --- Benachrichtigungen ---
         if route == '/push/key' and method == 'GET':
@@ -2691,7 +2762,7 @@ class Handler(BaseHTTPRequestHandler):
         # --- Kalender ---
         if route.startswith('/cal/') and method == 'POST':
             b = self._body()
-            cal_acc = account_by_id(b.get('acc'))
+            cal_acc = self._konto(b.get('acc'))
             if not cal_acc:
                 raise MailError('Kein Konto ausgewählt')
             if route == '/cal/setup':
@@ -2706,7 +2777,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, dav_delete_event(cal_acc, b.get('href')))
 
         # --- Postfach ---
-        acc = account_by_id((q or {}).get('acc') or (self._body_cached() or {}).get('acc'))
+        acc = self._konto((q or {}).get('acc') or (self._body_cached() or {}).get('acc'))
         if route.startswith('/folders') or route.startswith('/messages') or \
            route.startswith('/message') or route.startswith('/attachment') or \
            route.startswith('/vorschau') or route.startswith('/previews') or \

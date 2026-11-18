@@ -464,6 +464,128 @@ class TestHttp(unittest.TestCase):
         self.assertEqual(status, 404)
 
 
+
+class TestBenutzer(unittest.TestCase):
+    """Eigener Schluessel (z. B. Lukas) sieht nur seine Konten."""
+
+    @classmethod
+    def setUpClass(cls):
+        from http.server import ThreadingHTTPServer
+        cls.alt = {k: server.CFG.get(k) for k in ('adminKey', 'accounts', 'benutzer', 'offenerZugang')}
+        server.CFG['adminKey'] = 'chef-schluessel'
+        server.CFG['offenerZugang'] = False
+        server.CFG['accounts'] = [
+            {'id': 'volker1', 'email': 'volker@x.de', 'password': 'geheimV', 'imapHost': 'imap.x.de'},
+            {'id': 'info1', 'email': 'info@x.de', 'password': 'geheimI', 'imapHost': 'imap.x.de'},
+            {'id': 'lukas1', 'email': 'lukas@x.de', 'password': 'geheimL', 'imapHost': 'imap.x.de'},
+        ]
+        server.CFG['benutzer'] = [{'name': 'Lukas', 'key': 'lukas-schluessel', 'konten': ['lukas1']}]
+        cls.srv = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+        cls.srv.daemon_threads = True
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        for k, v in cls.alt.items():
+            if v is None:
+                server.CFG.pop(k, None)
+            else:
+                server.CFG[k] = v
+
+    req = TestHttp.req
+
+    def anmelden(self, key):
+        status, cookie, _ = self.req('POST', '/api/login', {'key': key})
+        self.assertEqual(status, 200)
+        return cookie.split(';')[0]
+
+    def test_lukas_sieht_nur_sein_konto(self):
+        sid = self.anmelden('lukas-schluessel')
+        st = json.loads(self.req('GET', '/api/state', cookie=sid)[2])
+        self.assertTrue(st['authed'])
+        self.assertFalse(st['voll'])
+        self.assertEqual([a['id'] for a in st['accounts']], ['lukas1'])
+        self.assertNotIn(b'geheim', self.req('GET', '/api/state', cookie=sid)[2])
+
+    def test_chef_sieht_alles(self):
+        sid = self.anmelden('chef-schluessel')
+        st = json.loads(self.req('GET', '/api/state', cookie=sid)[2])
+        self.assertTrue(st['voll'])
+        self.assertEqual(len(st['accounts']), 3)
+
+    def test_fremdes_postfach_gesperrt(self):
+        sid = self.anmelden('lukas-schluessel')
+        for pfad in ('/api/folders?acc=volker1', '/api/messages?acc=info1&folder=INBOX',
+                     '/api/message?acc=volker1&folder=INBOX&uid=1',
+                     '/api/attachment?acc=volker1&folder=INBOX&uid=1&part=2'):
+            status, _, data = self.req('GET', pfad, cookie=sid)
+            self.assertEqual(status, 400, pfad)
+            self.assertIn('Kein Konto', json.loads(data)['error'])
+        for route, body in (('/api/send', {'acc': 'volker1', 'to': 'a@b.de'}),
+                            ('/api/delete', {'acc': 'volker1', 'uids': [1]}),
+                            ('/api/move', {'acc': 'volker1', 'uids': [1], 'target': 'X'}),
+                            ('/api/flag', {'acc': 'volker1', 'uids': [1]}),
+                            ('/api/cal/events', {'acc': 'volker1'})):
+            status, _, _ = self.req('POST', route, body, cookie=sid)
+            self.assertEqual(status, 400, route)
+
+    def test_verwaltung_gesperrt(self):
+        sid = self.anmelden('lukas-schluessel')
+        verboten = [
+            ('POST', '/api/account/delete', {'id': 'lukas1'}),
+            ('POST', '/api/account/save', {'email': 'neu@x.de'}),          # neues Konto
+            ('POST', '/api/account/save', {'id': 'volker1', 'name': 'x'}), # fremdes Konto
+            ('POST', '/api/account/test', {'id': 'volker1'}),
+            ('GET', '/api/push/key', None),
+            ('POST', '/api/push/anmelden', {'sub': {}}),
+            ('POST', '/api/push/test', {}),
+            ('POST', '/api/ai/settings', {'key': 'x'}),
+        ]
+        for method, pfad, body in verboten:
+            self.assertEqual(self.req(method, pfad, body, cookie=sid)[0], 403, pfad)
+        self.assertEqual(len(server.CFG['accounts']), 3)
+
+    def test_eigenes_konto_pflegen(self):
+        sid = self.anmelden('lukas-schluessel')
+        status, _, data = self.req('POST', '/api/account/save',
+                                   {'id': 'lukas1', 'name': 'Lukas Isken'}, cookie=sid)
+        self.assertEqual(status, 200, data)
+        self.assertEqual(server.account_by_id('lukas1')['name'], 'Lukas Isken')
+        self.assertEqual(server.account_by_id('lukas1')['password'], 'geheimL')
+
+    def test_check_nur_eigene(self):
+        sid = self.anmelden('lukas-schluessel')
+        gesehen = []
+        alt = server.check_all
+        server.check_all = lambda konten: gesehen.extend(a['id'] for a in konten) or []
+        try:
+            self.assertEqual(self.req('GET', '/api/check', cookie=sid)[0], 200)
+        finally:
+            server.check_all = alt
+        self.assertEqual(gesehen, ['lukas1'])
+
+    def test_benutzer_entfernt_heisst_nichts_sehen(self):
+        sid = self.anmelden('lukas-schluessel')
+        alt = server.CFG['benutzer']
+        server.CFG['benutzer'] = []
+        try:
+            st = json.loads(self.req('GET', '/api/state', cookie=sid)[2])
+            self.assertEqual(st['accounts'], [])
+            self.assertEqual(self.req('GET', '/api/folders?acc=lukas1', cookie=sid)[0], 400)
+        finally:
+            server.CFG['benutzer'] = alt
+
+    def test_sitzung_ueberlebt_neustart(self):
+        sid = self.anmelden('lukas-schluessel').split('=', 1)[1]
+        geladen = server._sess_laden()
+        self.assertEqual(geladen[sid]['user'], 'Lukas')
+        self.assertIsNone(server.session_user('gibtsnicht'))
+
+    def test_leerer_schluessel_abgelehnt(self):
+        self.assertEqual(self.req('POST', '/api/login', {'key': ''})[0], 401)
+
 AUTODISCOVER_ANTWORT = """<?xml version="1.0"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
   <Response>
