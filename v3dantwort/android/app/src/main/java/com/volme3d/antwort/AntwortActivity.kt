@@ -154,14 +154,14 @@ class AntwortActivity : Activity() {
         val hatAktion = chat?.antwortAktion != null
         val vomBildschirm = chat?.vomBildschirm == true
         sendenKnopf = when {
-            vomBildschirm -> Ui.knopf(c, "📝 In WhatsApp einfügen", haupt = true) { einfuegen() }
+            vomBildschirm -> Ui.knopf(c, "📝 Einfügen", haupt = true) { einfuegen() }
             hatAktion -> Ui.knopf(c, "✅ Senden", haupt = true) { senden() }
             else -> Ui.knopf(c, "📋 Kopieren & öffnen", haupt = true) { kopierenUndOeffnen() }
         }
         val zweit = if (hatAktion || vomBildschirm) Ui.knopf(c, "📋 Kopieren") { kopieren() } else null
         knoepfe += sendenKnopf
         zweit?.let { knoepfe += it }
-        wurzel.addView(if (zweit != null) Ui.reihe(c, sendenKnopf, zweit) else Ui.reihe(c, sendenKnopf))
+        wurzel.addView(Ui.raster(c, if (zweit != null) 2 else 1, listOfNotNull(sendenKnopf, zweit)))
         (wurzel.getChildAt(wurzel.childCount - 1)).let { Ui.abstand(it, oben = 10) }
 
         // Nachbessern
@@ -173,9 +173,11 @@ class AntwortActivity : Activity() {
             "Lockerer" to "Bitte lockerer, mit du.",
             "Andere Termine" to "Bitte andere Terminvorschläge als im bisherigen Entwurf.",
             "Absagen" to "Bitte freundlich absagen, ohne Termine.",
+            "🇬🇧 English" to "Please write the reply in English (dates in English format).",
+            "🇩🇪 Deutsch" to "Bitte auf Deutsch antworten.",
         ).map { (name, bitte) -> Ui.knopf(c, name) { fragen(bitte) } }
         knoepfe += w
-        wurzel.addView(Ui.reihe(c, *w.toTypedArray()))
+        wurzel.addView(Ui.raster(c, 3, w))
 
         wunschFeld = EditText(c).apply {
             hint = "Eigener Wunsch, z. B. „Preis 89 € nennen“"

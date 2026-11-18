@@ -67,6 +67,27 @@ object Ui {
         v.layoutParams = lp
     }
 
+    /** Knöpfe in festen Zeilen mit je `spalten` gleich breiten Feldern – nichts wird abgeschnitten. */
+    fun raster(c: Context, spalten: Int, knoepfe: List<View>): LinearLayout {
+        val aussen = spalte(c)
+        knoepfe.chunked(spalten).forEachIndexed { i, zeile ->
+            val r = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false }
+            zeile.forEachIndexed { j, k ->
+                val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                if (j > 0) lp.leftMargin = dp(c, 8)
+                (k as? Button)?.apply { setPadding(dp(c, 6), 0, dp(c, 6), 0); maxLines = 2 }
+                r.addView(k, lp)
+            }
+            // Letzte Zeile auffüllen, damit die Breiten gleich bleiben
+            repeat(spalten - zeile.size) { r.addView(View(c), LinearLayout.LayoutParams(0, 1, 1f).apply { leftMargin = dp(c, 8) }) }
+            aussen.addView(r, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT).apply { if (i > 0) topMargin = dp(c, 8) })
+        }
+        aussen.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT)
+        return aussen
+    }
+
     /** Waagerechte, wischbare Reihe von Knöpfen. */
     fun reihe(c: Context, vararg knoepfe: View): HorizontalScrollView {
         val r = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
