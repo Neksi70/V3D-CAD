@@ -57,6 +57,8 @@ STANDARD = {
     'personen': ['Volker', 'Alle', 'Familie'],
     'ganztags_woerter': ['urlaub', 'krank', 'messe', 'abwesend', 'reise', 'frei ', 'blocker', 'nicht da'],
     'oeffentliche_url': 'https://v3da.tailf05fe9.ts.net/antwort',
+    'kurse_url': 'https://kurse.volme3dakademie.de/kurse.json',
+    'gutschein_url': 'https://kurse.volme3dakademie.de/gutscheine',
 }
 
 
@@ -188,6 +190,49 @@ def zeit_text(t):
     return '%s %s um %s Uhr' % (WOCHENTAGE[t.weekday()], t.strftime('%d.%m.'), t.strftime('%H:%M'))
 
 
+# --- Kurse ----------------------------------------------------------------------
+
+_KURSE = {'zeit': 0, 'daten': []}
+
+
+def kurse_holen(conf=None):
+    """Offene Kurse von kurse.volme3dakademie.de (5 min zwischengespeichert).
+    Fehler → letzter Stand bzw. leere Liste; die Antwort darf daran nicht scheitern."""
+    conf = conf or CONF
+    if time.time() - _KURSE['zeit'] < 300:
+        return _KURSE['daten']
+    try:
+        import urllib.request
+        req = urllib.request.Request(conf['kurse_url'], headers={'User-Agent': 'V3DAntwort/1.0'})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            _KURSE['daten'] = json.load(r)
+        _KURSE['zeit'] = time.time()
+    except Exception as ex:
+        notieren('[kurse] nicht abrufbar: %s' % ex)
+    return _KURSE['daten']
+
+
+def kurse_text(kurse, conf):
+    if not kurse:
+        return []
+    z = ['', 'Aktuelle Kurse der Volme 3D Akademie (Kursseite; wer sich über den Link anmeldet, kommt danach '
+         'direkt auf die Bezahlseite mit den Überweisungsdaten):']
+    for k in kurse:
+        tage = ', '.join('%s %s %s–%s' % (WOCHENTAGE[datetime.date.fromisoformat(t['datum']).weekday()],
+                                          datetime.date.fromisoformat(t['datum']).strftime('%d.%m.'),
+                                          t.get('beginn') or '', t.get('ende') or '') for t in k.get('termine', []))
+        preis = ('%d €' % (k['preis_cent'] // 100)) if k.get('preis_cent') else 'Preis über Veranstalter'
+        platz = 'ausgebucht (Warteliste)' if k.get('voll') else '%s Plätze frei' % k.get('frei')
+        z.append('- %s | %s | %s | %s | %s | Link: %s' % (k.get('titel'), tage, preis, platz, k.get('untertitel') or '', k.get('url')))
+    z.append('Gutschein-Shop: %s' % conf['gutschein_url'])
+    z.append('Geht es im Chat um einen Kurs, eine Anmeldung, ein Ticket, den Preis oder die Bezahlung, nenne den Link des '
+             'PASSENDEN Kurses (aus Verlauf, Datum oder Kalender erkennen) und schreib kurz, dass man sich dort anmeldet '
+             'und direkt zur Bezahlung kommt – keine Bankdaten selbst nennen. Bei VHS-Kursen: Anmeldung und Bezahlung laufen '
+             'über die VHS. Bei Gutscheinen den Shop-Link. Ist unklar, welcher Kurs gemeint ist, frag nach statt zu raten. '
+             'Geht es nicht um Kurse, keinen Link.')
+    return z
+
+
 # --- Claude ---------------------------------------------------------------------
 
 def systemtext(conf):
@@ -238,6 +283,7 @@ def prompt_bauen(daten, kandidaten, conf, belegt=None):
             zeilen.append('Im Kalender ist in den nächsten Tagen nichts frei – biete an, dich mit einem Terminvorschlag zu melden.')
     else:
         zeilen.append('Diesmal KEINE Terminvorschläge.')
+    zeilen += kurse_text(daten.get('_kurse') or [], conf)
     if belegt:
         zeilen.append('')
         zeilen.append('Belegte Zeiten im Kalender (NUR für dich zum Prüfen – nie Titel oder Details in die Antwort schreiben):')
@@ -375,6 +421,7 @@ class Handler(BaseHTTPRequestHandler):
             jetzt = datetime.datetime.now(BERLIN)
             belegt, hinweise = belegt_holen(jetzt, jetzt + datetime.timedelta(days=CONF['tage_voraus']))
             kandidaten = freie_zeiten(jetzt, belegt)[0] if daten.get('termine', True) else []
+            daten['_kurse'] = kurse_holen()
             antwort = claude_fragen(prompt_bauen(daten, kandidaten, CONF, belegt), CONF)
             antwort, kal_hinweis = hinweis_abtrennen(antwort)
             if kal_hinweis:

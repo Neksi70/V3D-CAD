@@ -94,6 +94,15 @@ class Prompt(unittest.TestCase):
         self.assertIn('lieber 15:30', p)
         self.assertIn('Do. 19.11. 15:00–18:00 Anycubic Salon', p)
 
+    def test_kurse_im_prompt(self):
+        k = [{'titel': 'Schnupperkurs', 'preis_cent': 8900, 'frei': 6, 'voll': False, 'untertitel': '',
+              'termine': [{'datum': '2026-11-24', 'beginn': '18:00', 'ende': '21:00'}],
+              'url': 'https://kurse.example/k/schnupper'}]
+        p = server.prompt_bauen({'text': 'Wie geht es mit der Bezahlung?', '_kurse': k}, [], server.CONF)
+        self.assertIn('Schnupperkurs | Di. 24.11. 18:00–21:00 | 89 € | 6 Plätze frei', p)
+        self.assertIn('https://kurse.example/k/schnupper', p)
+        self.assertNotIn('Aktuelle Kurse', server.prompt_bauen({'text': 'Hi'}, [], server.CONF))
+
     def test_aufraeumen(self):
         self.assertEqual(server.aufraeumen('"Hallo **du**"'), 'Hallo du')
 
@@ -108,6 +117,7 @@ class Http(unittest.TestCase):
         server.claude_fragen = lambda prompt, conf: 'Hallo Anna!'
         server.freie_zeiten = lambda *a, **k: ([t(19, 14)], [])
         server.belegt_holen = lambda *a, **k: ([], [])
+        server.kurse_holen = lambda *a, **k: []
 
     @classmethod
     def tearDownClass(cls):
