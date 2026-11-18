@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V3D Antwort</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #0b141a; color: #e9edef; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.3em; margin: 8px 0 16px; }
+  label { display: block; margin: 12px 0 4px; color: #8696a0; font-size: .9em; }
+  input, textarea { width: 100%; box-sizing: border-box; background: #202c33; color: #e9edef;
+    border: 1px solid #2a3942; border-radius: 10px; padding: 10px; font: inherit; }
+  textarea { min-height: 110px; }
+  #antwort { min-height: 180px; background: #005c4b; border-color: #005c4b; }
+  .knoepfe { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  button { background: #25d366; color: #0b141a; border: 0; border-radius: 20px; padding: 10px 16px;
+    font: inherit; font-weight: 600; cursor: pointer; }
+  button.zweit { background: #202c33; color: #e9edef; border: 1px solid #2a3942; }
+  button:disabled { opacity: .5; }
+  #status { color: #8696a0; font-size: .9em; margin-top: 8px; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🤖 V3D Antwort</h1>
+  <label for="key">Schlüssel</label>
+  <input id="key" type="password" autocomplete="off">
+  <label for="absender">Von</label>
+  <input id="absender" placeholder="z. B. Anna Müller">
+  <label for="text">WhatsApp-Nachricht</label>
+  <textarea id="text" placeholder="Nachricht hier einfügen"></textarea>
+  <label><input type="checkbox" id="termine" checked style="width:auto"> Terminvorschläge aus dem Kalender</label>
+  <div class="knoepfe">
+    <button id="los">Antwort vorschlagen</button>
+    <button class="zweit" id="einf">📋 Einfügen</button>
+  </div>
+  <label for="antwort">Vorschlag (bearbeitbar)</label>
+  <textarea id="antwort"></textarea>
+  <div class="knoepfe">
+    <button id="kopie">Kopieren</button>
+    <button class="zweit" data-w="Bitte kürzer.">Kürzer</button>
+    <button class="zweit" data-w="Bitte förmlicher, mit Sie.">Förmlicher</button>
+    <button class="zweit" data-w="Bitte lockerer, mit du.">Lockerer</button>
+    <button class="zweit" data-w="Bitte andere Terminvorschläge.">Andere Termine</button>
+  </div>
+  <div id="status"></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const basis = location.pathname.startsWith('/antwort') ? '/antwort' : '';
+$('key').value = new URLSearchParams(location.search).get('key') || localStorage.getItem('v3dantwortKey') || '';
+async function frag(wunsch) {
+  localStorage.setItem('v3dantwortKey', $('key').value);
+  $('status').textContent = 'Claude schreibt …';
+  document.querySelectorAll('button').forEach(b => b.disabled = true);
+  try {
+    const r = await fetch(basis + '/api/vorschlag', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Key': $('key').value },
+      body: JSON.stringify({ absender: $('absender').value, text: $('text').value,
+        termine: $('termine').checked, wunsch: wunsch || '', vorher: wunsch ? $('antwort').value : '' })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.fehler || r.status);
+    $('antwort').value = j.antwort;
+    $('status').textContent = 'Fertig in ' + j.dauer_s + ' s' + (j.hinweise.length ? ' – ' + j.hinweise.join('; ') : '');
+  } catch (e) { $('status').textContent = 'Fehler: ' + e.message; }
+  document.querySelectorAll('button').forEach(b => b.disabled = false);
+}
+$('los').onclick = () => frag('');
+document.querySelectorAll('[data-w]').forEach(b => b.onclick = () => frag(b.dataset.w));
+$('einf').onclick = async () => { try { $('text').value = await navigator.clipboard.readText(); } catch (e) { $('status').textContent = 'Zwischenablage gesperrt – bitte lang drücken und einfügen'; } };
+$('kopie').onclick = async () => { await navigator.clipboard.writeText($('antwort').value); $('status').textContent = 'Kopiert ✔'; };
+</script>
+</body>
+</html>
