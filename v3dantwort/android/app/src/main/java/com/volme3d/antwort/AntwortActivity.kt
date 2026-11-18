@@ -41,6 +41,8 @@ class AntwortActivity : Activity() {
     private lateinit var warten: ProgressBar
     private lateinit var termine: CheckBox
     private lateinit var wunschFeld: EditText
+    private lateinit var hinweis: TextView
+    private var wunschMerk = ""
     private lateinit var sendenKnopf: View
     private val knoepfe = mutableListOf<View>()
     private var laeuft = false
@@ -149,6 +151,13 @@ class AntwortActivity : Activity() {
         zeile.addView(status)
         wurzel.addView(zeile)
         Ui.abstand(zeile, oben = 6)
+        hinweis = Ui.text(c, "", 14f, farbe = 0xFFFFB74D.toInt()).apply {
+            background = Ui.rund(if (Ui.dunkel(c)) 0xFF3E2C10.toInt() else 0xFFFFF3E0.toInt(), Ui.dp(c, 10).toFloat())
+            setPadding(Ui.dp(c, 12), Ui.dp(c, 8), Ui.dp(c, 12), Ui.dp(c, 8))
+            visibility = View.GONE
+        }
+        wurzel.addView(hinweis)
+        Ui.abstand(hinweis, oben = 6)
 
         // Einfügen / Senden / Kopieren
         val hatAktion = chat?.antwortAktion != null
@@ -164,6 +173,28 @@ class AntwortActivity : Activity() {
         wurzel.addView(Ui.raster(c, if (zweit != null) 2 else 1, listOfNotNull(sendenKnopf, zweit)))
         (wurzel.getChildAt(wurzel.childCount - 1)).let { Ui.abstand(it, oben = 10) }
 
+        // Eigene Anweisung auf Deutsch – Claude übernimmt sie in der Chatsprache
+        wurzel.addView(Ui.ueberschrift(c, "💬 Was soll rein? (auf Deutsch)"))
+        wunschFeld = EditText(c).apply {
+            hint = "z. B. „Lieber erst um 15:30, wir sind vorher noch bei 3devo“"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            minLines = 2
+            gravity = Gravity.TOP
+            setTextColor(Ui.schrift(c))
+            setHintTextColor(Ui.leise(c))
+            background = Ui.rund(Ui.karte(c), Ui.dp(c, 12).toFloat())
+            setPadding(Ui.dp(c, 12), Ui.dp(c, 10), Ui.dp(c, 12), Ui.dp(c, 10))
+            setText(wunschMerk)
+        }
+        wurzel.addView(wunschFeld)
+        val eigen = Ui.knopf(c, "✍️ In die Antwort übernehmen") {
+            val t = wunschFeld.text.toString().trim()
+            if (t.isNotEmpty()) fragen(t)
+        }
+        knoepfe += eigen
+        wurzel.addView(Ui.raster(c, 1, listOf(eigen)))
+        (wurzel.getChildAt(wurzel.childCount - 1)).let { Ui.abstand(it, oben = 8) }
+
         // Nachbessern
         wurzel.addView(Ui.ueberschrift(c, "Anders formulieren"))
         val w = listOf(
@@ -178,21 +209,6 @@ class AntwortActivity : Activity() {
         ).map { (name, bitte) -> Ui.knopf(c, name) { fragen(bitte) } }
         knoepfe += w
         wurzel.addView(Ui.raster(c, 3, w))
-
-        wunschFeld = EditText(c).apply {
-            hint = "Eigener Wunsch, z. B. „Preis 89 € nennen“"
-            setSingleLine()
-            setTextColor(Ui.schrift(c))
-            background = Ui.rund(Ui.karte(c), Ui.dp(c, 12).toFloat())
-            setPadding(Ui.dp(c, 12), Ui.dp(c, 10), Ui.dp(c, 12), Ui.dp(c, 10))
-        }
-        val eigen = Ui.knopf(c, "Los") { if (wunschFeld.text.isNotBlank()) fragen(wunschFeld.text.toString()) }
-        knoepfe += eigen
-        val wz = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        wz.addView(wunschFeld, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        wz.addView(eigen)
-        wurzel.addView(wz)
-        Ui.abstand(wz, oben = 8)
 
         if (!verlauf.isEmpty()) {
             wurzel.addView(Ui.ueberschrift(c, "Davor im Chat"))
@@ -213,6 +229,8 @@ class AntwortActivity : Activity() {
         if (nachricht.isBlank() || laeuft) return
         beschaeftigt(true)
         status.text = "Claude schreibt … (dauert ca. 10 s)"
+        hinweis.visibility = View.GONE
+        wunschMerk = wunschFeld.text.toString()
         val vorher = if (wunsch.isNotEmpty()) feld.text.toString() else ""
         val mitTerminen = termine.isChecked && !wunsch.startsWith("Bitte freundlich absagen")
         Thread {
@@ -220,10 +238,10 @@ class AntwortActivity : Activity() {
                 val v = Api.vorschlag(this, absender, nachricht, verlauf, mitTerminen, wunsch, vorher)
                 runOnUiThread {
                     feld.setText(v.antwort)
-                    status.text = "Fertig in ${"%.0f".format(v.dauer)} s" +
-                        (if (v.hinweise.isNotEmpty()) " – " + v.hinweise.joinToString("; ") else "")
+                    status.text = "Fertig in ${"%.0f".format(v.dauer)} s"
+                    hinweis.text = "⚠️ " + v.hinweise.joinToString("\n⚠️ ")
+                    hinweis.visibility = if (v.hinweise.isEmpty()) View.GONE else View.VISIBLE
                     beschaeftigt(false)
-                    wunschFeld.setText("")
                 }
             } catch (e: Exception) {
                 runOnUiThread {

@@ -81,6 +81,19 @@ class Prompt(unittest.TestCase):
         p = server.prompt_bauen({'text': 'Danke!', 'termine': False}, [], server.CONF)
         self.assertIn('KEINE Terminvorschläge', p)
 
+    def test_hinweis_abtrennen(self):
+        a, h = server.hinweis_abtrennen('HINWEIS: 15:30 kollidiert mit X\n\nHi Sharron, 3:30 pm works!')
+        self.assertEqual(a, 'Hi Sharron, 3:30 pm works!')
+        self.assertEqual(h, '15:30 kollidiert mit X')
+        self.assertEqual(server.hinweis_abtrennen('Hallo')[1], '')
+
+    def test_anweisung_und_belegt(self):
+        p = server.prompt_bauen({'text': 'See you at 3', 'wunsch': 'lieber 15:30'}, [], server.CONF,
+                                [(t(19, 15), t(19, 18), 'Anycubic Salon')])
+        self.assertIn('ANWEISUNG', p)
+        self.assertIn('lieber 15:30', p)
+        self.assertIn('Do. 19.11. 15:00–18:00 Anycubic Salon', p)
+
     def test_aufraeumen(self):
         self.assertEqual(server.aufraeumen('"Hallo **du**"'), 'Hallo du')
 
@@ -91,14 +104,15 @@ class Http(unittest.TestCase):
         cls.srv = server.ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
         cls.basis = 'http://127.0.0.1:%d' % cls.srv.server_port
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
-        cls.alt = (server.claude_fragen, server.freie_zeiten)
+        cls.alt = (server.claude_fragen, server.freie_zeiten, server.belegt_holen)
         server.claude_fragen = lambda prompt, conf: 'Hallo Anna!'
         server.freie_zeiten = lambda *a, **k: ([t(19, 14)], [])
+        server.belegt_holen = lambda *a, **k: ([], [])
 
     @classmethod
     def tearDownClass(cls):
         cls.srv.shutdown()
-        server.claude_fragen, server.freie_zeiten = cls.alt
+        server.claude_fragen, server.freie_zeiten, server.belegt_holen = cls.alt
 
     def post(self, pfad, daten, key):
         req = urllib.request.Request(self.basis + pfad, json.dumps(daten).encode(),

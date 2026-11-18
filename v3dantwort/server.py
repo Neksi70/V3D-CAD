@@ -198,7 +198,7 @@ def systemtext(conf):
         'außer bei Terminvorschlägen, höchstens ein passendes Emoji. '
         'SPRACHE: Antworte in der Sprache, in der das Gegenüber bzw. der Chat schreibt (Englisch → Englisch, '
         'Deutsch → Deutsch, sonst dessen Sprache). Bei Englisch die Termine im englischen Format schreiben, '
-        'z. B. „Thu, 19 Nov at 3:30 pm“. '
+        'z. B. „Thu, 19 Nov at 3:30 pm“ – auch Uhrzeiten aus Volkers Anweisung umrechnen (15:30 → 3:30 pm). '
         'Auf Deutsch: duzen oder siezen genau wie das Gegenüber; ist das unklar, freundlich siezen. '
         'Erfinde keine Fakten, Preise oder Zusagen. Wenn eine Frage nur %(name)s beantworten kann, '
         'lass an der Stelle [ … ] als Platzhalter. '
@@ -209,7 +209,7 @@ def systemtext(conf):
     ) % conf
 
 
-def prompt_bauen(daten, kandidaten, conf):
+def prompt_bauen(daten, kandidaten, conf, belegt=None):
     absender = (daten.get('absender') or '').strip() or 'unbekannt'
     zeilen = ['Chat mit: %s' % absender]
     verlauf = [v for v in (daten.get('verlauf') or []) if isinstance(v, dict) and v.get('text')]
@@ -238,12 +238,22 @@ def prompt_bauen(daten, kandidaten, conf):
             zeilen.append('Im Kalender ist in den nächsten Tagen nichts frei – biete an, dich mit einem Terminvorschlag zu melden.')
     else:
         zeilen.append('Diesmal KEINE Terminvorschläge.')
+    if belegt:
+        zeilen.append('')
+        zeilen.append('Belegte Zeiten im Kalender (NUR für dich zum Prüfen – nie Titel oder Details in die Antwort schreiben):')
+        for a, b, titel in sorted(belegt)[:40]:
+            zeilen.append('- %s %s–%s %s' % (WOCHENTAGE[a.weekday()], a.strftime('%d.%m. %H:%M'), b.strftime('%H:%M'), titel[:60]))
     wunsch = (daten.get('wunsch') or '').strip()
     if wunsch:
         zeilen.append('')
-        zeilen.append('Zusatzwunsch von %s für diese Antwort: %s' % (conf['name'], wunsch[:500]))
+        zeilen.append('ANWEISUNG von %s (er schreibt sie auf Deutsch; setze sie inhaltlich um, die Antwort bleibt '
+                      'in der Sprache des Chats – übersetze also, was er sagen will): %s' % (conf['name'], wunsch[:1000]))
         if daten.get('vorher'):
-            zeilen.append('Bisheriger Entwurf:\n"""%s"""' % str(daten['vorher'])[:3000])
+            zeilen.append('Bisheriger Entwurf (überarbeiten):\n"""%s"""' % str(daten['vorher'])[:3000])
+        zeilen.append('Nennt die Anweisung einen Tag oder eine Uhrzeit, prüfe sie gegen die belegten Zeiten. '
+                      'Gibt es eine Überschneidung mit einem ANDEREN Termin, schreib die Antwort trotzdem wie gewünscht, '
+                      'setze aber als allererste Zeile „HINWEIS: <ein kurzer deutscher Satz für %s>“, dann eine Leerzeile, '
+                      'dann die Antwort. Ohne Überschneidung keine HINWEIS-Zeile.' % conf['name'])
     return '\n'.join(zeilen)
 
 
@@ -265,6 +275,16 @@ def claude_fragen(prompt, conf):
     if j.get('is_error'):
         raise RuntimeError(str(j.get('result'))[:300])
     return aufraeumen(j.get('result') or '')
+
+
+def hinweis_abtrennen(text):
+    """„HINWEIS: …“-Zeile (nur für Volker) vom Antworttext trennen."""
+    zeilen = text.strip().split('\n')
+    for i, z in enumerate(zeilen[:3]):
+        if z.strip().upper().startswith('HINWEIS:'):
+            rest = zeilen[:i] + zeilen[i + 1:]
+            return '\n'.join(rest).strip(), z.split(':', 1)[1].strip()
+    return text.strip(), ''
 
 
 def aufraeumen(text):
@@ -352,8 +372,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._senden(503, {'fehler': 'Gerade zu viel los, gleich nochmal'})
         t0 = time.time()
         try:
-            kandidaten, hinweise = freie_zeiten() if daten.get('termine', True) else ([], [])
-            antwort = claude_fragen(prompt_bauen(daten, kandidaten, CONF), CONF)
+            jetzt = datetime.datetime.now(BERLIN)
+            belegt, hinweise = belegt_holen(jetzt, jetzt + datetime.timedelta(days=CONF['tage_voraus']))
+            kandidaten = freie_zeiten(jetzt, belegt)[0] if daten.get('termine', True) else []
+            antwort = claude_fragen(prompt_bauen(daten, kandidaten, CONF, belegt), CONF)
+            antwort, kal_hinweis = hinweis_abtrennen(antwort)
+            if kal_hinweis:
+                hinweise = [kal_hinweis] + hinweise
         except subprocess.TimeoutExpired:
             return self._senden(504, {'fehler': 'Claude hat zu lange gebraucht'})
         except Exception as ex:
