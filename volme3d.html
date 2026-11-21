@@ -22935,7 +22935,7 @@ function addTextShape() {
   _text3dFontGrid(false); _text3dPreview();
   setTimeout(() => document.getElementById('text3d-input').focus(), 80);
 }
-function _closeText3d() { _text3dFontGrid(false); document.getElementById('text3d-modal').classList.remove('show'); _text3dEditObj = null; }
+function _closeText3d(abbruch) { _text3dFontGrid(false); document.getElementById('text3d-modal').classList.remove('show'); _text3dEditObj = null; if (abbruch !== false) _lblZurueckWeiter(); }   // false = Übernehmen (geht nach dem Umbau weiter)
 
 // ── Text nachträglich ändern ─────────────────────────────────────────────
 // Frei-/Bogen-Text wird beim Erzeugen zum SVG-Objekt und kannte danach seinen
@@ -23443,14 +23443,14 @@ function _confirmText3d() {
     meta.arcDir = _text3dArcDir;
   } else meta.gap = parseFloat(document.getElementById('text3d-gap').value) || 0;
   meta.weld = document.getElementById('text3d-weld').checked;
-  _closeText3d();
+  _closeText3d(false);
 
   const isHole = shapeMode === 'hole';
   const color  = isHole ? '#f03030' : currentColor;
   const sizeU  = sizeMm / 10; // Three.js units (1 unit ≈ 10mm)
 
   let _create = function (font) {
-    if (editObj) { if (editObj.parent) _textEditApply(editObj, meta, font); return; }
+    if (editObj) { if (editObj.parent) _textEditApply(editObj, meta, font); _lblZurueckWeiter(); return; }
     // Zylinder-Wickeln braucht echtes 3D-Text-Mesh → alter TextGeometry-Weg
     if (mode === 'cylinder' && selectedObjs.length > 0) {
       saveUndo();
@@ -34533,7 +34533,8 @@ async function subtractHoles() {
   // verbinden geht mit „Vereinen“. Jeder Körper bekommt eigene Kopien der Cutter, die ihn
   // berühren; die Original-Cutter verschwinden am Ende.
   const lauf = solids.length > 1 ? _subtractJeKoerper(solids, holes, ctl) : _doSubtractHoles(solids, holes, ctl);
-  lauf
+  // zurückgeben: wer wartet (🏷️ _lblApply), bekommt das fertige Ergebnis
+  return lauf
     .then(() => _progressDone())
     .catch(err => {
       _progressHide();
@@ -45639,15 +45640,9 @@ function updateUndoRedoButtons() {
   if (_uhListe) _uhListeRender();
 }
 
-function restoreState(stateArr) {
-  deselect();
-  objects.forEach(o => scene.remove(o));
-  objects = [];
-  stateArr.forEach(data => {
-    const o = buildObjectFromData(data);
-    scene.add(o); objects.push(o);
-  });
-  for (const o of objects) {                       // Flächenbindung von Texten/Motiven wiederherstellen
+// Flächenbindung von Texten/Motiven (objectToData → _snapBind {id,n,fd,sl}) wieder an den Körper hängen
+function _snapBindAufloesen(liste) {
+  for (const o of liste) {
     const b = o.userData._snapBind; if (!b) continue;
     delete o.userData._snapBind;
     const t = objects.find(x => x !== o && x.userData.id === b.id && x.isMesh);
@@ -45656,6 +45651,17 @@ function restoreState(stateArr) {
     if (b.fd != null) o.userData._snapFaceD = b.fd;
     if (b.sl) o.userData._snapSurfaceLocal = new THREE.Vector3().fromArray(b.sl);
   }
+}
+
+function restoreState(stateArr) {
+  deselect();
+  objects.forEach(o => scene.remove(o));
+  objects = [];
+  stateArr.forEach(data => {
+    const o = buildObjectFromData(data);
+    scene.add(o); objects.push(o);
+  });
+  _snapBindAufloesen(objects);
   updateTree();
   updateUndoRedoButtons();
 }
@@ -48569,7 +48575,7 @@ function toggleBurgerMenu(e) {
 // Vereinen/Abziehen hängen ein opJournal {op, parts:[objectToData…]} ans Ergebnis.
 // „✎ Operation bearbeiten" löst das Ergebnis wieder in die Ausgangsteile auf
 // (voll editierbar, inkl. Bohrungs-Markierung) — anpassen, erneut kombinieren.
-function editOpJournal() {
+function editOpJournal(leise) {
   const o = getFirst();
   if (!o || !o.userData.opJournal) return;
   const j = o.userData.opJournal;
@@ -48584,12 +48590,67 @@ function editOpJournal() {
     } catch (e) { console.warn('[opJournal] Teil nicht wiederherstellbar:', e); }
   }
   if (!restored.length) { notify('Teile nicht wiederherstellbar', 'e'); return; }
+  _snapBindAufloesen(restored);   // Text/Motiv hängt wieder an seiner Fläche (🏷️ geht direkt)
   selectObjs(restored); updateTree();
+  if (leise) return restored;
   const redo = j.op === 'union' ? '∪ Vereinen' : j.op === 'subtract' ? '⊖ Abziehen'
               : j.op === 'intersect' ? '⋂ Schnittmenge' : '⧈ Spielraum';
   notify(j.op === 'offset'
     ? 'Spielraum rückgängig — Zustand vor der Op wiederhergestellt'
     : 'Operation aufgelöst (' + restored.length + ' Teile) — anpassen, dann erneut ' + redo, 'ok');
+}
+
+// ═══ BESCHRIFTUNG ZURÜCKHOLEN (Volker 21.11.) ═════════════════════════════════
+// Ein mit 🏷️ (oder von Hand) eingeprägter/aufgesetzter Text steckt danach im Ergebnis
+// „Subtract …“ — Schrift ändern oder auf eine andere Fläche setzen ging nur über
+// „Operation bearbeiten“ + Suchen + Neu-Anbringen. Jetzt im Eigenschaften-Feld zwei
+// Knöpfe: Auflösen → Text-Dialog bzw. Text am Zeiger → Beschriften-Feld mit
+// derselben Art (vertieft/erhaben) und Tiefe, ein Klick auf „Anbringen“.
+let _lblZurueckCtx = null;   // { textId, art, mm } – wartet auf „Übernehmen“ im Text-Dialog
+function _lblJournalTeil(o) {
+  const j = o && o.userData && o.userData.opJournal;
+  if (!j || (j.op !== 'subtract' && j.op !== 'union') || !Array.isArray(j.parts)) return null;
+  const t = j.parts.find(d => d && d.type === 'svg' && d.textEdit) || j.parts.find(d => d && (d.type === 'svg' || d.shapeType === 'svg'));
+  if (!t) return null;
+  const tief = j.op === 'subtract';
+  let mm = j.lbl && j.lbl.mm;
+  if (!(mm > 0)) mm = Math.abs(parseFloat(t.svgDepth)) || 0.6;
+  return { d: t, text: !!t.textEdit, art: j.lbl && j.lbl.art || (tief ? 'tief' : 'hoch'), mm: Math.min(20, Math.max(0.1, mm)) };
+}
+function _lblZurueck(was) {
+  const o = getFirst(), info = _lblJournalTeil(o);
+  if (!info) { notify('In diesem Körper steckt keine Beschriftung', 'w'); return; }
+  if (o.userData.locked) { notify('Objekt ist gesperrt', 'w'); return; }
+  const teile = editOpJournal(true);
+  const t = teile && teile.find(x => x.userData.id === info.d.id) || (teile || []).find(x => x.userData.shapeType === 'svg' || x.userData.type === 'svg');
+  if (!t) { notify('Beschriftung nicht wiederherstellbar', 'e'); return; }
+  // als Motiv zeigen, nicht als roter Cutter
+  t.userData.isHole = false;
+  if (t.material) { t.material.transparent = false; t.material.opacity = 1; t.material.color.set(t.userData.color && t.userData.color !== '#f03030' ? t.userData.color : currentColor); t.material.needsUpdate = true; }
+  _lblSetArt(info.art);
+  document.getElementById('lbl-mm').value = String(info.mm);
+  if (was === 'text') {
+    if (!_textEditable(t)) { notify('Dieser Text lässt sich nicht mehr ändern (älter als v1.18.33) — bitte neu schreiben', 'w'); selectObjs([t]); return; }
+    _lblZurueckCtx = { textId: t.userData.id, art: info.art, mm: info.mm };
+    selectObjs([t]);
+    editTextObj(t);
+    notify('Gravur aufgelöst — Text/Schrift ändern, „Übernehmen“, dann „Anbringen“', 'ok');
+  } else {
+    if (!_lblPickStart(t)) { notify('Kein Bauteil zum Anbringen da', 'w'); selectObjs([t]); return; }
+    notify('Gravur aufgelöst — die neue Stelle am Bauteil anklicken', 'ok');
+  }
+}
+// nach „Übernehmen“ bzw. Schließen des Text-Dialogs zurück ins Beschriften-Feld
+function _lblZurueckWeiter() {
+  const c = _lblZurueckCtx; _lblZurueckCtx = null;
+  if (!c) return;
+  const t = objects.find(x => x.userData.id === c.textId);
+  if (!t) return;
+  selectObjs([t]);
+  _lblSetArt(c.art);
+  document.getElementById('lbl-mm').value = String(c.mm);
+  if (_lblAttached(t)) _lblOpen();
+  else _lblPickStart(t);
 }
 
 // ═══ VERLAUF (Feature-Historie pro Körper) ═══════════════════════════════════
@@ -89596,8 +89657,11 @@ async function _bilZuSvg(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.424';
+const VOLME3D_VERSION = '1.18.425';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.425', date:'2026-11-21', changes:[
+    ['🏷️','<b>Eingeprägten Text nachträglich ändern:</b> Wer einen Text mit 🏷️ eingeprägt oder aufgesetzt hat, findet jetzt im Eigenschaften-Feld links zwei Knöpfe. <b>✏️ Text / Schrift ändern</b> öffnet den Text-Dialog mit Wortlaut, Schrift und Größe – nach „Übernehmen“ steht das Beschriften-Feld mit derselben Tiefe bereit, ein Klick auf „Anbringen“ prägt neu ein. <b>📍 Text auf andere Fläche setzen</b> löst den Text vom Bauteil: Er hängt am Zeiger, neue Fläche anklicken, „Anbringen“ – fertig.'],
+  ] },
   { version:'1.18.424', date:'2026-11-21', changes:[
     ['🪟','<b>Eigenschaften-Feld frei verschiebbar:</b> Ein Klick in die Kopfzeile ließ das Feld unter die obere Leiste springen – danach kam man nicht mehr dran, nur Neuladen half. Jetzt verschiebt ein Klick nichts, beim Ziehen bleibt das Feld auf der Arbeitsfläche und der Kopf immer greifbar. <b>Doppelklick</b> auf die Kopfzeile bringt es an die Standardstelle zurück. Gilt auch fürs Textur-Fenster.'],
   ] },
@@ -92185,6 +92249,9 @@ async function _lblApply() {
     selectObjs([target, o]);
     await unionSelected();
   }
+  // Art + Tiefe am Ergebnis merken → „🏷️ Text ändern / anders setzen“ im Eigenschaften-Feld
+  const r = [getFirst(), target].find(x => x && x !== o && objects.includes(x) && x.userData.opJournal);
+  if (r) r.userData.opJournal.lbl = { art: _lblArt, mm };
 }
 // ===== END BESCHRIFTUNG ANBRINGEN ==========================================
 
@@ -97379,6 +97446,11 @@ function updateFP() {
     const hasOcctOps = !!(o.userData._occtParams && o.userData._occtParams.ops && o.userData._occtParams.ops.length);
     if ((o.userData.opJournal || hasOcctOps) && !_shellMode && !_edgeMode) {
       rows += `<div class="fp-sep"></div><div class="fp-row fp-edge-row">`;
+      const lblInfo = _lblJournalTeil(o);
+      if (lblInfo) {
+        if (lblInfo.text) rows += `<button class="fp-btn" onclick="_lblZurueck('text')" title="Gravur auflösen und den Text-Dialog öffnen: Wortlaut, Schrift und Größe ändern — danach mit einem Klick wieder ${lblInfo.art === 'tief' ? 'einprägen' : 'aufsetzen'}">✏️ Text / Schrift ändern</button>`;
+        rows += `<button class="fp-btn" onclick="_lblZurueck('ort')" title="Gravur auflösen — der ${lblInfo.text ? 'Text' : 'Motiv'} hängt am Zeiger: neue Fläche anklicken, dann „Anbringen“">📍 ${lblInfo.text ? 'Text' : 'Motiv'} auf andere Fläche setzen</button>`;
+      }
       if (o.userData.opJournal)
         rows += `<button class="fp-btn" onclick="editOpJournal()" title="Ergebnis wieder in die Ausgangsteile auflösen — anpassen und erneut kombinieren">✎ Operation bearbeiten</button>`;
       rows += `<button class="fp-btn" onclick="_histOpen()" title="Verlauf: aufgezeichnete Bearbeitungsschritte dieses Körpers ansehen, Kanten-Radien ändern oder Schritte entfernen">🕘 Verlauf</button></div>`;
