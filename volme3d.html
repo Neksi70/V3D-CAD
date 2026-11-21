@@ -79821,16 +79821,22 @@ function _lithoVorschauOrt(e){
 }
 function _lithoVorschauZiehenEinrichten(){
   const cv=document.getElementById('litho-canvas'); if(!cv || cv._lithoZiehen) return; cv._lithoZiehen=true;
-  cv.style.touchAction='none'; cv.title='Bild auf der Kugel ziehen = Ausschnitt verschieben · daneben ziehen = drehen · Mausrad = zoomen';
+  cv.style.touchAction='none';
+  // Nur im Modus „Ausschnitt" verschiebt/zoomt das Foto selbst. Bei „Einpassen"/„Strecken"
+  // drehte früher schon ein Zug oder Mausrad auf dem Foto still auf „Ausschnitt" um –
+  // das Foto lag plötzlich wieder rundum statt eingepasst (Volker 21.11.).
+  const aus=()=>_litho.p.kFit==='zuschneiden';
+  const titel=()=>{ cv.title=aus() ? 'Bild auf der Kugel ziehen = Ausschnitt verschieben · daneben ziehen = drehen · Mausrad = zoomen'
+    : 'Ziehen = Kugel drehen · Ausschnitt wählen: oben „Ausschnitt (füllt alles)“ einstellen'; };
+  titel(); cv.addEventListener('pointerenter',titel);
   let zug=null, rt=null;
   const neu=()=>{ if(rt) return; rt=setTimeout(()=>{ rt=null; _gpvUpdate('litho'); },90); };
   const halt=v=>{ const s=_gpv['litho']; if(s) s.halt=v; };
   cv.addEventListener('pointerenter',()=>halt(true));
   cv.addEventListener('pointerleave',()=>{ if(!zug) halt(false); });
   cv.addEventListener('pointerdown',e=>{
-    const o=_lithoVorschauOrt(e), B=_litho.bilder;
+    const o=aus()?_lithoVorschauOrt(e):null, B=_litho.bilder;
     if(o && o.f && B[o.f.bi]){
-      if(_litho.p.kFit!=='zuschneiden'){ _litho.p.kFit='zuschneiden'; _lithoSyncUI(); _lithoInfo(); }
       const b=B[o.f.bi]; b.crop=b.crop||{x:0.5,y:0.5,z:1};
       zug={art:'bild', b, f:o.f, x:e.clientX, y:e.clientY, cx:b.crop.x, cy:b.crop.y, px:o.pxProRad, cos:Math.max(0.3,Math.cos(o.ph))};
     } else zug={art:'drehen', x:e.clientX, rot:_gpv['litho']&&_gpv['litho'].group?_gpv['litho'].group.rotation.y:0};
@@ -79851,9 +79857,9 @@ function _lithoVorschauZiehenEinrichten(){
   const los=()=>{ zug=null; };
   cv.addEventListener('pointerup',los); cv.addEventListener('pointercancel',los);
   cv.addEventListener('wheel',e=>{
+    if(!aus()) return;   // Einpassen: Mausrad zoomt wie gewohnt die Ansicht
     const o=_lithoVorschauOrt(e); if(!o||!o.f||!_litho.bilder[o.f.bi]) return;
     e.preventDefault(); e.stopPropagation();
-    if(_litho.p.kFit!=='zuschneiden'){ _litho.p.kFit='zuschneiden'; _lithoSyncUI(); _lithoInfo(); }
     const b=_litho.bilder[o.f.bi]; b.crop=b.crop||{x:0.5,y:0.5,z:1};
     b.crop.z=Math.max(1,Math.min(4,b.crop.z*(e.deltaY<0?1.08:1/1.08))); neu();
   },{passive:false});
@@ -79934,13 +79940,18 @@ function _lithoFeldAspekt(){
 }
 function _lithoAusschnitt(i){
   const b=_litho.bilder[i]; if(!b) return;
-  if(_litho.p.kFit!=='zuschneiden'){ _litho.p.kFit='zuschneiden'; _lithoSyncUI(); _lithoInfo(); }
   b.crop=b.crop||{x:0.5,y:0.5,z:1};
+  // Öffnen allein schaltet nicht um (sonst war „Einpassen" nach einem Blick aufs Bild weg);
+  // erst wer den Rahmen verschiebt oder zoomt, wählt „Ausschnitt" – mit Hinweis.
+  const warEinpassen=_litho.p.kFit!=='zuschneiden';
+  const umstellen=()=>{ if(_litho.p.kFit==='zuschneiden') return; _litho.p.kFit='zuschneiden'; _lithoSyncUI(); _lithoInfo();
+    notify('Auf „Ausschnitt (füllt alles)“ umgestellt – zurück mit „Einpassen“','ok'); };
   let ov=document.getElementById('litho-crop');
   if(!ov){ ov=document.createElement('div'); ov.id='litho-crop'; document.body.appendChild(ov); }
   ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100000;display:flex;align-items:center;justify-content:center';
   ov.innerHTML=`<div style="background:#fff;border-radius:12px;padding:14px;width:min(560px,94vw);box-shadow:0 10px 40px rgba(0,0,0,.4);font-size:13px">
     <div style="font-weight:700;margin-bottom:6px">✂️ Ausschnitt für Bild ${i+1} – Rahmen verschieben, zoomen</div>
+    ${warEinpassen?'<div style="font-size:11.5px;color:#666;margin:-2px 0 6px">Gerade ist „Einpassen“ eingestellt – das ganze Foto liegt auf der Kugel. Wer den Rahmen verschiebt oder zoomt, schaltet auf „Ausschnitt (füllt alles)“ um.</div>':''}
     <div id="lcr-wrap" style="position:relative;user-select:none;touch-action:none;background:#10141c;display:flex;justify-content:center">
       <img id="lcr-img" src="${b.url}" style="max-width:100%;max-height:52vh;display:block" draggable="false">
       <div id="lcr-box" style="position:absolute;border:2px solid #f97316;box-shadow:0 0 0 9999px rgba(0,0,0,.55);cursor:move"></div>
@@ -79958,10 +79969,10 @@ function _lithoAusschnitt(i){
   img.onload=zeichne; if(img.complete) setTimeout(zeichne,0);
   let zug=null;
   box.onpointerdown=e=>{ zug={x:e.clientX,y:e.clientY,cx:b.crop.x,cy:b.crop.y}; box.setPointerCapture(e.pointerId); e.preventDefault(); };
-  box.onpointermove=e=>{ if(!zug) return; b.crop.x=zug.cx+(e.clientX-zug.x)/img.clientWidth; b.crop.y=zug.cy+(e.clientY-zug.y)/img.clientHeight; zeichne(); neu(); };
+  box.onpointermove=e=>{ if(!zug) return; umstellen(); b.crop.x=zug.cx+(e.clientX-zug.x)/img.clientWidth; b.crop.y=zug.cy+(e.clientY-zug.y)/img.clientHeight; zeichne(); neu(); };
   box.onpointerup=()=>{ zug=null; };
-  zr.oninput=()=>{ b.crop.z=parseFloat(zr.value); ov.querySelector('#lcr-zv').textContent=zr.value; zeichne(); neu(); };
-  ov.querySelector('#lcr-wrap').onwheel=e=>{ e.preventDefault(); b.crop.z=Math.max(1,Math.min(4,b.crop.z*(e.deltaY<0?1.08:1/1.08))); zr.value=b.crop.z; ov.querySelector('#lcr-zv').textContent=b.crop.z.toFixed(2); zeichne(); neu(); };
+  zr.oninput=()=>{ umstellen(); b.crop.z=parseFloat(zr.value); ov.querySelector('#lcr-zv').textContent=zr.value; zeichne(); neu(); };
+  ov.querySelector('#lcr-wrap').onwheel=e=>{ e.preventDefault(); umstellen(); b.crop.z=Math.max(1,Math.min(4,b.crop.z*(e.deltaY<0?1.08:1/1.08))); zr.value=b.crop.z; ov.querySelector('#lcr-zv').textContent=b.crop.z.toFixed(2); zeichne(); neu(); };
   ov.querySelector('#lcr-mitte').onclick=()=>{ b.crop={x:0.5,y:0.5,z:1}; zr.value=1; ov.querySelector('#lcr-zv').textContent='1'; zeichne(); neu(); };
   const zu=()=>{ ov.remove(); if(_gpv['litho']) _gpvUpdate('litho'); _lithoInfo(); };
   ov.querySelector('#lcr-ok').onclick=zu; ov.onclick=e=>{ if(e.target===ov) zu(); };
@@ -89726,8 +89737,11 @@ async function _bilZuSvg(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.426';
+const VOLME3D_VERSION = '1.18.427';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.427', date:'2026-11-21', changes:[
+    ['🎄','<b>Lithophane-Kugel: „Einpassen“ bleibt.</b> Ein Zug oder das Mausrad auf dem Foto in der Vorschau hat still auf „Ausschnitt (füllt alles)“ umgeschaltet – das Foto lag plötzlich wieder rundum. Jetzt dreht Ziehen bei „Einpassen“ einfach die Kugel. Das Ausschnitt-Fenster (Klick aufs Vorschaubild) stellt erst um, wenn du den Rahmen wirklich verschiebst oder zoomst, und sagt das vorher an.'],
+  ] },
   { version:'1.18.426', date:'2026-11-21', changes:[
     ['📷','<b>iPhone-RAW-Fotos (DNG) in Lithophane und Kugel:</b> Fotos mit der Endung .dng (Apple ProRAW) wurden nicht angenommen. Jetzt holt V3D CAD das fertige Foto, das in jeder DNG steckt, direkt im Browser heraus, dreht es richtig herum und nutzt es wie ein JPG – auch über „📱 Vom Handy“. Gilt auch für „Bild invertieren (Laser)“.'],
   ] },
