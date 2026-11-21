@@ -2272,7 +2272,7 @@ const firebaseConfig = {
   <!-- Floating Property Panel -->
   <div id="fp">
     <div class="fp-arr" id="fp-arr"></div>
-    <div id="fp-hdr">
+    <div id="fp-hdr" title="Am Kopf ziehen = Feld verschieben · Doppelklick = zurück an die Standardstelle">
       <span id="fp-name">Box</span>
       <span id="fp-hdr-x" title="Einklappen" onclick="fpToggleCollapse()">&#9652;</span>
     </div>
@@ -89596,8 +89596,11 @@ async function _bilZuSvg(){
 }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.423';
+const VOLME3D_VERSION = '1.18.424';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.424', date:'2026-11-21', changes:[
+    ['🪟','<b>Eigenschaften-Feld frei verschiebbar:</b> Ein Klick in die Kopfzeile ließ das Feld unter die obere Leiste springen – danach kam man nicht mehr dran, nur Neuladen half. Jetzt verschiebt ein Klick nichts, beim Ziehen bleibt das Feld auf der Arbeitsfläche und der Kopf immer greifbar. <b>Doppelklick</b> auf die Kopfzeile bringt es an die Standardstelle zurück. Gilt auch fürs Textur-Fenster.'],
+  ] },
   { version:'1.18.423', date:'2026-11-19', changes:[
     ['🔄','<b>Neu: Bild invertieren (Laser).</b> Foto, Logo oder Grafik laden (auch per Ziehen oder Strg+V) und laserfertig machen: <b>invertieren</b> (hell ↔ dunkel – nötig auf dunklem Material wie Schiefer, eloxiertem Alu, schwarzem Acryl oder Glas mit Paste), als <b>Graustufen</b>, <b>Raster</b> für Fotos oder <b>Schwarz-Weiß</b> mit Schwelle, dazu Helligkeit, Kontrast und <b>Spiegeln</b> für die Gravur von hinten. Transparenter Hintergrund bleibt weiß. Speichert eine PNG in deiner Breite (mm) und Auflösung (DPI) – LightBurn &amp; Co. übernehmen die Größe 1:1. Auf Wunsch direkt weiter an „Bild → SVG“. Unter Generatoren → Laser &amp; Werkstatt.'],
   ] },
@@ -95976,23 +95979,49 @@ function _initDesigns() {
 let _fpCurType   = null;  // shape type whose HTML is currently rendered
 let _fpDragging  = false; // true while user is dragging a range slider
 
+// Panels am Kopf frei verschieben. Die Lage bleibt im eigenen Koordinatensystem des Panels
+// (absolute → relativ zum Container, fixed → Bildschirm). Früher wurde #fp beim Anfassen auf
+// fixed umgestellt, _fpPositionPanel setzte dann top:120px im Container-Maß → das Feld sprang
+// unter die Kopfleiste und war nicht mehr zu greifen (Volker 21.11.). Jetzt: Kopf bleibt immer
+// erreichbar (_panelKlemmen), ein bloßer Klick verschiebt nichts, Doppelklick = Standardlage.
+function _panelGrenzen(panel){
+  const fix = getComputedStyle(panel).position === 'fixed';
+  if (fix){
+    const tb = document.getElementById('tb'), oben = (tb ? tb.getBoundingClientRect().bottom : 0) + 4;
+    return { x0: 0, y0: oben, x1: innerWidth, y1: innerHeight, dx: 0, dy: 0 };
+  }
+  const par = panel.offsetParent || panel.parentElement, pr = par.getBoundingClientRect();
+  return { x0: 0, y0: 0, x1: pr.width, y1: pr.height, dx: pr.left, dy: pr.top };
+}
+function _panelKlemmen(panel){
+  if (!panel || !panel.offsetParent && getComputedStyle(panel).position !== 'fixed') return;
+  if (getComputedStyle(panel).display === 'none') return;
+  const g = _panelGrenzen(panel), w = panel.offsetWidth || 200;
+  let l = parseFloat(panel.style.left), t = parseFloat(panel.style.top);
+  if (!isFinite(l) || !isFinite(t)) return;
+  // Feld bleibt seitlich ganz auf der Arbeitsfläche, der Kopf (oben) immer greifbar
+  const nl = Math.max(g.x0, Math.min(g.x1 - w, l)), nt = Math.max(g.y0, Math.min(g.y1 - 40, t));
+  if (nl !== l) panel.style.left = nl + 'px';
+  if (nt !== t) panel.style.top = nt + 'px';
+}
 function _makeDraggable(panel, handle) {
-  let ox, oy, sx, sy;
   handle.addEventListener('mousedown', e => {
-    if (e.button !== 0 || e.target.closest('button,input,select,span[onclick],[onclick]')) return;
-    const r = panel.getBoundingClientRect();
-    sx = e.clientX; sy = e.clientY;
-    ox = r.left;    oy = r.top;
-    panel.style.left = ox + 'px'; panel.style.top = oy + 'px';
-    panel.style.position = 'fixed';
+    if (e.button !== 0 || e.target.closest('button,input,select,span[onclick],[onclick]:not(#' + handle.id + ')')) return;
+    const g = _panelGrenzen(panel), r = panel.getBoundingClientRect();
+    const ox = r.left - g.dx, oy = r.top - g.dy, sx = e.clientX, sy = e.clientY;
+    let gezogen = false;
+    panel._drag = true;
     const onMove = ev => {
+      if (!gezogen && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;   // Klick ≠ Ziehen
+      gezogen = true; panel._userMoved = true;
       panel.style.left = (ox + ev.clientX - sx) + 'px';
       panel.style.top  = (oy + ev.clientY - sy) + 'px';
+      _panelKlemmen(panel);
       if (panel.id === 'fp') _fpFitHeight();
       else if (panel.id === 'tex-panel') _texFitHeight();
     };
     const onUp = () => {
-      panel._userMoved = true;
+      panel._drag = false;
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     };
@@ -96000,7 +96029,15 @@ function _makeDraggable(panel, handle) {
     document.addEventListener('mouseup', onUp);
     e.preventDefault();
   });
+  // Doppelklick auf den Kopf: zurück an die Standardstelle
+  handle.addEventListener('dblclick', e => {
+    if (e.target.closest('button,input,select,span[onclick]')) return;
+    panel._userMoved = false;
+    if (panel.id === 'fp') _fpPositionPanel();
+    else { panel.style.left = '320px'; panel.style.top = '120px'; _panelKlemmen(panel); }
+  });
 }
+window.addEventListener('resize', () => { _panelKlemmen(document.getElementById('fp')); _panelKlemmen(document.getElementById('tex-panel')); });
 
 // Project bbox corners → find screen bounding box (VP-relative)
 function _fpScreenBounds(o) {
@@ -96881,7 +96918,8 @@ function _fpSyncValues() {
 function _fpPositionPanel() {
   if (_fpDragging) return;
   const fp = document.getElementById('fp'); if (!fp || !fp.classList.contains('show')) return;
-  if (fp._userMoved) return;
+  if (fp._drag) return;
+  if (fp._userMoved) { _panelKlemmen(fp); return; }
   // V3D-ShapeCAD: rechts neben der Werkzeugspalte statt darüber
   fp.style.left = (_advMode === 'shape' && !document.body.classList.contains('umgshape-alle')) ? '84px' : '60px';
   fp.style.top  = '120px';
